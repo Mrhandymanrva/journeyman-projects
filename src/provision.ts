@@ -67,24 +67,32 @@ if (!who.rows[0]?.rolsuper) {
 console.log(`connected as ${who.rows[0].current_user} (superuser)\n`);
 
 // --- roles ----------------------------------------------------------------
-// CREATE ROLE takes no bind parameters, so the password reaches it through
-// format(%L) inside a DO block rather than by string concatenation into DDL.
+// CREATE ROLE takes no bind parameters, and neither does a DO block: its body
+// is a string literal as far as the server is concerned, so $1 inside it is
+// not a placeholder and the statement reports zero parameters. Postgres says
+// "bind message supplies 2 parameters, but prepared statement requires 0".
+//
+// So the DDL is built by a parameterised SELECT — an ordinary query, which
+// does take parameters — and executed as the text it returns. The quoting is
+// done by Postgres's own format(%I, %L) rather than by concatenating a
+// password into DDL here.
 for (const [role, password] of [
   ['jp_owner', ownerPassword],
   ['jp_app', appPassword],
 ] as const) {
-  await admin.query(
-    `DO $do$
-     BEGIN
-       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) THEN
-         EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB', $1, $2);
-       ELSE
-         EXECUTE format('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB', $1, $2);
-       END IF;
-     END $do$`,
+  const existing = await admin.query(`SELECT 1 FROM pg_roles WHERE rolname = $1`, [role]);
+  // Fixed vocabulary, never derived from input.
+  const verb = (existing.rowCount ?? 0) > 0 ? 'ALTER' : 'CREATE';
+
+  const built = await admin.query<{ ddl: string }>(
+    `SELECT format(
+       '${verb} ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB',
+       $1::text, $2::text
+     ) AS ddl`,
     [role, password],
   );
-  console.log(`role ${role} ready`);
+  await admin.query(built.rows[0]!.ddl);
+  console.log(`role ${role} ready (${verb.toLowerCase()}d)`);
 }
 
 const db = await admin.query<{ current_database: string }>(`SELECT current_database()`);
