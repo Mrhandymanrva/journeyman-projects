@@ -98,8 +98,21 @@ for (const [role, password] of [
 const db = await admin.query<{ current_database: string }>(`SELECT current_database()`);
 const database = db.rows[0]!.current_database;
 await admin.query(`GRANT CONNECT ON DATABASE ${quoteIdent(database)} TO jp_app, jp_owner`);
+// jp_owner runs the migrations, so it needs to be able to CREATE SCHEMA. On a
+// managed Postgres the roles you create have CONNECT and nothing else, and the
+// first thing 001_schema.sql does is create a schema.
+await admin.query(`GRANT CREATE ON DATABASE ${quoteIdent(database)} TO jp_owner`);
 await admin.query(`GRANT jp_owner TO ${quoteIdent(who.rows[0].current_user)}`);
-await admin.end();
+
+// Extensions are installed by the superuser, before the owner runs anything.
+// citext is a trusted extension from PostgreSQL 13, so jp_owner could install
+// it given CREATE on the database — but extensions are database-wide objects
+// that outlive this schema, and having the DBA own them is the honest
+// arrangement. Doing it here also means 001_schema.sql's
+// `CREATE EXTENSION IF NOT EXISTS` is already satisfied when the owner reaches
+// it.
+await admin.query(`CREATE EXTENSION IF NOT EXISTS citext`);
+console.log('extension citext ready');
 
 // --- schema, as jp_owner --------------------------------------------------
 // Applied by the owner so that jp_owner owns every object. Running these as
@@ -124,6 +137,7 @@ for (const file of ['db/001_schema.sql', 'db/002_seed.sql']) {
       if (/already exists/i.test(message)) continue;
       console.error(`\n${file}:${stmt.startLine}\n  ${message}`);
       await owner.end();
+      await admin.end();
       process.exit(1);
     }
   }
@@ -131,10 +145,29 @@ for (const file of ['db/001_schema.sql', 'db/002_seed.sql']) {
 }
 
 // --- grants ---------------------------------------------------------------
+// Run on the admin connection, not the owner's. Two of these are outside
+// jp_owner's authority however the schema is set up: ALTER DEFAULT PRIVILEGES
+// FOR ROLE jp_owner may only be issued by that role or a superuser, and
+// REVOKE CREATE ON SCHEMA public needs whoever owns `public`, which on a
+// managed Postgres is the platform's own role.
 const grants = readFileSync(path.join(repoRoot, 'db/003_roles.sql'), 'utf8');
 for (const stmt of splitSqlStatements(grants)) {
   if (!/^\s*(GRANT|REVOKE|ALTER DEFAULT)/i.test(stmt.text)) continue;
-  await owner.query(stmt.text);
+  try {
+    await admin.query(stmt.text);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // A REVOKE against an object this database does not have is not a failure
+    // — it is a hardening step that was already unnecessary here.
+    if (/does not exist|must be owner/i.test(message) && /^\s*REVOKE/i.test(stmt.text)) {
+      console.warn(`  skipped: ${stmt.text.split('\n')[0]} (${message})`);
+      continue;
+    }
+    console.error(`\ndb/003_roles.sql:${stmt.startLine}\n  ${message}`);
+    await owner.end();
+    await admin.end();
+    process.exit(1);
+  }
 }
 console.log('grants applied');
 
@@ -161,6 +194,7 @@ for (const row of checks.rows) {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${row.label} = ${row.value}`);
 }
 await owner.end();
+await admin.end();
 
 if (bad) process.exit(1);
 
