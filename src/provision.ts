@@ -22,6 +22,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { splitSqlStatements } from './db/splitSql.js';
+import { NON_TENANT_SCOPED_TABLES, TENANT_SCOPED_TABLES } from './db/assertions.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -172,19 +173,36 @@ for (const stmt of splitSqlStatements(grants)) {
 console.log('grants applied');
 
 // --- verify ---------------------------------------------------------------
-const checks = await owner.query<{ label: string; value: string }>(`
-  SELECT 'jp_app is superuser'  AS label, (SELECT rolsuper::text     FROM pg_roles WHERE rolname='jp_app') AS value
-  UNION ALL
-  SELECT 'jp_app has BYPASSRLS', (SELECT rolbypassrls::text FROM pg_roles WHERE rolname='jp_app')
-  UNION ALL
-  SELECT 'tables owned by jp_app', (SELECT count(*)::text FROM pg_class c
-     JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname='projects' AND c.relkind='r' AND pg_get_userbyid(c.relowner)='jp_app')
-  UNION ALL
-  SELECT 'tables without FORCE RLS', (SELECT count(*)::text FROM pg_class c
-     JOIN pg_namespace n ON n.oid=c.relnamespace
-    WHERE n.nspname='projects' AND c.relkind='r' AND NOT c.relforcerowsecurity)
-`);
+// Checked against the named tenant-scoped list, not against "every table in
+// the schema". Two tables deliberately have no RLS, and a verification that
+// reports those as failures is a verification people learn to scroll past.
+const checks = await owner.query<{ label: string; value: string }>(
+  `SELECT 'jp_app is superuser'  AS label,
+          (SELECT rolsuper::text     FROM pg_roles WHERE rolname='jp_app') AS value
+   UNION ALL
+   SELECT 'jp_app has BYPASSRLS',
+          (SELECT rolbypassrls::text FROM pg_roles WHERE rolname='jp_app')
+   UNION ALL
+   SELECT 'tables owned by jp_app',
+          (SELECT count(*)::text FROM pg_class c
+             JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='projects' AND c.relkind='r'
+              AND pg_get_userbyid(c.relowner)='jp_app')
+   UNION ALL
+   SELECT 'tenant-scoped tables without FORCE RLS',
+          (SELECT count(*)::text FROM pg_class c
+             JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='projects' AND c.relkind='r'
+              AND c.relname = ANY($1::text[])
+              AND NOT c.relforcerowsecurity)
+   UNION ALL
+   SELECT 'tenant-scoped tables missing entirely',
+          (SELECT (cardinality($1::text[]) - count(*))::text FROM pg_class c
+             JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname='projects' AND c.relkind='r'
+              AND c.relname = ANY($1::text[]))`,
+  [TENANT_SCOPED_TABLES as unknown as string[]],
+);
 
 console.log('\nverification (every value must be false or 0):');
 let bad = false;
@@ -192,6 +210,21 @@ for (const row of checks.rows) {
   const ok = row.value === 'false' || row.value === '0';
   if (!ok) bad = true;
   console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${row.label} = ${row.value}`);
+}
+
+// Anything unpoliced that is not on the known-exempt list is named, so a table
+// added later without RLS is visible rather than absorbed into a count.
+const unexpected = await owner.query<{ relname: string }>(
+  `SELECT c.relname FROM pg_class c
+     JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'projects' AND c.relkind = 'r'
+      AND NOT c.relforcerowsecurity
+      AND NOT (c.relname = ANY($1::text[]))`,
+  [NON_TENANT_SCOPED_TABLES as unknown as string[]],
+);
+for (const row of unexpected.rows) {
+  bad = true;
+  console.log(`  FAIL  projects.${row.relname} has no forced RLS and is not a known exemption`);
 }
 await owner.end();
 await admin.end();

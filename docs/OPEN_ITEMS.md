@@ -32,6 +32,35 @@ to show why.
 
 ---
 
+## Found while deploying
+
+### `projects.tenants` has no row-level security
+
+Every other tenant-scoped table has RLS enabled and forced. `tenants` does not,
+so the application role can read every tenant's `slug` and `display_name` —
+not project data, but the customer list.
+
+It is that way for a reason: something has to resolve an identifier before a
+session exists, which is exactly what the dev sign-in does when it turns a
+tenant slug into an id. Once staff sessions come from the platform, the tenant
+id arrives with the session and nothing needs to look it up unauthenticated.
+
+Recommended, once item 0 below is settled:
+
+```sql
+ALTER TABLE projects.tenants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE projects.tenants FORCE ROW LEVEL SECURITY;
+CREATE POLICY tenant_self ON projects.tenants
+  FOR SELECT USING (id = projects.current_tenant());
+```
+
+Not applied unilaterally: it is a schema change, it would break the only
+sign-in that currently exists, and the schema is yours. `cost_code_library` is
+the other table without RLS and that one is correct — it is product content,
+not customer data.
+
+---
+
 ## Blocking a real deployment
 
 ### 0. There is no staff sign-in — only the dev one

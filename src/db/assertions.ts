@@ -17,7 +17,24 @@ export class StartupAssertionError extends Error {
   }
 }
 
-const TENANT_SCOPED_TABLES = [
+/**
+ * Every table that carries tenant_id and must have RLS enabled and forced.
+ *
+ * Exported so src/provision.ts checks the same list rather than counting all
+ * tables in the schema — two of them deliberately have no RLS, and a check
+ * that flags those is a check people learn to ignore:
+ *
+ *   tenants            a local projection of platform tenancy. Something has
+ *                      to resolve an identifier before a session exists.
+ *   cost_code_library  product content, not customer data. Readable by every
+ *                      tenant, writable only by migration.
+ *
+ * Anything else appearing without RLS is a mistake, and both this and
+ * provisioning report it by name.
+ */
+export const NON_TENANT_SCOPED_TABLES = ['tenants', 'cost_code_library'] as const;
+
+export const TENANT_SCOPED_TABLES = [
   'business_units',
   'external_systems',
   'estimate_imports',
