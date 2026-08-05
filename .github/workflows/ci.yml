@@ -27,6 +27,14 @@ jobs:
 
       - run: pnpm check
 
+      # The deploy pipeline, run here rather than discovered on the build host.
+      # `pnpm check` type-checks src + test + scripts and emits nothing, so it
+      # cannot catch a build whose output lands somewhere `start` does not look.
+      - name: Build and verify the start path exists
+        run: |
+          pnpm build
+          test -f dist/server.js || { echo "pnpm build did not produce dist/server.js"; exit 1; }
+
       # Both mandatory tests run on every commit, by name, so a green build
       # that skipped them is not possible.
       - name: Cross-tenant isolation

@@ -1,0 +1,17 @@
+{
+  // The deploy build. tsconfig.json covers src + test + scripts for editing
+  // and type-checking, which makes its rootDir the repo root — so `tsc -p
+  // tsconfig.json` emits dist/src/server.js while `pnpm start` looks for
+  // dist/server.js. Separating them is the fix; the alternative is a start
+  // script that points into a path shaped by which files happen to be checked.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "noEmit": false,
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test", "scripts"]
+}

@@ -1,4 +1,18 @@
+# `packages` is required. pnpm 9 — which is what Railpack selects from
+# lockfileVersion 9.0 — refuses to install without it ("packages field missing
+# or empty") the moment this file exists at all. pnpm 10+ tolerates its
+# absence, so that failure only ever shows up on the build host.
+packages:
+  - '.'
+
+# pnpm 10+ blocks dependency build scripts by default, and esbuild (under tsx
+# and vitest) needs its postinstall to fetch a platform binary. Answered here
+# rather than left to `pnpm approve-builds`, which is interactive and therefore
+# unavailable in CI — and which writes back a placeholder that fails the next
+# install if nobody answers it.
+#
+# The deploy does not need this: it runs tsc and node, never tsx or vitest.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
 onlyBuiltDependencies:
   - esbuild
