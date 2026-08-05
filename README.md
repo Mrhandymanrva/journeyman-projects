@@ -15,9 +15,9 @@ Build inputs are in [`docs/handoff/`](docs/handoff/) — read
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | Session middleware, projects, stage gates | **built** |
-| 2 | Budget, purchase orders, vendor bills, cost position | budget and cost position built; POs and bills not started |
-| 3 | Vendors, compliance documents, eligibility, expiry sweep | schema and trigger verified; no routes |
-| 4 | Draws, exception views, manual adapter | not started |
+| 2 | Budget, purchase orders, vendor bills, cost position | **built** |
+| 3 | Vendors, compliance documents, eligibility, expiry sweep | routes built; nightly expiry sweep and notifications not started |
+| 4 | Draws, exception views, manual adapter | exception views built; draws not started |
 | 5 | Scheduling, permits, change orders | not started |
 | 6 | Subcontractor portal | not started |
 | 7 | Field PWA | not started |
@@ -38,16 +38,21 @@ The test suite needs no database. It boots a real PostgreSQL 16 in process
 role with `NOSUPERUSER NOBYPASSRLS` that does not own the tables — the only
 configuration in which RLS actually engages.
 
-Against a real server:
-
-```bash
-export DATABASE_URL=postgres://…    # PostgreSQL 15 or later
-pnpm db:apply
-pnpm dev
-```
-
 `pnpm db:apply --dry-run` applies the same SQL to a scratch in-process database,
 which is the fast way to check a schema edit before it touches anything.
+
+## Deploying
+
+This needs its own PostgreSQL 15+. It cannot share CSR Tool's MySQL and cannot
+be ported to one — RLS, `security_invoker` views and `SET LOCAL` have no
+equivalent there.
+
+It also needs **two** database roles. A managed Postgres gives you one
+connection string and it is a superuser; point the app at it and RLS is not
+degraded, it is off, and nothing looks wrong until a customer sees another
+customer's projects. `pnpm db:provision` sets this up correctly and verifies it.
+
+Read [`docs/DEPLOY.md`](docs/DEPLOY.md) before the first deploy.
 
 ## The rules this codebase is shaped by
 
@@ -96,7 +101,7 @@ full record and delete fields.
 ## Layout
 
 ```
-db/                     001_schema.sql, 002_seed.sql — the source of truth
+db/                     001_schema.sql, 002_seed.sql, 003_roles.sql — the source of truth
 src/
   db/
     database.ts         the session contract: withTenant / withoutTenant

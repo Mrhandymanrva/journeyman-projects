@@ -32,6 +32,12 @@ interface ForeignIds {
   estimateImportId: string;
   staffId: string;
   businessUnitId: string;
+  budgetLineId: string;
+  costCodeId: string;
+  vendorId: string;
+  documentId: string;
+  poId: string;
+  billId: string;
 }
 let foreign: ForeignIds;
 
@@ -60,11 +66,59 @@ beforeAll(async () => {
     );
   expect(projectRes.status).toBe(201);
 
+  const projectId = projectRes.body.data.id as string;
+  const b = h.as(B.staff.owner!.token);
+
+  // A vendor with every required document, so it can hold a purchase order.
+  const vendorRes = await b
+    .post('/api/v1/projects/vendors')
+    .send({ legal_name: 'Tenant B Tile Co', email: 'tile@tenant-b.test', trades: ['tile'] });
+  expect(vendorRes.status).toBe(201);
+  const vendorId = vendorRes.body.data.id as string;
+
+  const kinds = await b.get('/api/v1/projects/compliance-requirements');
+  let documentId = '';
+  for (const req of kinds.body.data as Array<{ kind: string; required: boolean }>) {
+    if (!req.required) continue;
+    const doc = await b
+      .post(`/api/v1/projects/vendors/${vendorId}/documents`)
+      .send({ kind: req.kind, expires_on: '2027-12-31', file_key: `k/${req.kind}` });
+    expect(doc.status).toBe(201);
+    documentId ||= doc.body.data.id;
+  }
+  expect((await b.post(`/api/v1/projects/vendors/${vendorId}/activate`)).status).toBe(200);
+
+  const budget = await b.get(`/api/v1/projects/projects/${projectId}/budget`);
+  const budgetLineId = budget.body.data.lines[0].id as string;
+  const costCodeId = budget.body.data.lines[0].cost_code_id as string;
+
+  const poRes = await b.post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
+    po_number: 'B-PO-0001',
+    vendor_id: vendorId,
+    cost_code_id: costCodeId,
+    cost_type: 'S',
+    amount: 5200,
+    scope_text: 'Set tile to primary bath',
+    issue: true,
+  });
+  expect(poRes.status, JSON.stringify(poRes.body)).toBe(201);
+
+  const billRes = await b
+    .post(`/api/v1/projects/purchase-orders/${poRes.body.data.id}/bills`)
+    .send({ vendor_invoice_number: 'B-INV-1', amount: 5200 });
+  expect(billRes.status).toBe(201);
+
   foreign = {
-    projectId: projectRes.body.data.id,
+    projectId,
     estimateImportId: importRes.body.data.id,
     staffId: B.staff.pm!.id,
     businessUnitId: Object.values(B.businessUnits)[0]!,
+    budgetLineId,
+    costCodeId,
+    vendorId,
+    documentId,
+    poId: poRes.body.data.id,
+    billId: billRes.body.data.id,
   };
 });
 
@@ -140,6 +194,143 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/projects/:id/gates/:n/reject`,
     path: (f) => `${BASE}/projects/${f.projectId}/gates/0/reject`,
     body: () => ({ note: 'no' }),
+  },
+
+  // --- phase 2: budget ----------------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/budget`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/budget`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget`,
+    body: (f) => ({ cost_code_id: f.costCodeId, cost_type: 'S', budget_amount: 100 }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/projects/:id/budget/:lineId`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget/${f.budgetLineId}`,
+    body: () => ({ budget_amount: 1 }),
+  },
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/exceptions`,
+    path: (f) => `${BASE}/projects/${f.projectId}/exceptions`,
+  },
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/export/cost`,
+    path: (f) => `${BASE}/projects/${f.projectId}/export/cost`,
+  },
+
+  // --- phase 2: purchase orders and bills ---------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/purchase-orders`,
+    path: (f) => `${BASE}/projects/${f.projectId}/purchase-orders`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/purchase-orders`,
+    path: (f) => `${BASE}/projects/${f.projectId}/purchase-orders`,
+    body: (f) => ({
+      po_number: 'A-STEALS-PO',
+      supplier_name: 'Counter purchase',
+      cost_code_id: f.costCodeId,
+      cost_type: 'M',
+      amount: 10,
+      scope_text: 'x',
+    }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/purchase-orders/:id`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}`,
+    body: () => ({ amount: 1 }),
+  },
+  {
+    method: 'get',
+    template: `${BASE}/purchase-orders/:id/bills`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/bills`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/purchase-orders/:id/bills`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/bills`,
+    body: () => ({ vendor_invoice_number: 'A-STEALS-INV', amount: 1 }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/bills/:id/approve`,
+    path: (f) => `${BASE}/bills/${f.billId}/approve`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/bills/:id/reject`,
+    path: (f) => `${BASE}/bills/${f.billId}/reject`,
+    body: () => ({}),
+  },
+
+  // --- phase 3: vendors and compliance ------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/vendors/:id`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}`,
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/vendors/:id`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}`,
+    body: () => ({ legal_name: 'Renamed by another tenant' }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/vendors/:id/documents`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}/documents`,
+    body: () => ({ kind: 'license', expires_on: '2028-01-01', file_key: 'k/x' }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/vendors/:id/documents/:docId`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}/documents/${f.documentId}`,
+    body: () => ({ verify_method: 'called the carrier' }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/vendors/:id/activate`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}/activate`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/vendors/:id/deactivate`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}/deactivate`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/vendors/:id/scores`,
+    path: (f) => `${BASE}/vendors/${f.vendorId}/scores`,
+    body: (f) => ({ project_id: f.projectId, quality_score: 1 }),
+  },
+];
+
+/**
+ * Routes whose path parameter is not an identifier, so "substitute another
+ * tenant's value" has no meaning. Each needs its own test instead, and naming
+ * one here is a claim that the test exists.
+ *
+ * The exemption list is deliberately awkward to add to. A route that reaches
+ * for it and is actually identifier-shaped will read wrong in review.
+ */
+const NOT_AN_IDENTIFIER: Array<{ signature: string; why: string; coveredBy: string }> = [
+  {
+    signature: `PATCH ${BASE}/compliance-requirements/:kind`,
+    why: ':kind is a doc_kind enum value, shared vocabulary across all tenants',
+    coveredBy: 'compliance requirements are per tenant',
   },
 ];
 
@@ -253,7 +444,10 @@ describe('route coverage', () => {
   it('every staff route with an :id parameter is covered above', () => {
     const declared = collectRoutes(h.app);
     const parameterised = declared.filter((r) => r.path.includes(':'));
-    const covered = new Set(ROUTES.map((r) => `${r.method.toUpperCase()} ${r.template}`));
+    const covered = new Set([
+      ...ROUTES.map((r) => `${r.method.toUpperCase()} ${r.template}`),
+      ...NOT_AN_IDENTIFIER.map((e) => e.signature),
+    ]);
     const missing = parameterised
       .map((r) => `${r.method} ${r.path}`)
       .filter((sig) => !covered.has(sig));
@@ -262,6 +456,27 @@ describe('route coverage', () => {
       'These routes take an identifier but are not exercised with a foreign one. ' +
         'Add them to ROUTES in this file.',
     ).toEqual([]);
+  });
+
+  it('a tenant cannot change another tenant\'s compliance requirements', async () => {
+    // The exemption above claims this is covered. This is the coverage.
+    const before = await h.as(B.staff.owner!.token).get('/api/v1/projects/compliance-requirements');
+    const glBefore = (before.body.data as Array<{ kind: string; warn_days: number }>).find(
+      (r) => r.kind === 'gl_insurance',
+    );
+    expect(glBefore!.warn_days).toBe(30);
+
+    const patched = await h
+      .as(A.staff.owner!.token)
+      .patch('/api/v1/projects/compliance-requirements/gl_insurance')
+      .send({ warn_days: 120 });
+    expect(patched.status).toBe(200);
+
+    const after = await h.as(B.staff.owner!.token).get('/api/v1/projects/compliance-requirements');
+    const glAfter = (after.body.data as Array<{ kind: string; warn_days: number }>).find(
+      (r) => r.kind === 'gl_insurance',
+    );
+    expect(glAfter!.warn_days).toBe(30);
   });
 
   it('every ROUTES entry names a route that actually exists', () => {

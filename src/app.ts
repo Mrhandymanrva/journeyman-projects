@@ -5,6 +5,9 @@ import { ApiError } from './http/errors.js';
 import { staffAuthentication, type StaffSessionStore } from './http/staffSession.js';
 import { projectRoutes } from './routes/projects.js';
 import { gateRoutes } from './routes/gates.js';
+import { budgetRoutes } from './routes/budget.js';
+import { purchaseOrderRoutes } from './routes/purchaseOrders.js';
+import { vendorRoutes } from './routes/vendors.js';
 import { estimateImportRoutes } from './routes/estimateImports.js';
 
 export interface AppOptions {
@@ -36,6 +39,9 @@ export function createApp(opts: AppOptions): Express {
   staff.use(staffAuthentication(opts.staffSessions));
   staff.use(projectRoutes(deps));
   staff.use(gateRoutes(deps));
+  staff.use(budgetRoutes(deps));
+  staff.use(purchaseOrderRoutes(deps));
+  staff.use(vendorRoutes(deps));
   staff.use(estimateImportRoutes(deps));
   app.use('/api/v1/projects', staff);
 
