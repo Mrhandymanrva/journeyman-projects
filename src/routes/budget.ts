@@ -199,13 +199,15 @@ export function budgetRoutes(deps: StaffRouterDeps): Router {
         'project_number',
       );
 
+      // Division order, as in GET /cost-position — see the note there.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `SELECT cost_code, description, cost_type::text AS cost_type,
-                baseline, budget_amount, actual_cost, committed_open,
-                total_committed, variance
-           FROM projects.v_cost_position
-          WHERE project_id = $1
-          ORDER BY cost_code`,
+        `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
+                v.baseline, v.budget_amount, v.actual_cost, v.committed_open,
+                v.total_committed, v.variance
+           FROM projects.v_cost_position v
+           JOIN projects.cost_codes cc ON cc.code = v.cost_code
+          WHERE v.project_id = $1
+          ORDER BY cc.sort_order, v.cost_code`,
         [projectId],
       );
 

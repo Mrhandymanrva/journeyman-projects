@@ -41,7 +41,10 @@ export interface TokenScopedRequest {
 export async function startHarness(sqlFiles: string[] = SCHEMA_FILES): Promise<Harness> {
   const db = await PgliteDatabase.create(sqlFiles);
   const sessions = new MemoryStaffSessions();
-  const app = createApp({ database: db, staffSessions: sessions });
+  // serveConsole off: the static handler would answer an unmatched non-API
+  // path with index.html, which turns a routing mistake in a test into a
+  // passing 200.
+  const app = createApp({ database: db, staffSessions: sessions, serveConsole: false });
   const request = supertest(app);
 
   return {

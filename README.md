@@ -17,10 +17,11 @@ Build inputs are in [`docs/handoff/`](docs/handoff/) — read
 | 1 | Session middleware, projects, stage gates | **built** |
 | 2 | Budget, purchase orders, vendor bills, cost position | **built** |
 | 3 | Vendors, compliance documents, eligibility, expiry sweep | routes built; nightly expiry sweep and notifications not started |
-| 4 | Draws, exception views, manual adapter | exception views built; draws not started |
-| 5 | Scheduling, permits, change orders | not started |
+| 4 | Draws, exception views, manual adapter | **built** |
+| 5 | Scheduling, permits, change orders | scheduling and permits built; change orders not started |
 | 6 | Subcontractor portal | not started |
 | 7 | Field PWA | not started |
+| — | Project console (the reference mock, on live data) | **built** |
 
 Read [`docs/SCHEMA_FIXES.md`](docs/SCHEMA_FIXES.md) for what the first execution
 of the schema found, and [`docs/OPEN_ITEMS.md`](docs/OPEN_ITEMS.md) for the
@@ -30,6 +31,22 @@ decisions still outstanding.
 
 ```bash
 pnpm install
+pnpm dev
+```
+
+Then open http://localhost:3200 and sign in as `owner@demo.test` on tenant slug
+`demo`.
+
+No database to install. `pnpm dev` boots a real PostgreSQL in process (PGlite),
+applies the schema, seeds a demo account with three projects, and serves the
+console. Same app, same handlers, same row-level security — the only difference
+from production is where the Postgres lives and that the data goes away when you
+stop it.
+
+Worth signing in as the other roles, because they get a different console:
+`pm@demo.test`, `office@demo.test`, `books@demo.test`.
+
+```bash
 pnpm test
 ```
 
@@ -118,6 +135,12 @@ src/
     capabilities.ts     §2.1 role table and §2.2 unit filter, in one place
     staffSession.ts     staff identity; must not be imported by the portal tree
   routes/
+  adapters/
+    externalSystem.ts   the revenue system of record; note there is no write method
+client/                 the console — the reference mock, on live data. No build step.
+scripts/
+  devServer.ts          pnpm dev: in-process Postgres, demo data, console
+  provisionRoles.ts     one-time database provisioning; see docs/DEPLOY.md
 test/
   crossTenantIsolation.test.ts   mandatory test 1
   moduleBoundary.test.ts         mandatory test 2

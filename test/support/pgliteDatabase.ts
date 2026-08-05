@@ -18,6 +18,7 @@ import { splitSqlStatements } from '../../src/db/splitSql.js';
  * wrong reason.
  */
 export const APP_ROLE = 'jp_app';
+const DATE_OID = 1082;
 
 export class PgliteDatabase implements Database {
   private queue: Promise<unknown> = Promise.resolve();
@@ -25,7 +26,13 @@ export class PgliteDatabase implements Database {
   private constructor(private readonly pg: PGlite) {}
 
   static async create(sqlFiles: string[]): Promise<PgliteDatabase> {
-    const pg = await PGlite.create({ extensions: { citext } });
+    const pg = await PGlite.create({
+      extensions: { citext },
+      // Match src/db/pgDatabase.ts: a `date` stays the calendar day Postgres
+      // sent, rather than becoming a JS Date at local midnight that
+      // JSON-serialises to the previous day west of Greenwich.
+      parsers: { [DATE_OID]: (value: string) => value },
+    });
 
     for (const file of sqlFiles) {
       for (const stmt of splitSqlStatements(readFileSync(file, 'utf8'))) {

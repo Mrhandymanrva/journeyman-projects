@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Project Console — Journeyman Projects</title>
+<link rel="stylesheet" href="/console.css">
+</head>
+<body>
+
+<!--
+  The markup below is the reference mock's, unchanged: same elements, same
+  class names, same order. Only the data source moved — the mock carried a
+  hardcoded PROJECTS array, this reads the API.
+
+  Three deviations from the mock, all deliberate, all forced by product rules
+  in the Module Addendum rather than by taste:
+
+  1. The mock says "ServiceTitan" in the draw exception and the footer. No
+     field service platform may be named anywhere in this module, because the
+     next three customers may run Jobber, Housecall Pro, or nothing. The name
+     comes from external_systems.display_name instead — so a ServiceTitan
+     tenant reads exactly the mock's wording, and a manual tenant reads the
+     truth about their own setup.
+
+  2. The mock's masthead says "Mr. Handyman · Tier 3 Project Console".
+     Mr. Handyman is tenant one, not a special case in the product, and
+     "Tier 3" is their internal jargon. The masthead reads the tenant's own
+     display name.
+
+  3. The mock's draw "Record" button writes to a local object. Here it calls
+     POST /draws/:id/external-invoice, which is gated on the
+     record_external_invoice capability — so the control is hidden for a role
+     that does not hold it rather than failing after the click.
+-->
+
+<div class="rail">
+  <div class="rail-in">
+    <div class="mark"><b id="tenant">—</b><span>Project Console</span></div>
+    <div class="switch" id="switch"></div>
+    <div class="who" id="who" hidden></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="shell" hidden>
+    <div class="head">
+      <div>
+        <span class="lbl" id="pcode"></span>
+        <h1 id="pname"></h1>
+        <div class="addr" id="paddr"></div>
+      </div>
+      <div class="stats" id="pstats"></div>
+    </div>
+
+    <div id="notice"></div>
+
+    <div class="gates" id="gates"></div>
+
+    <div class="grid">
+      <div>
+        <div class="card">
+          <div class="card-h"><span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span></div>
+          <div class="card-b">
+            <div class="bh"><div class="lbl">Cost code</div><div class="lbl">Budget</div><div class="lbl">Variance</div></div>
+            <div id="budget"></div>
+            <div class="legend">
+              <span><i style="background:#00539B"></i>Actual cost</span>
+              <span><i style="background:repeating-linear-gradient(135deg,#7FA9CD 0 4px,#A8C4DC 4px 8px)"></i>Committed, not yet billed</span>
+              <span><i style="background:#F58220"></i>Over budget</span>
+              <span><i style="background:#072744;width:2px"></i>Budget line</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><span class="lbl">Trade partners this week</span><span class="tag" id="stag"></span></div>
+          <div class="card-b" id="subs"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <div class="card-h"><span class="lbl">Blocking now</span><span class="tag bad" id="btag2"></span></div>
+          <div class="card-b" id="blockers"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><span class="lbl">Permit chain</span><span class="tag" id="ptag"></span></div>
+          <div class="card-b"><div class="chain" id="permits"></div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h"><span class="lbl">Draw schedule</span><span class="tag" id="dtag"></span></div>
+          <div class="card-b" id="draws"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="state" id="boot">Loading…</div>
+
+  <div class="foot" id="foot">
+    Journeyman Projects · a licensed module of the Journeyman Systems platform<br>
+    <span id="footnote">Revenue and customer invoicing live in the system of record. This console never issues a customer invoice.</span>
+  </div>
+</div>
+
+<div class="veil" id="signin" hidden>
+  <form class="panel" id="signin-form">
+    <h2>Sign in</h2>
+    <p>
+      Development sign-in. The platform owns the real staff session; this
+      exchanges an email for one against the module's own session store, and
+      only runs when <code>DEV_LOGIN</code> is switched on.
+    </p>
+    <p class="err" id="signin-error"></p>
+    <label>
+      <span class="lbl">Email</span>
+      <input id="signin-email" type="email" autocomplete="username" required
+             placeholder="owner@example.test">
+    </label>
+    <label>
+      <span class="lbl">Tenant slug</span>
+      <input id="signin-tenant" placeholder="richmond" required>
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+
+<script src="/console.js" type="module"></script>
+</body>
+</html>

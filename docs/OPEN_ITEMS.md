@@ -5,6 +5,33 @@ CODE with "your call, report back".
 
 ---
 
+## Decide from the console
+
+The console is the reference mock rendering live data, at `pnpm dev`. Three
+places where the mock made a decision that the product now has to make
+deliberately, and the console is the fastest way to have an opinion:
+
+**A. The mock names ServiceTitan; the product cannot.** No field service
+platform may appear in the data model, so the console reads
+`external_systems.display_name`. A ServiceTitan tenant sees exactly the mock's
+wording. The demo tenant is on the manual adapter, so it reads "Manual entry" —
+which is honest but reads oddly in "no invoice recorded in Manual entry".
+Worth deciding whether a manual tenant should see a generic phrase instead.
+
+**B. Blocking now is assembled from four sources.** Compliance, uninvoiced
+draws, budget overruns, overdue permit milestones, and a missing daily log. The
+mock hand-picked which of those to show and in what order; the console shows all
+of them, worst first. Look at the Whitfield project and say whether that is the
+right list — five items is either "the day's work" or "noise", and only you
+know which.
+
+**C. The gate strip shows outstanding checklist items on the open gate.** The
+mock did not. It is the one place the console adds information the mock did not
+have, because gate approval is blocked on the checklist and the mock had no way
+to show why.
+
+---
+
 ## Needs Mason
 
 ### 1. Nothing maps a gate to a stage — blocking `POST /projects/:id/stage`

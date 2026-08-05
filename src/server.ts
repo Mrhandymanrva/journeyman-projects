@@ -26,7 +26,11 @@ try {
 // The platform owns the real staff session; this is the seam it plugs into.
 const staffSessions = new MemoryStaffSessions();
 
-const app = createApp({ database, staffSessions });
+const app = createApp({
+  database,
+  staffSessions,
+  devLogin: { enabled: env.devLogin, sessions: staffSessions, nodeEnv: env.nodeEnv },
+});
 const server = app.listen(env.port, () => {
   console.log(`journeyman-projects listening on :${env.port} (${env.nodeEnv})`);
 });

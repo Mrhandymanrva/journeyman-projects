@@ -162,6 +162,16 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       const id = parseUuidParam(ctx.req.params.id, 'Project');
       const project = await loadVisibleProject<Record<string, unknown>>(ctx, id);
 
+      // Names for the ids the detail view shows. Two small lookups rather than
+      // a join in loadVisibleProject, which every other route also calls and
+      // none of the others needs these.
+      const people = await ctx.db.query<{ id: string; full_name: string }>(
+        `SELECT id, full_name FROM projects.staff WHERE id = ANY($1::uuid[])`,
+        [[project.pm_id, project.estimator_id].filter(Boolean)],
+      );
+      const nameOf = (staffId: unknown) =>
+        people.rows.find((p) => p.id === staffId)?.full_name ?? null;
+
       const gates = await ctx.db.query(
         `SELECT gate_number, title, status, checklist, approved_by, approved_at, rejected_note
            FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
@@ -202,6 +212,8 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
       sendData(ctx.res, {
         ...serialiseProject(project),
+        pm_name: nameOf(project.pm_id),
+        estimator_name: nameOf(project.estimator_id),
         gates: gates.rows,
         draw_summary: draws.rows.map((d) => ({
           status: d.status,
@@ -306,13 +318,19 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
     staffRoute(deps, async (ctx) => {
       const id = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, id, 'id');
+      // Ordered by the cost code list's own sort_order, not by the code
+      // string. Codes are text, so ordering by them puts 1030 and 1110 ahead
+      // of 110 and 210 — the divisions interleave and the sheet stops reading
+      // like a estimate. v_cost_position does not carry sort_order, hence the
+      // join back to cost_codes, which RLS has already scoped to this tenant.
       const { rows } = await ctx.db.query(
-        `SELECT cost_code, description, cost_type::text AS cost_type,
-                baseline, budget_amount, actual_cost, committed_open,
-                total_committed, variance
-           FROM projects.v_cost_position
-          WHERE project_id = $1
-          ORDER BY cost_code`,
+        `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
+                v.baseline, v.budget_amount, v.actual_cost, v.committed_open,
+                v.total_committed, v.variance
+           FROM projects.v_cost_position v
+           JOIN projects.cost_codes cc ON cc.code = v.cost_code
+          WHERE v.project_id = $1
+          ORDER BY cc.sort_order, v.cost_code`,
         [id],
       );
       sendData(

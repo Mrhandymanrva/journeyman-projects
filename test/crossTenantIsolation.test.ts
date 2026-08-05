@@ -38,6 +38,11 @@ interface ForeignIds {
   documentId: string;
   poId: string;
   billId: string;
+  drawId: string;
+  jurisdictionId: string;
+  permitId: string;
+  milestoneId: string;
+  scheduleItemId: string;
 }
 let foreign: ForeignIds;
 
@@ -108,9 +113,46 @@ beforeAll(async () => {
     .send({ vendor_invoice_number: 'B-INV-1', amount: 5200 });
   expect(billRes.status).toBe(201);
 
+  // A draw, a permit with milestones, and a scheduled window — all inside
+  // tenant B, so tenant A has something real to try to reach.
+  const drawRes = await b.post(`/api/v1/projects/projects/${projectId}/draws`).send({
+    draws: [
+      { label: 'Deposit', trigger_milestone: 'Contract signature', amount: 10450 },
+      { label: 'Final', trigger_milestone: 'Punch complete', amount: 8360 },
+    ],
+  });
+  expect(drawRes.status, JSON.stringify(drawRes.body)).toBe(201);
+
+  const jurisdictionRes = await b
+    .post('/api/v1/projects/jurisdictions')
+    .send({ name: 'Tenant B County', typical_review_days: 10 });
+  expect(jurisdictionRes.status).toBe(201);
+
+  const permitRes = await b.post(`/api/v1/projects/projects/${projectId}/permits`).send({
+    jurisdiction_id: jurisdictionRes.body.data.id,
+    permit_type: 'Building',
+    applied_on: '2026-07-01',
+  });
+  expect(permitRes.status, JSON.stringify(permitRes.body)).toBe(201);
+
+  const permits = await b.get(`/api/v1/projects/projects/${projectId}/permits`);
+  const milestoneId = permits.body.data[0].milestones[0].id as string;
+
+  const scheduleRes = await b.post(`/api/v1/projects/projects/${projectId}/schedule`).send({
+    title: 'Tile setting',
+    window_start: '2026-08-10',
+    window_end: '2026-08-12',
+  });
+  expect(scheduleRes.status).toBe(201);
+
   foreign = {
     projectId,
     estimateImportId: importRes.body.data.id,
+    drawId: drawRes.body.data[0].id,
+    jurisdictionId: jurisdictionRes.body.data.id,
+    permitId: permitRes.body.data.id,
+    milestoneId,
+    scheduleItemId: scheduleRes.body.data.id,
     staffId: B.staff.pm!.id,
     businessUnitId: Object.values(B.businessUnits)[0]!,
     budgetLineId,
@@ -315,6 +357,96 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/vendors/:id/scores`,
     path: (f) => `${BASE}/vendors/${f.vendorId}/scores`,
     body: (f) => ({ project_id: f.projectId, quality_score: 1 }),
+  },
+
+  // --- phase 4: draws -----------------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/draws`,
+    path: (f) => `${BASE}/projects/${f.projectId}/draws`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/draws`,
+    path: (f) => `${BASE}/projects/${f.projectId}/draws`,
+    body: () => ({ draws: [{ label: 'Deposit', trigger_milestone: 'Signature', amount: 100 }] }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/draws/:id/earn`,
+    path: (f) => `${BASE}/draws/${f.drawId}/earn`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/draws/:id/approve`,
+    path: (f) => `${BASE}/draws/${f.drawId}/approve`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/draws/:id/external-invoice`,
+    path: (f) => `${BASE}/draws/${f.drawId}/external-invoice`,
+    body: () => ({ external_invoice_number: 'A-STEALS-INVOICE' }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/draws/:id/verify`,
+    path: (f) => `${BASE}/draws/${f.drawId}/verify`,
+    body: () => ({}),
+  },
+
+  // --- phase 5: permits, schedule, daily logs -----------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/permits`,
+    path: (f) => `${BASE}/projects/${f.projectId}/permits`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/permits`,
+    path: (f) => `${BASE}/projects/${f.projectId}/permits`,
+    body: (f) => ({ jurisdiction_id: f.jurisdictionId, permit_type: 'Building' }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/permits/:id`,
+    path: (f) => `${BASE}/permits/${f.permitId}`,
+    body: () => ({ permit_number: 'STOLEN-1' }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/permit-milestones/:id`,
+    path: (f) => `${BASE}/permit-milestones/${f.milestoneId}`,
+    body: () => ({ status: 'complete' }),
+  },
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/schedule`,
+    path: (f) => `${BASE}/projects/${f.projectId}/schedule`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/schedule`,
+    path: (f) => `${BASE}/projects/${f.projectId}/schedule`,
+    body: () => ({ title: 'Stolen slot', window_start: '2026-09-01', window_end: '2026-09-02' }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/schedule/:id`,
+    path: (f) => `${BASE}/schedule/${f.scheduleItemId}`,
+    body: () => ({ status: 'cancelled' }),
+  },
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/daily-logs`,
+    path: (f) => `${BASE}/projects/${f.projectId}/daily-logs`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/daily-logs`,
+    path: (f) => `${BASE}/projects/${f.projectId}/daily-logs`,
+    body: () => ({ log_date: '2026-09-01', work_completed: 'Written into another tenant' }),
   },
 ];
 
