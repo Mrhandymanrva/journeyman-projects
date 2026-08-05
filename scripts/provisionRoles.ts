@@ -29,7 +29,11 @@ function required(name: string): string {
   return v;
 }
 
-const adminUrl = required('ADMIN_DATABASE_URL');
+// Falls back to DATABASE_URL because on a freshly created managed Postgres the
+// two are the same string — the one the host handed you, belonging to a
+// superuser. The whole point of this script is that the application must stop
+// using that one.
+const adminUrl = process.env.ADMIN_DATABASE_URL ?? required('DATABASE_URL');
 const ownerPassword = required('JP_OWNER_PASSWORD');
 const appPassword = required('JP_APP_PASSWORD');
 

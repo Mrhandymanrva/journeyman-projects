@@ -32,6 +32,39 @@ to show why.
 
 ---
 
+## Blocking a real deployment
+
+### 0. There is no staff sign-in — only the dev one
+
+The platform owns staff identity, and that integration does not exist yet. The
+only way in is `POST /api/v1/dev/session`, which mints a session from an email
+with no password, is mounted only when `DEV_LOGIN=true`, and is refused
+outright when `NODE_ENV=production`.
+
+So today: a **staging** deployment works (set `NODE_ENV=staging`, `DEV_LOGIN=true`),
+and a **production** deployment has no way in at all.
+
+That is the right way round — an unusable deployment beats an open one — but it
+has to close before a paying tenant. Three options, in order of how much they
+cost:
+
+1. **Wire the platform session.** `StaffSessionStore` is a one-method interface
+   (`resolve(req) → { tenantId, staffId } | null`); a platform resolver drops in
+   beside `MemoryStaffSessions` and nothing else changes. This is the intended
+   answer and needs the platform's session format.
+2. **Email magic links.** Self-contained, no platform dependency, and reuses the
+   notification provider that phase 3's expiry sweep needs anyway. Roughly a
+   week including the token store and rate limiting.
+3. **Password auth on `staff`.** The table has no `password_hash` column and
+   deliberately so — `vendor_portal_users` has one because the portal is a
+   separate identity domain. Adding one to staff duplicates identity the
+   platform is supposed to own, and I would not do it without you saying so.
+
+Needed from you: whether Projects authenticates staff through the platform, or
+stands alone. It changes what gets built, not just how.
+
+---
+
 ## Needs Mason
 
 ### 1. Nothing maps a gate to a stage — blocking `POST /projects/:id/stage`

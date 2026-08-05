@@ -39,6 +39,66 @@ So: **two roles, and the application gets the weaker one.**
 `assertDatabaseContract()` checks all of this at boot and refuses to start
 otherwise. It is the last line of defence, not the mechanism.
 
+## Railway, start to finish
+
+The deploy will crash-loop on `DATABASE_URL is required` until there is a
+database. That is the app refusing to start rather than a bug — a projects
+module with no database has nothing to serve — but here is the whole sequence.
+
+**1. Add a PostgreSQL service** to the same Railway project.
+
+**2. Reference it from the app service.** You are not typing a connection
+string; you are pointing at the service, so it keeps working when the password
+rotates:
+
+```
+DATABASE_URL = ${{Postgres.DATABASE_URL}}
+```
+
+**3. Provision the two roles.** From your machine, against the Postgres
+service's *public* URL (Railway shows it under the database's Connect tab):
+
+```bash
+ADMIN_DATABASE_URL='postgres://postgres:…@…proxy.rlwy.net:PORT/railway' JP_OWNER_PASSWORD='…' JP_APP_PASSWORD='…' pnpm db:provision
+```
+
+It creates `jp_owner` and `jp_app`, applies the schema as the owner, sets
+grants, verifies, and prints the connection string the app should use.
+
+**4. Point the app at `jp_app`,** replacing the reference from step 2 with the
+string step 3 printed. This is the step that matters: until you do it, the app
+is connecting as a superuser and row-level security does nothing. The startup
+assertions will refuse to boot, which is the backstop and not the fix.
+
+**5. Redeploy.** The log should read `journeyman-projects listening on :3200`.
+
+### Getting into the console on a deployed instance
+
+There is no platform identity integration yet, so the only sign-in that exists
+is `POST /api/v1/dev/session` — it mints a staff session from an email address
+with **no password**. It is mounted only when `DEV_LOGIN=true`, and refused
+outright when `NODE_ENV=production`.
+
+For a **staging or preview** deployment, that is fine and is how you get in:
+
+```
+DEV_LOGIN = true
+NODE_ENV  = staging          # anything other than "production"
+```
+
+Then seed a demo account and sign in as `owner@demo.test`:
+
+```bash
+DATABASE_URL='<the jp_app url>' pnpm seed:demo
+```
+
+**Do not do this for a real customer.** Before a paying tenant exists, staff
+sign-in has to come from the platform — see `docs/OPEN_ITEMS.md`. `NODE_ENV=production`
+makes the app refuse to mount dev sign-in at all, which means today a
+production deployment has no way in at all. That is deliberate: an unusable
+deployment is better than an open one, but it is a gap that has to close before
+launch.
+
 ## Provisioning, once per database
 
 ```bash
