@@ -16,7 +16,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:apply": "tsx scripts/applySql.ts",
-    "db:provision": "tsx scripts/provisionRoles.ts",
+    "db:provision": "tsx src/provision.ts",
+    "db:provision:built": "node dist/provision.js",
     "seed:demo": "tsx scripts/seedDemo.ts",
     "format": "prettier --write \"{src,test,scripts}/**/*.ts\""
   },

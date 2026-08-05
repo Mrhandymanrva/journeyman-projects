@@ -4,19 +4,24 @@
  *   ADMIN_DATABASE_URL=postgres://…   # the superuser string the host gave you
  *   JP_OWNER_PASSWORD=…
  *   JP_APP_PASSWORD=…
- *   tsx scripts/provisionRoles.ts
+ *   pnpm db:provision            # locally, against ADMIN_DATABASE_URL
+ *   node dist/provision.js       # on a host, as a pre-deploy step
  *
  * Creates jp_owner and jp_app, applies db/001–002 as jp_owner, then grants.
  * Prints the DATABASE_URL the application should use — which is jp_app's, not
  * the one you started with.
  *
- * Idempotent. Safe to re-run after a migration to re-apply grants.
+ * Idempotent, and deliberately so: it runs as Railway's preDeployCommand on
+ * every deploy, which is also how grants reach a table added by a later
+ * migration. Lives in src/ rather than scripts/ so it compiles into dist and
+ * needs no devDependency at runtime — a pre-deploy step that depends on tsx is
+ * a pre-deploy step that breaks the first time the host prunes dev packages.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { splitSqlStatements } from '../src/db/splitSql.js';
+import { splitSqlStatements } from './db/splitSql.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -29,11 +34,18 @@ function required(name: string): string {
   return v;
 }
 
-// Falls back to DATABASE_URL because on a freshly created managed Postgres the
-// two are the same string — the one the host handed you, belonging to a
-// superuser. The whole point of this script is that the application must stop
-// using that one.
-const adminUrl = process.env.ADMIN_DATABASE_URL ?? required('DATABASE_URL');
+// DATABASE_PUBLIC_URL is what Railway calls the externally reachable string on
+// a Postgres service; DATABASE_URL there resolves to an internal hostname that
+// only other services in the project can see. Preferring the public one means
+// this can run under `railway run --service Postgres` without anyone copying a
+// password out of a dashboard and into a shell.
+//
+// All three point at a superuser on a fresh managed Postgres. That is the
+// whole point of this script: the application must stop using that role.
+const adminUrl =
+  process.env.ADMIN_DATABASE_URL ??
+  process.env.DATABASE_PUBLIC_URL ??
+  required('DATABASE_URL');
 const ownerPassword = required('JP_OWNER_PASSWORD');
 const appPassword = required('JP_APP_PASSWORD');
 
