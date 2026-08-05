@@ -1,0 +1,9 @@
+# LF in the repository, always. Mixed line endings turn a two-line edit into a
+# whole-file conflict, and .sql files are the ones that hurt — a schema diff
+# nobody can read is a schema change nobody reviews.
+* text=auto eol=lf
+
+*.docx binary
+*.png  binary
+*.jpg  binary
+*.pdf  binary

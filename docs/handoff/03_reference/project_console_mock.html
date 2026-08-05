@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tier 3 Project Console — Mr. Handyman</title>
+<style>
+:root{
+  --paper:#EFF1EE;
+  --card:#FFFFFF;
+  --ink:#10202B;
+  --muted:#5F6C72;
+  --rule:#D3D9D4;
+  --rule-soft:#E5E9E5;
+  --blue:#00539B;
+  --deep:#072744;
+  --orange:#F58220;
+  --green:#1D7A4C;
+  --red:#B4231F;
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--paper);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:14px;
+  line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+.lbl{
+  font-size:10px;
+  font-weight:700;
+  letter-spacing:.10em;
+  text-transform:uppercase;
+  color:var(--muted);
+}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+:focus-visible{outline:2px solid var(--orange);outline-offset:2px}
+
+/* ---------- shell ---------- */
+.wrap{max-width:1240px;margin:0 auto;padding:0 20px 64px}
+
+/* ---------- top rail ---------- */
+.rail{
+  border-bottom:1px solid var(--rule);
+  background:var(--card);
+  position:sticky;top:0;z-index:20;
+}
+.rail-in{
+  max-width:1240px;margin:0 auto;padding:12px 20px;
+  display:flex;align-items:center;gap:22px;flex-wrap:wrap;
+}
+.mark{display:flex;align-items:baseline;gap:9px;white-space:nowrap}
+.mark b{
+  font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--orange);
+}
+.mark span{font-size:11px;color:var(--muted);letter-spacing:.02em}
+.switch{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.chip{
+  font:inherit;font-size:11px;font-weight:600;
+  border:1px solid var(--rule);background:var(--paper);color:var(--muted);
+  padding:6px 11px;border-radius:2px;cursor:pointer;letter-spacing:.02em;
+  transition:background .12s,color .12s,border-color .12s;
+}
+.chip:hover{border-color:var(--blue);color:var(--blue)}
+.chip[aria-pressed="true"]{background:var(--deep);border-color:var(--deep);color:#fff}
+.chip .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;vertical-align:1px}
+
+/* ---------- project head ---------- */
+.head{padding:26px 0 20px;display:flex;gap:34px;align-items:flex-end;flex-wrap:wrap}
+.head h1{
+  font-size:27px;line-height:1.12;margin:6px 0 4px;font-weight:700;letter-spacing:-.015em;
+}
+.head .addr{color:var(--muted);font-size:13px}
+.stats{display:flex;gap:30px;margin-left:auto;flex-wrap:wrap}
+.stat{min-width:96px}
+.stat .v{font-family:var(--mono);font-size:22px;font-weight:600;line-height:1.15;display:block;margin-top:3px}
+.stat .sub{font-size:11px;color:var(--muted);font-family:var(--mono)}
+.v.pos{color:var(--green)} .v.neg{color:var(--red)} .v.warn{color:var(--orange)}
+
+/* ---------- gate strip (signature) ---------- */
+.gates{
+  display:flex;align-items:stretch;background:var(--card);
+  border:1px solid var(--rule);border-radius:2px;overflow:hidden;margin-bottom:22px;
+}
+.gate{
+  flex:1;padding:13px 14px 12px;border-right:1px solid var(--rule-soft);
+  display:flex;gap:11px;align-items:flex-start;min-width:0;
+}
+.gate:last-child{border-right:0}
+.stamp{
+  width:30px;height:30px;flex:none;border-radius:2px;
+  display:grid;place-items:center;
+  font-family:var(--mono);font-size:13px;font-weight:700;
+}
+.gate.done .stamp{background:var(--deep);color:#fff}
+.gate.now  .stamp{background:#fff;color:var(--orange);box-shadow:inset 0 0 0 2px var(--orange)}
+.gate.next .stamp{background:#fff;color:#AEB7B1;box-shadow:inset 0 0 0 1px var(--rule)}
+.gate.now{background:#FFF8F1}
+.gate-t{min-width:0}
+.gate-t .n{font-size:12px;font-weight:700;letter-spacing:.01em;display:block}
+.gate.next .gate-t .n{color:#9AA49E}
+.gate-t .m{font-size:10.5px;color:var(--muted);font-family:var(--mono);display:block;margin-top:2px}
+.gate.now .gate-t .m{color:var(--orange);font-weight:600}
+
+/* ---------- grid ---------- */
+.grid{display:grid;grid-template-columns:1.55fr 1fr;gap:18px;align-items:start}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:2px;margin-bottom:18px}
+.card-h{
+  padding:12px 16px;border-bottom:1px solid var(--rule-soft);
+  display:flex;align-items:center;gap:10px;
+}
+.card-h .lbl{flex:1}
+.tag{
+  font-family:var(--mono);font-size:10px;font-weight:600;padding:2px 7px;border-radius:2px;
+  background:var(--paper);color:var(--muted);
+}
+.tag.bad{background:#FBEAE9;color:var(--red)}
+.tag.warn{background:#FEF2E6;color:#A85B12}
+.tag.ok{background:#E9F3ED;color:var(--green)}
+.card-b{padding:6px 16px 16px}
+
+/* ---------- budget rail ---------- */
+.bh{display:grid;grid-template-columns:1fr 92px 92px;gap:10px;padding:10px 0 8px;border-bottom:1px solid var(--rule-soft)}
+.bh div:last-child,.bh div:nth-child(2){text-align:right}
+.brow{padding:11px 0 10px;border-bottom:1px solid var(--rule-soft)}
+.brow:last-child{border-bottom:0}
+.btop{display:grid;grid-template-columns:1fr 92px 92px;gap:10px;align-items:baseline}
+.bname{font-size:12.5px;min-width:0}
+.bname .c{font-family:var(--mono);font-size:11px;color:var(--muted);margin-right:8px}
+.bnum{text-align:right;font-family:var(--mono);font-size:12.5px;font-variant-numeric:tabular-nums}
+.bnum.over{color:var(--red);font-weight:600}
+.bnum.und{color:var(--green)}
+.track{position:relative;height:9px;background:#E7EAE7;border-radius:1px;margin-top:8px;overflow:visible}
+.seg{position:absolute;top:0;bottom:0;left:0;border-radius:1px}
+.seg.act{background:var(--blue)}
+.seg.com{
+  background:repeating-linear-gradient(135deg,#7FA9CD 0 4px,#A8C4DC 4px 8px);
+}
+.seg.over{background:var(--orange)}
+.tick{position:absolute;top:-4px;bottom:-4px;width:1.5px;background:var(--deep)}
+.tick::after{
+  content:"";position:absolute;top:-3px;left:-2px;width:5px;height:5px;background:var(--deep);
+  transform:rotate(45deg);
+}
+.legend{display:flex;gap:16px;padding:12px 0 2px;flex-wrap:wrap}
+.legend i{display:inline-block;width:16px;height:8px;border-radius:1px;margin-right:6px;vertical-align:0}
+.legend span{font-size:10.5px;color:var(--muted);font-family:var(--mono)}
+
+/* ---------- lists ---------- */
+.row{
+  display:flex;gap:11px;align-items:flex-start;
+  padding:11px 0;border-bottom:1px solid var(--rule-soft);
+}
+.row:last-child{border-bottom:0}
+.pip{width:7px;height:7px;border-radius:50%;flex:none;margin-top:6px}
+.pip.ok{background:var(--green)} .pip.warn{background:var(--orange)}
+.pip.bad{background:var(--red)} .pip.idle{background:#C3CBC5}
+.row-b{flex:1;min-width:0}
+.row-t{font-size:12.5px;font-weight:600;letter-spacing:.005em}
+.row-m{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px}
+.row-r{font-family:var(--mono);font-size:11px;color:var(--muted);text-align:right;flex:none;white-space:nowrap}
+.row-r.bad{color:var(--red);font-weight:600}
+.row-r.warn{color:var(--orange);font-weight:600}
+
+/* permit chain */
+.chain{position:relative;padding-left:20px}
+.chain::before{content:"";position:absolute;left:4px;top:8px;bottom:14px;width:1px;background:var(--rule)}
+.link{position:relative;padding:8px 0}
+.link::before{
+  content:"";position:absolute;left:-20px;top:12px;width:9px;height:9px;border-radius:50%;
+  background:#fff;box-shadow:inset 0 0 0 1.5px var(--rule);
+}
+.link.done::before{background:var(--deep);box-shadow:none}
+.link.now::before{background:var(--orange);box-shadow:0 0 0 3px #FEE9D5}
+.link .t{font-size:12.5px;font-weight:600}
+.link.wait .t{color:#98A29C;font-weight:500}
+.link .d{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:1px}
+.link.now .d{color:var(--orange);font-weight:600}
+
+/* draws */
+.draw{padding:11px 0;border-bottom:1px solid var(--rule-soft)}
+.draw:last-child{border-bottom:0}
+.draw-h{display:flex;gap:10px;align-items:baseline}
+.draw-h .t{font-size:12.5px;font-weight:600;flex:1}
+.draw-h .a{font-family:var(--mono);font-size:12.5px}
+.draw .m{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:3px}
+.stref{
+  margin-top:8px;display:flex;gap:7px;align-items:center;
+  background:#FBEAE9;border-left:2px solid var(--red);padding:8px 10px;border-radius:0 2px 2px 0;
+}
+.stref.filled{background:#E9F3ED;border-left-color:var(--green)}
+.stref .w{flex:1;font-size:11px;color:var(--red);font-weight:600;line-height:1.35}
+.stref.filled .w{color:var(--green)}
+.stref input{
+  font-family:var(--mono);font-size:11px;width:96px;padding:5px 7px;
+  border:1px solid #D7A9A6;border-radius:2px;background:#fff;color:var(--ink);
+}
+.stref button{
+  font:inherit;font-family:var(--mono);font-size:11px;font-weight:600;cursor:pointer;
+  border:0;background:var(--deep);color:#fff;padding:6px 11px;border-radius:2px;
+}
+.stref button:hover{background:var(--blue)}
+
+.foot{
+  margin-top:8px;padding-top:16px;border-top:1px solid var(--rule);
+  font-size:11px;color:var(--muted);font-family:var(--mono);line-height:1.7;
+}
+
+@media (max-width:940px){
+  .grid{grid-template-columns:1fr}
+  .gates{flex-direction:column}
+  .gate{border-right:0;border-bottom:1px solid var(--rule-soft)}
+  .stats{margin-left:0;gap:22px}
+  .head h1{font-size:23px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div class="rail">
+  <div class="rail-in">
+    <div class="mark"><b>Mr. Handyman</b><span>Tier 3 Project Console</span></div>
+    <div class="switch" id="switch"></div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="head">
+    <div>
+      <span class="lbl" id="pcode"></span>
+      <h1 id="pname"></h1>
+      <div class="addr" id="paddr"></div>
+    </div>
+    <div class="stats" id="pstats"></div>
+  </div>
+
+  <div class="gates" id="gates"></div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <div class="card-h"><span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span></div>
+        <div class="card-b">
+          <div class="bh"><div class="lbl">Cost code</div><div class="lbl">Budget</div><div class="lbl">Variance</div></div>
+          <div id="budget"></div>
+          <div class="legend">
+            <span><i style="background:#00539B"></i>Actual cost</span>
+            <span><i style="background:repeating-linear-gradient(135deg,#7FA9CD 0 4px,#A8C4DC 4px 8px)"></i>Committed, not yet billed</span>
+            <span><i style="background:#F58220"></i>Over budget</span>
+            <span><i style="background:#072744;width:2px"></i>Budget line</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><span class="lbl">Trade partners this week</span><span class="tag" id="stag"></span></div>
+        <div class="card-b" id="subs"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <div class="card-h"><span class="lbl">Blocking now</span><span class="tag bad" id="btag2"></span></div>
+        <div class="card-b" id="blockers"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><span class="lbl">Permit chain</span><span class="tag" id="ptag"></span></div>
+        <div class="card-b"><div class="chain" id="permits"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><span class="lbl">Draw schedule</span><span class="tag" id="dtag"></span></div>
+        <div class="card-b" id="draws"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Mock interface · Mr. Handyman of Richmond &amp; Hampton–Newport News · Maolnich Enterprises Inc.<br>
+    Revenue and customer invoicing live in ServiceTitan. This console never issues a customer invoice.
+  </div>
+</div>
+
+<script>
+const money = n => "$" + Math.round(n).toLocaleString("en-US");
+const signed = n => (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
+
+const PROJECTS = [
+  {
+    id:"whitfield", pip:"warn",
+    code:"MHR-2026-0184  ·  ST Job 118432",
+    name:"Whitfield \u2014 Primary Bath",
+    addr:"4412 Grove Avenue, Richmond \u00b7 PM: D. Reyes \u00b7 Day 19 of 24",
+    contract:41800, target:.38,
+    stage:3,
+    budget:[
+      {c:"110", n:"Permits and inspection fees",      b:640,   a:640,   k:0},
+      {c:"120", n:"Dumpster and debris disposal",     b:900,   a:1150,  k:0},
+      {c:"210", n:"Interior demolition \u2014 labor",  b:2200,  a:2050,  k:0},
+      {c:"510", n:"Plumbing subcontract \u2014 rough", b:4800,  a:4800,  k:0},
+      {c:"520", n:"Plumbing subcontract \u2014 finish",b:2600,  a:0,     k:2600},
+      {c:"610", n:"Electrical subcontract \u2014 rough",b:2100, a:2100,  k:0},
+      {c:"820", n:"Drywall hang and finish",          b:1900,  a:1900,  k:0},
+      {c:"1110",n:"Tile \u2014 material",              b:3400,  a:4180,  k:0},
+      {c:"1120",n:"Tile setting subcontract",         b:5200,  a:3100,  k:2100},
+      {c:"1030",n:"Countertops \u2014 fab and install",b:1850,  a:0,     k:1850},
+      {c:"1210",n:"Interior painting subcontract",    b:1400,  a:0,     k:1400},
+      {c:"1410",n:"Punch list labor",                 b:800,   a:0,     k:0}
+    ],
+    subs:[
+      {s:"ok",   n:"Tidewater Tile Co.",       m:"Tile setting \u00b7 Wed\u2013Fri confirmed", r:"COI to 11/2026"},
+      {s:"warn", n:"Bell Plumbing LLC",        m:"Finish set \u00b7 Mon window unconfirmed",   r:"Awaiting reply", rc:"warn"},
+      {s:"bad",  n:"Cardinal Painting",        m:"Scheduled 8/17 \u00b7 scheduling blocked",   r:"GL expired 8/1", rc:"bad"},
+      {s:"idle", n:"Riverside Countertops",    m:"Template 8/12 \u00b7 not yet mobilized",     r:"COI to 03/2027"}
+    ],
+    permits:[
+      {s:"done", t:"Permit requirement determined",  d:"Complete 7/09"},
+      {s:"done", t:"Application submitted",          d:"Complete 7/11 \u00b7 City of Richmond"},
+      {s:"done", t:"Permit issued and posted",       d:"Complete 7/18 \u00b7 BLD-26-4471"},
+      {s:"done", t:"Rough-in inspection passed",     d:"Complete 7/29 \u00b7 plumbing + electrical"},
+      {s:"now",  t:"Final inspection scheduled",     d:"Due 8/14 \u00b7 not yet requested"},
+      {s:"wait", t:"Final inspection passed",        d:"Blocks final draw"},
+      {s:"wait", t:"Completion certificate filed",   d:"Within 5 days of issue"}
+    ],
+    draws:[
+      {t:"Deposit",  a:10450, m:"Contract signature \u00b7 7/08", st:"118432-1"},
+      {t:"Draw 1",   a:10450, m:"Demolition complete \u00b7 7/22", st:"118432-2"},
+      {t:"Draw 2",   a:8360,  m:"Rough inspections passed \u00b7 approved 7/30", st:null, days:3},
+      {t:"Draw 3",   a:8360,  m:"Substantial completion \u00b7 not yet reached", st:"pending"},
+      {t:"Final",    a:4180,  m:"Punch complete + final inspection", st:"pending"}
+    ],
+    blockers:[
+      {s:"bad",  t:"Cardinal Painting \u2014 GL certificate expired", m:"Expired 8/1 \u00b7 scheduling blocked by system", r:"16 days"},
+      {s:"bad",  t:"Draw 2 approved, no ServiceTitan invoice", m:"Approved 7/30 \u00b7 revenue not yet recorded", r:"3 days", rc:"bad"},
+      {s:"warn", t:"Cost code 1110 over budget", m:"Tile material \u00b7 upgraded selection, no change order on file", r:"+$780", rc:"warn"},
+      {s:"warn", t:"Final inspection not requested", m:"Due 8/14 \u00b7 blocks the final draw", r:"9 days", rc:"warn"}
+    ]
+  },
+  {
+    id:"okonkwo", pip:"bad",
+    code:"MHH-2026-0093  ·  ST Job 119017",
+    name:"Okonkwo \u2014 Kitchen Remodel",
+    addr:"118 Chesapeake Avenue, Newport News \u00b7 PM: T. Vance \u00b7 Preconstruction",
+    contract:68400, target:.36,
+    stage:2,
+    budget:[
+      {c:"110", n:"Permits and inspection fees",      b:1150, a:1150, k:0},
+      {c:"170", n:"Design and drafting",              b:2400, a:2400, k:0},
+      {c:"210", n:"Interior demolition \u2014 labor",  b:3100, a:0,    k:3100},
+      {c:"310", n:"Framing labor",                    b:2800, a:0,    k:0},
+      {c:"510", n:"Plumbing subcontract \u2014 rough", b:5600, a:0,    k:5600},
+      {c:"610", n:"Electrical subcontract \u2014 rough",b:6200,a:0,    k:6200},
+      {c:"640", n:"Panel and service upgrade",        b:4400, a:0,    k:4400},
+      {c:"1010",n:"Cabinetry \u2014 material",         b:14800,a:7400, k:7400},
+      {c:"1030",n:"Countertops \u2014 fab and install",b:5200, a:0,    k:0},
+      {c:"1110",n:"Tile \u2014 material",              b:2900, a:0,    k:0},
+      {c:"1310",n:"Appliances \u2014 material",        b:6800, a:0,    k:0}
+    ],
+    subs:[
+      {s:"ok",   n:"Peninsula Electric",     m:"Rough \u00b7 window confirmed 8/25", r:"COI to 06/2027"},
+      {s:"ok",   n:"Bell Plumbing LLC",      m:"Rough \u00b7 window confirmed 8/26", r:"COI to 11/2026"},
+      {s:"idle", n:"Hampton Cabinet Works",  m:"Delivery 9/08 \u00b7 deposit paid",  r:"COI to 01/2027"}
+    ],
+    permits:[
+      {s:"done", t:"Permit requirement determined", d:"Complete 7/24"},
+      {s:"done", t:"Application submitted",         d:"Complete 7/28 \u00b7 City of Newport News"},
+      {s:"now",  t:"Plan review comments",          d:"Overdue 9 days \u00b7 no response from city"},
+      {s:"wait", t:"Permit issued and posted",      d:"Blocks mobilization"},
+      {s:"wait", t:"Rough-in inspection",           d:""},
+      {s:"wait", t:"Final inspection",              d:""},
+      {s:"wait", t:"Completion certificate filed",  d:""}
+    ],
+    draws:[
+      {t:"Deposit", a:20520, m:"Contract signature \u00b7 7/21", st:"119017-1"},
+      {t:"Draw 1",  a:17100, m:"Demolition + rough started \u00b7 not reached", st:"pending"},
+      {t:"Draw 2",  a:13680, m:"Rough inspections passed", st:"pending"},
+      {t:"Draw 3",  a:10260, m:"Substantial completion", st:"pending"},
+      {t:"Final",   a:6840,  m:"Punch + final inspection", st:"pending"}
+    ],
+    blockers:[
+      {s:"bad",  t:"Plan review overdue \u2014 9 days", m:"City of Newport News \u00b7 no comments received, no contact logged", r:"9 days", rc:"bad"},
+      {s:"bad",  t:"Gate 2 cannot be approved", m:"Permit not issued \u00b7 mobilization held", r:"blocked", rc:"bad"},
+      {s:"warn", t:"Cabinet lead time vs. schedule", m:"9/08 delivery leaves no float before finish trades", r:"0 days float", rc:"warn"}
+    ]
+  },
+  {
+    id:"delaney", pip:"ok",
+    code:"MHR-2026-0171  ·  ST Job 117980",
+    name:"Delaney \u2014 Basement Finish",
+    addr:"7720 Ridgefield Road, Henrico \u00b7 PM: D. Reyes \u00b7 Day 31 of 38",
+    contract:57200, target:.35,
+    stage:3,
+    budget:[
+      {c:"110", n:"Permits and inspection fees",      b:980,  a:980,  k:0},
+      {c:"120", n:"Dumpster and debris disposal",     b:1200, a:1080, k:0},
+      {c:"310", n:"Framing labor",                    b:6400, a:6150, k:0},
+      {c:"320", n:"Framing materials",                b:3800, a:3640, k:0},
+      {c:"610", n:"Electrical subcontract \u2014 rough",b:7200,a:7200, k:0},
+      {c:"710", n:"HVAC subcontract \u2014 rough",     b:4900, a:4900, k:0},
+      {c:"810", n:"Insulation",                       b:2600, a:2600, k:0},
+      {c:"820", n:"Drywall hang and finish",          b:8400, a:8400, k:0},
+      {c:"920", n:"Trim and millwork \u2014 material", b:2900, a:2740, k:0},
+      {c:"930", n:"Carpentry labor",                  b:5200, a:3900, k:1300},
+      {c:"1130",n:"Hardwood and LVP \u2014 material",  b:4100, a:4100, k:0},
+      {c:"1210",n:"Interior painting subcontract",    b:3600, a:0,    k:3600}
+    ],
+    subs:[
+      {s:"ok",   n:"James River Drywall",   m:"Complete \u00b7 signed off 7/30",       r:"COI to 09/2026"},
+      {s:"ok",   n:"Cardinal Painting",     m:"Start 8/11 \u00b7 window confirmed",    r:"GL renewed 8/4"},
+      {s:"ok",   n:"Old Dominion Flooring", m:"Install 8/14 \u00b7 window confirmed",  r:"COI to 05/2027"}
+    ],
+    permits:[
+      {s:"done", t:"Permit requirement determined", d:"Complete 6/12"},
+      {s:"done", t:"Application submitted",         d:"Complete 6/16 \u00b7 Henrico County"},
+      {s:"done", t:"Permit issued and posted",      d:"Complete 6/24 \u00b7 B-26-8812"},
+      {s:"done", t:"Rough-in inspection passed",    d:"Complete 7/15 \u00b7 elec + HVAC"},
+      {s:"done", t:"Framing inspection passed",     d:"Complete 7/17"},
+      {s:"now",  t:"Final inspection scheduled",    d:"Requested 8/04 \u00b7 set for 8/19"},
+      {s:"wait", t:"Completion certificate filed",  d:"Within 5 days of issue"}
+    ],
+    draws:[
+      {t:"Deposit", a:14300, m:"Contract signature \u00b7 6/09", st:"117980-1"},
+      {t:"Draw 1",  a:14300, m:"Demolition + rough started \u00b7 6/30", st:"117980-2"},
+      {t:"Draw 2",  a:11440, m:"Rough inspections passed \u00b7 7/18", st:"117980-3"},
+      {t:"Draw 3",  a:11440, m:"Substantial completion \u00b7 8/02", st:"117980-4"},
+      {t:"Final",   a:5720,  m:"Punch + final inspection 8/19", st:"pending"}
+    ],
+    blockers:[
+      {s:"ok", t:"Nothing blocking", m:"All gates current, all compliance valid, all draws cross-referenced", r:""}
+    ]
+  }
+];
+
+const GATE_LABELS = [
+  ["Gate 0","Handoff"],["Gate 1","Preconstruction"],["Gate 2","Mobilization"],
+  ["Gate 3","Substantial completion"],["Gate 4","Closeout"]
+];
+
+let current = PROJECTS[0];
+const paid = {};
+
+function renderSwitch(){
+  document.getElementById("switch").innerHTML = PROJECTS.map(p =>
+    `<button class="chip" data-id="${p.id}" aria-pressed="${p.id===current.id}">
+       <span class="dot" style="background:${p.pip==='ok'?'#1D7A4C':p.pip==='warn'?'#F58220':'#B4231F'}"></span>${p.name.split(" \u2014 ")[0]}
+     </button>`).join("");
+  document.querySelectorAll("#switch .chip").forEach(b =>
+    b.addEventListener("click", () => { current = PROJECTS.find(p=>p.id===b.dataset.id); render(); }));
+}
+
+function totals(p){
+  const b = p.budget.reduce((s,r)=>s+r.b,0);
+  const a = p.budget.reduce((s,r)=>s+r.a,0);
+  const k = p.budget.reduce((s,r)=>s+r.k,0);
+  return {b,a,k,committed:a+k};
+}
+
+function render(){
+  const p = current, t = totals(p);
+  const projCost = t.committed + p.budget.reduce((s,r)=>s+Math.max(0, r.b-(r.a+r.k)),0);
+  const projMargin = (p.contract - projCost) / p.contract;
+  const delta = projMargin - p.target;
+
+  document.getElementById("pcode").textContent = p.code;
+  document.getElementById("pname").textContent = p.name;
+  document.getElementById("paddr").textContent = p.addr;
+
+  document.getElementById("pstats").innerHTML = `
+    <div class="stat"><span class="lbl">Contract</span><span class="v num">${money(p.contract)}</span><span class="sub">incl. approved COs</span></div>
+    <div class="stat"><span class="lbl">Committed</span><span class="v num">${money(t.committed)}</span><span class="sub">${money(t.a)} billed</span></div>
+    <div class="stat"><span class="lbl">Target margin</span><span class="v num">${(p.target*100).toFixed(0)}%</span><span class="sub">set at Gate 0</span></div>
+    <div class="stat"><span class="lbl">Projected margin</span>
+      <span class="v num ${delta < -0.05 ? 'neg' : delta < -0.005 ? 'warn' : 'pos'}">${(projMargin*100).toFixed(1)}%</span>
+      <span class="sub">${(delta*100).toFixed(1)} pts vs. target</span></div>`;
+
+  document.getElementById("gates").innerHTML = GATE_LABELS.map((g,i)=>{
+    const cls = i < p.stage ? "done" : i === p.stage ? "now" : "next";
+    const meta = i < p.stage ? "Approved" : i === p.stage ? "Open" : "Not started";
+    return `<div class="gate ${cls}">
+      <div class="stamp">${i < p.stage ? "\u2713" : i}</div>
+      <div class="gate-t"><span class="n">${g[1]}</span><span class="m">${g[0]} \u00b7 ${meta}</span></div>
+    </div>`;
+  }).join("");
+
+  const maxScale = Math.max(...p.budget.map(r => Math.max(r.b, r.a+r.k)));
+  document.getElementById("budget").innerHTML = p.budget.map(r=>{
+    const tot = r.a + r.k, v = r.b - tot;
+    const S = maxScale * 1.04;
+    const within = Math.min(tot, r.b), over = Math.max(0, tot - r.b);
+    const actW = Math.min(r.a, r.b) / S * 100;
+    const comW = Math.max(0, within - Math.min(r.a, r.b)) / S * 100;
+    const ovrW = over / S * 100;
+    const cls = v < 0 ? "over" : (r.a+r.k) > 0 && v > 0 ? "und" : "";
+    return `<div class="brow">
+      <div class="btop">
+        <div class="bname"><span class="c">${r.c}</span>${r.n}</div>
+        <div class="bnum">${money(r.b)}</div>
+        <div class="bnum ${cls}">${tot === 0 ? "\u2014" : signed(v)}</div>
+      </div>
+      <div class="track">
+        <div class="seg act" style="width:${actW}%"></div>
+        <div class="seg com" style="left:${actW}%;width:${comW}%"></div>
+        <div class="seg over" style="left:${actW+comW}%;width:${ovrW}%"></div>
+        <div class="tick" style="left:${r.b/S*100}%"></div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const over = p.budget.filter(r => (r.a+r.k) > r.b).length;
+  const bt = document.getElementById("btag");
+  bt.textContent = over ? `${over} code${over>1?"s":""} over` : "All codes within budget";
+  bt.className = "tag " + (over ? "warn" : "ok");
+
+  document.getElementById("subs").innerHTML = p.subs.map(s=>`
+    <div class="row"><span class="pip ${s.s}"></span><div class="row-b">
+      <div class="row-t">${s.n}</div><div class="row-m">${s.m}</div></div>
+      <div class="row-r ${s.rc||""}">${s.r}</div></div>`).join("");
+  document.getElementById("stag").textContent = `${p.subs.length} assigned`;
+
+  document.getElementById("blockers").innerHTML = p.blockers.map(b=>`
+    <div class="row"><span class="pip ${b.s}"></span><div class="row-b">
+      <div class="row-t">${b.t}</div><div class="row-m">${b.m}</div></div>
+      <div class="row-r ${b.rc||""}">${b.r}</div></div>`).join("");
+  const nb = p.blockers.filter(b=>b.s!=="ok").length;
+  const b2 = document.getElementById("btag2");
+  b2.textContent = nb ? `${nb} open` : "Clear";
+  b2.className = "tag " + (nb ? "bad" : "ok");
+
+  document.getElementById("permits").innerHTML = p.permits.map(x=>`
+    <div class="link ${x.s}"><div class="t">${x.t}</div>${x.d?`<div class="d">${x.d}</div>`:""}</div>`).join("");
+  const pdone = p.permits.filter(x=>x.s==="done").length;
+  document.getElementById("ptag").textContent = `${pdone} of ${p.permits.length} complete`;
+
+  document.getElementById("draws").innerHTML = p.draws.map((dr,i)=>{
+    const key = p.id + ":" + i;
+    const recorded = paid[key];
+    let ref = "";
+    if (dr.st === null && !recorded) {
+      ref = `<div class="stref">
+        <span class="w">No ServiceTitan invoice recorded \u2014 ${dr.days} days since approval</span>
+        <input id="in-${i}" placeholder="ST invoice #" aria-label="ServiceTitan invoice number">
+        <button data-k="${key}" data-i="${i}">Record</button></div>`;
+    } else if (dr.st === null && recorded) {
+      ref = `<div class="stref filled"><span class="w">Invoiced in ServiceTitan \u00b7 ${recorded} \u00b7 exception cleared</span></div>`;
+    }
+    const meta = dr.st && dr.st !== "pending"
+      ? `${dr.m} \u00b7 ST ${dr.st}` : dr.m;
+    return `<div class="draw">
+      <div class="draw-h"><span class="t">${dr.t}</span><span class="a num">${money(dr.a)}</span></div>
+      <div class="m">${meta}</div>${ref}</div>`;
+  }).join("");
+
+  document.querySelectorAll("#draws button").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const el = document.getElementById("in-" + btn.dataset.i);
+      const val = (el.value || "").trim();
+      if (!val) { el.focus(); el.style.borderColor = "#B4231F"; return; }
+      paid[btn.dataset.k] = val;
+      render();
+    });
+  });
+
+  const billed = p.draws.filter(dr => dr.st && dr.st !== "pending").length + Object.keys(paid).filter(k=>k.startsWith(p.id)).length;
+  document.getElementById("dtag").textContent = `${billed} of ${p.draws.length} invoiced`;
+
+  document.querySelectorAll("#switch .chip").forEach(b =>
+    b.setAttribute("aria-pressed", b.dataset.id === p.id));
+}
+
+renderSwitch();
+render();
+</script>
+</body>
+</html>
