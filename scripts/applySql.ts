@@ -32,6 +32,26 @@ async function makeRunner(): Promise<Runner> {
     const { PGlite } = await import('@electric-sql/pglite');
     const { citext } = await import('@electric-sql/pglite/contrib/citext');
     const pg = await PGlite.create({ extensions: { citext } });
+
+    // Applied as a NOSUPERUSER owner, not as postgres.
+    //
+    // A superuser bypasses row-level security entirely, so a migration that
+    // writes data into a tenant-scoped table succeeds in a superuser dry run
+    // and fails on the first real deployment against the WITH CHECK predicate.
+    // That happened with db/005_draw_schedule.sql: the dry run was green and
+    // the deploy died. A check that cannot see the most likely production
+    // failure is worse than no check, because it is trusted.
+    //
+    // Extensions are installed first, as superuser, exactly as
+    // src/provision.ts does — they are database-wide objects owned by the DBA.
+    await pg.exec(`CREATE EXTENSION IF NOT EXISTS citext`);
+    await pg.exec(`CREATE ROLE jp_owner NOLOGIN NOSUPERUSER NOBYPASSRLS`);
+    // The database name differs between hosts, so it is read rather than
+    // assumed.
+    const db = await pg.query<{ n: string }>(`SELECT current_database() AS n`);
+    await pg.exec(`GRANT CREATE ON DATABASE "${db.rows[0]!.n}" TO jp_owner`);
+    await pg.exec(`GRANT ALL ON SCHEMA public TO jp_owner`);
+    await pg.exec(`SET ROLE jp_owner`);
     return { exec: (sql) => pg.exec(sql), close: () => pg.close() };
   }
   const url = process.env.DATABASE_URL;

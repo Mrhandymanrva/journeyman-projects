@@ -32,6 +32,27 @@ to show why.
 
 ---
 
+## A gap that shipped a broken migration
+
+`pnpm db:apply --dry-run` applied the schema **as a superuser**, and a superuser
+bypasses row-level security entirely. So a migration that writes data into a
+tenant-scoped table passed the dry run and failed on the first real deployment
+against the `WITH CHECK` predicate. That is exactly what happened with
+`db/005_draw_schedule.sql`: green locally, dead in production.
+
+A check that cannot see the most likely production failure is worse than no
+check, because it gets trusted.
+
+The dry run now applies as a `NOSUPERUSER NOBYPASSRLS` owner, matching how
+`src/provision.ts` applies it for real, and reproduces that failure. Extensions
+are still installed as superuser first, exactly as provisioning does.
+
+**The test harness has the same shape and has not been changed.**
+`PgliteDatabase.create()` applies the schema as superuser and only then switches
+to `jp_app` for queries — which is right for testing handlers, and blind to
+migration DML in the same way. Worth aligning if migrations start carrying data
+regularly.
+
 ## A pattern worth deciding on
 
 Three times now a value a caller supplied has gone nowhere with nobody told:

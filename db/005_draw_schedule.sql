@@ -99,13 +99,39 @@ END $$ LANGUAGE plpgsql SET search_path = projects, pg_temp;
 -- Tenants activated before this migration have no draw templates. Backfill
 -- them, since the alternative is that only accounts created after today get a
 -- default schedule.
-INSERT INTO draw_templates (tenant_id, sequence_number, label, trigger_milestone, percentage, is_retainage)
-SELECT t.id, v.seq, v.label, v.trigger, v.pct, v.retainage
-  FROM tenants t
- CROSS JOIN (VALUES
-   (1::smallint,'Deposit','Contract signed',0.3000::numeric,false),
-   (2::smallint,'Draw 1','Rough-in complete and inspections passed',0.3000::numeric,false),
-   (3::smallint,'Draw 2','Substantial completion',0.3000::numeric,false),
-   (4::smallint,'Retainage','Punch list and closeout complete',0.1000::numeric,true)
- ) AS v(seq,label,trigger,pct,retainage)
-ON CONFLICT DO NOTHING;
+--
+-- One tenant at a time, with app.tenant_id set for each. draw_templates has
+-- FORCE ROW LEVEL SECURITY and its policy is tenant_enabled(tenant_id), which
+-- applies to the table's owner too — so a single set-based INSERT run by
+-- jp_owner with no tenant set fails the WITH CHECK on every row.
+--
+-- This is worth reading twice, because `pnpm db:apply --dry-run` CANNOT catch
+-- it: the dry run applies as a superuser, and a superuser bypasses RLS
+-- entirely. A migration that writes data to a tenant-scoped table is invisible
+-- to that check and only fails on a real deployment. See docs/OPEN_ITEMS.md.
+--
+-- Tenants whose entitlement has lapsed are skipped, because tenant_enabled()
+-- is false for them. That is correct: a cancelled account does not need a
+-- draw schedule.
+DO $backfill$
+DECLARE t record;
+BEGIN
+  FOR t IN SELECT id FROM projects.tenants LOOP
+    PERFORM set_config('app.tenant_id', t.id::text, true);
+    BEGIN
+      INSERT INTO projects.draw_templates
+        (tenant_id, sequence_number, label, trigger_milestone, percentage, is_retainage)
+      VALUES
+        (t.id,1,'Deposit','Contract signed',0.3000,false),
+        (t.id,2,'Draw 1','Rough-in complete and inspections passed',0.3000,false),
+        (t.id,3,'Draw 2','Substantial completion',0.3000,false),
+        (t.id,4,'Retainage','Punch list and closeout complete',0.1000,true)
+      ON CONFLICT DO NOTHING;
+    EXCEPTION WHEN insufficient_privilege THEN
+      -- Entitlement not live. Skip rather than abort the whole migration for
+      -- an account that is switched off.
+      RAISE NOTICE 'skipped draw template backfill for tenant % (not entitled)', t.id;
+    END;
+  END LOOP;
+  PERFORM set_config('app.tenant_id', '', true);
+END $backfill$;
