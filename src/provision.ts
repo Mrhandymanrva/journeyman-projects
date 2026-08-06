@@ -23,6 +23,8 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { hasExecutableSql, splitSqlStatements, strippedSql } from './db/splitSql.js';
 import { NON_TENANT_SCOPED_TABLES, TENANT_SCOPED_TABLES } from './db/assertions.js';
+import { PgDatabase } from './db/pgDatabase.js';
+import type { SqlClient } from './db/database.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -237,10 +239,42 @@ for (const row of unexpected.rows) {
   bad = true;
   console.log(`  FAIL  projects.${row.relname} has no forced RLS and is not a known exemption`);
 }
+if (bad) {
+  await owner.end();
+  await admin.end();
+  process.exit(1);
+}
+
+// --- optional demo data ---------------------------------------------------
+// A managed Postgres usually has no public endpoint, so there is no way to
+// reach it from a laptop to seed anything. This is the hook for a demo or
+// staging instance to populate itself, and it is refused outright under
+// NODE_ENV=production for the same reason DEV_LOGIN is: demo tenants and
+// customer data must never share a database.
+if (process.env.SEED_DEMO === 'true') {
+  if (process.env.NODE_ENV === 'production') {
+    console.error('SEED_DEMO is refused when NODE_ENV=production.');
+    await owner.end();
+    await admin.end();
+    process.exit(1);
+  }
+  console.log('\nSEED_DEMO is on — rebuilding the demo account.');
+  const { seedDemoTenant } = await import('./demo/demoData.js');
+  const appDb = new PgDatabase({ connectionString: process.env.DATABASE_URL ?? adminUrl });
+  try {
+    await seedDemoTenant({
+      db: appDb,
+      privileged: (fn) => fn(admin as unknown as SqlClient),
+      log: (m) => console.log('  ' + m),
+    });
+    console.log('  demo account ready: tenant slug "demo", sign in as owner@demo.test');
+  } finally {
+    await appDb.close();
+  }
+}
+
 await owner.end();
 await admin.end();
-
-if (bad) process.exit(1);
 
 console.log(
   '\nSet DATABASE_URL for the application to the jp_app credentials:\n  ' +

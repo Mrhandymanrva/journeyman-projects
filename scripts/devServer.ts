@@ -16,7 +16,7 @@ import { createApp } from '../src/app.js';
 import { assertDatabaseContract } from '../src/db/assertions.js';
 import { MemoryStaffSessions } from '../src/http/memoryStaffSessions.js';
 import { PgliteDatabase } from '../test/support/pgliteDatabase.js';
-import { seedDemoTenant } from './demoData.js';
+import { seedDemoTenant } from '../src/demo/demoData.js';
 
 const PORT = Number(process.env.PORT ?? 3200);
 

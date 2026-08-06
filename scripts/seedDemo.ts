@@ -11,7 +11,7 @@
 import pg from 'pg';
 import { PgDatabase } from '../src/db/pgDatabase.js';
 import type { SqlClient } from '../src/db/database.js';
-import { seedDemoTenant } from './demoData.js';
+import { seedDemoTenant } from '../src/demo/demoData.js';
 
 const url = process.env.DATABASE_URL;
 if (!url) {

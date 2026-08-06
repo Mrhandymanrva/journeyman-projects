@@ -16,8 +16,8 @@
  * are not writable by the application role, and how you get privilege differs
  * between the two.
  */
-import type { Database, SqlClient } from '../src/db/database.js';
-import { activateModule, writePlatformRows } from '../src/db/activation.js';
+import type { Database, SqlClient } from '../db/database.js';
+import { activateModule, writePlatformRows } from '../db/activation.js';
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
