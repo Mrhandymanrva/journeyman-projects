@@ -217,8 +217,8 @@ function render(d) {
   el('pname').textContent = p.name;
   el('paddr').textContent = addressLine(p);
   el('footnote').textContent =
-    `Revenue and customer invoicing live in ${d.drawData.revenue_system}. ` +
-    `This console never issues a customer invoice.`;
+    `Daily invoicing lives in ${d.drawData.revenue_system}. Consolidated ` +
+    `project invoices originate here and are recorded there.`;
 
   renderStats(p, d.margin, d.cost);
   renderNotice(d.budget, d.drawData);

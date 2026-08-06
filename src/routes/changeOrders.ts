@@ -228,9 +228,10 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         throw new ApiError('conflict', `This change order is already ${co.status}.`);
       }
 
-      // The module never issues a customer invoice and never writes to an
-      // external system, so "send" records that it went out. Producing and
-      // delivering the document is the revenue system's job.
+      // "Send" records that it went out. Producing and delivering the document
+      // is still the revenue system's job — this module originates the
+      // consolidated project invoice, not the change order paperwork. See
+      // docs/INTEGRATION_DECISIONS.md.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.change_orders SET status = 'sent', sent_at = now()
           WHERE id = $1
