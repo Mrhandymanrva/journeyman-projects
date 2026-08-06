@@ -25,6 +25,7 @@ const db = await PgliteDatabase.create([
   'db/001_schema.sql',
   'db/002_seed.sql',
   'db/004_change_orders.sql',
+  'db/005_draw_schedule.sql',
 ]);
 
 await assertDatabaseContract(db);

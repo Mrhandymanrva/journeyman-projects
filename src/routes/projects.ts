@@ -15,6 +15,7 @@ import {
   requireStaffOfTenant,
 } from './shared.js';
 import { deriveBudgetLines, parseEstimatePayload } from '../domain/estimateContract.js';
+import { seedDrawSchedule } from '../domain/drawSchedule.js';
 import {
   assertStageAdvanceAllowed,
   nextStage,
@@ -546,16 +547,22 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
     budgetLineCount = lines.length;
   }
 
-  // OPEN ITEM — docs/OPEN_ITEMS.md #2. §3.1 says create also seeds "a draw
-  // schedule from the tenant default", but no draw template table exists in
-  // the schema and inventing one is exactly the kind of decision the handoff
-  // says to stop and ask about. Draws are created explicitly through
-  // POST /projects/:id/draws until that table lands.
+  // §3.1: create also seeds "a draw schedule from the tenant default".
+  // draw_templates carries it — 30/30/30/10 with the last as retainage on the
+  // shipped default, per tenant and editable. Seeds nothing if the account has
+  // no template, rather than inventing a schedule.
+  const drawsCreated = await seedDrawSchedule(
+    ctx.db,
+    ctx.staff.tenantId,
+    projectId,
+    body.contract_value,
+  );
+
   return {
     ...serialiseProject(project),
     gates_created: gates.rowCount || gates.rows.length,
     budget_lines_created: budgetLineCount,
-    draws_created: 0,
+    draws_created: drawsCreated,
   };
 }
 

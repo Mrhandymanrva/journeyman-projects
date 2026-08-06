@@ -147,12 +147,65 @@ and chart-of-accounts mapping rather than the bill itself.
 
 ---
 
+## Second round, answered
+
+**Reconciliation is the mechanism, not prevention.** Mason: *"the ST invoice
+should be applied to the draw. Same with subcontractor invoices. Whatever
+happens in ST and QuickBooks should be reconciled to this app. For example,
+right now, there are instances where we pay a sub out of QB, but there is no
+associated billing out of ST so the cost is never associated to the job."*
+
+That reframes the integration, and for the better. The target is not mirroring —
+it is **leakage**: money that moved in an external system and never landed
+against a project. Two directions, and the second is the valuable one:
+
+- **Push, then link.** What this app creates gets an external id stored against
+  the thing that caused it, so a draw knows its invoice and a vendor bill knows
+  its QuickBooks bill.
+- **Pull, then match, or raise.** Invoices and payments appearing in ST or
+  QuickBooks are matched back to a draw, a purchase order or a vendor bill.
+  **Anything unmatchable that looks project-related becomes an exception** —
+  which is exactly the sub paid out of QuickBooks whose cost never reached the
+  job.
+
+That last line is the highest-value piece of the whole integration, and it is
+worth building before any write path.
+
+**One consequence for the schema.** `draws.external_invoice_number` is a single
+text column, assuming one invoice per draw. Reconciliation implies many-to-one:
+a draw satisfied by more than one invoice, or an invoice arriving before anyone
+decided which draw it belongs to. That wants a `draw_invoice_applications`
+table. Not built — flagged, because the scalar will have to go.
+
+**Draw schedule and retainage — BUILT.** 30/30/30/10, the 10% being retainage
+for punch list and closeout. `db/005_draw_schedule.sql` adds `draw_templates`
+per tenant seeded with that default, plus `draws.is_retainage`. Project
+creation seeds the schedule, closing open item 2. The last draw takes the
+remainder rather than its own percentage, so instalments always sum to the
+contract exactly.
+
+**Change orders — BUILT.** Invoiced separately, added to total contract value,
+shown on the statement. `GET /projects/:id/statement` is the consolidated money
+view: original contract, approved change orders, revised contract, invoiced to
+date, retainage held, earned but not invoiced, remaining. The draw schedule and
+the revised contract deliberately disagree on a project with change orders, and
+the gap is reported rather than hidden.
+
+The statement carries **no cost and no margin**, and a test asserts it. It is
+the customer-facing view of a project's money, and the moment cost codes appear
+on it somebody sends it out with the job's margin at the bottom.
+
+---
+
 ## Still needed from you
 
-1. **The ST job-type decision.** How do project jobs avoid ST's normal
-   invoicing? This blocks item 7 and is the difference between a working
-   integration and a double-billed customer.
-2. **Retention on customer draws** — do these contracts hold it?
-3. **Change orders versus the draw schedule** — revise the schedule on approval,
-   or invoice change orders separately?
-4. **Sandbox credentials** for ST and QBO, when you have them.
+1. **Does ServiceTitan still raise daily invoices on project jobs?** Your answer
+   pointed at reconciliation rather than prevention, which works — but if ST
+   daily invoices AND this app's consolidated draw invoices both reach the same
+   customer, that is still a double bill. Reconciliation surfaces it; it does
+   not stop it. The question is whether project jobs are configured not to
+   invoice, so that only this app bills them.
+2. **Is retainage held on change orders too**, or only on the original contract?
+   The schedule holds 10% of the original; a change order invoiced separately
+   currently has none held against it.
+3. **Sandbox credentials** for ST and QuickBooks Online, when you have them.

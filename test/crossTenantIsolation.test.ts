@@ -368,6 +368,18 @@ const ROUTES: RouteCase[] = [
     body: (f) => ({ project_id: f.projectId, quality_score: 1 }),
   },
 
+  // --- statement ----------------------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/statement`,
+    path: (f) => `${BASE}/projects/${f.projectId}/statement`,
+  },
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/export/statement`,
+    path: (f) => `${BASE}/projects/${f.projectId}/export/statement`,
+  },
+
   // --- phase 5: change orders ---------------------------------------------
   {
     method: 'get',

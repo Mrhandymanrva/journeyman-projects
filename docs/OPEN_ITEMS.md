@@ -138,20 +138,16 @@ nullable column; a null means the gate is advisory and blocks nothing.
 
 Code: `src/domain/stages.ts`.
 
-### 2. There is no draw template table
+### 2. There is no draw template table - RESOLVED, built
 
 §3.1 says project creation seeds "a draw schedule from the tenant default". No
 such table exists, and inventing one is the kind of decision the README says to
 stop and ask about.
 
-**Implemented for now:** create seeds gates and budget lines and reports
-`draws_created: 0`. `POST /projects/:id/draws` ("create or replace the
-schedule", §3.6) is the explicit route and lands in phase 4.
-
-**Options:** a `draw_templates` table mirroring `gate_templates`; or a
-percentage schedule on `tenant_settings` (e.g. 30/30/30/10 against contract
-value); or leave draws explicit per project, which for remodel work with
-irregular milestones may be the honest answer.
+**Answered August 2026:** 30/30/30/10, the final 10% being retainage for punch
+list and closeout. `db/005_draw_schedule.sql` adds `draw_templates` per tenant
+seeded with that default, plus `draws.is_retainage`. Project creation seeds the
+schedule and reports how many it made.
 
 ### 3. Change order approval threshold — DECIDED, needs your ratification
 

@@ -51,6 +51,7 @@ export const TENANT_SCOPED_TABLES = [
   'vendor_bills',
   'change_orders',
   'change_order_lines',
+  'draw_templates',
   'draws',
   'jurisdictions',
   'permits',
