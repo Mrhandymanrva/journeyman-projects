@@ -21,7 +21,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { splitSqlStatements } from './db/splitSql.js';
+import { hasExecutableSql, splitSqlStatements, strippedSql } from './db/splitSql.js';
 import { NON_TENANT_SCOPED_TABLES, TENANT_SCOPED_TABLES } from './db/assertions.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,14 +153,25 @@ for (const file of ['db/001_schema.sql', 'db/002_seed.sql']) {
 // managed Postgres is the platform's own role.
 const grants = readFileSync(path.join(repoRoot, 'db/003_roles.sql'), 'utf8');
 for (const stmt of splitSqlStatements(grants)) {
-  if (!/^\s*(GRANT|REVOKE|ALTER DEFAULT)/i.test(stmt.text)) continue;
+  // Every executable statement in this file is a grant. It used to be filtered
+  // with /^\s*(GRANT|REVOKE|ALTER DEFAULT)/ against the raw statement text,
+  // which was wrong in a way nothing could see: the splitter attaches the
+  // comment lines above a statement to it, so any grant with a comment over it
+  // failed the test and was skipped. GRANT USAGE ON SCHEMA projects has a
+  // comment block over it. The table grants, which do not, ran fine — so the
+  // application had SELECT on every table and no USAGE on the schema holding
+  // them, and every request died with "permission denied for schema projects".
+  //
+  // Nothing is filtered now. A statement that is only comments is an empty
+  // query and Postgres accepts it.
+  if (!hasExecutableSql(stmt.text)) continue;
   try {
     await admin.query(stmt.text);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A REVOKE against an object this database does not have is not a failure
     // — it is a hardening step that was already unnecessary here.
-    if (/does not exist|must be owner/i.test(message) && /^\s*REVOKE/i.test(stmt.text)) {
+    if (/does not exist|must be owner/i.test(message) && /^REVOKE/i.test(strippedSql(stmt.text))) {
       console.warn(`  skipped: ${stmt.text.split('\n')[0]} (${message})`);
       continue;
     }

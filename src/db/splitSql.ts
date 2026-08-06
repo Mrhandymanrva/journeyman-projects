@@ -131,3 +131,24 @@ export function splitSqlStatements(sql: string): SqlStatement[] {
   push();
   return statements;
 }
+
+/**
+ * The statement with its leading comment lines removed.
+ *
+ * splitSqlStatements keeps comments attached to the statement that follows
+ * them, which is right for reporting a line number and wrong for asking "what
+ * kind of statement is this". Matching /^GRANT/ against raw statement text
+ * silently skipped every grant that had a comment above it.
+ */
+export function strippedSql(statement: string): string {
+  return statement
+    .split('\n')
+    .filter((line) => !/^\s*--/.test(line))
+    .join('\n')
+    .trim();
+}
+
+/** Whether the statement is anything other than comments and whitespace. */
+export function hasExecutableSql(statement: string): boolean {
+  return strippedSql(statement).replace(/;/g, '').trim().length > 0;
+}
