@@ -13,6 +13,7 @@ const repoRoot = path.resolve(here, '../..');
 export const SCHEMA_FILES = [
   path.join(repoRoot, 'db/001_schema.sql'),
   path.join(repoRoot, 'db/002_seed.sql'),
+  path.join(repoRoot, 'db/004_change_orders.sql'),
 ];
 
 export interface TenantFixture {

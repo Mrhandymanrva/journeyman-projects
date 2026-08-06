@@ -42,6 +42,11 @@ const createProjectSchema = z
     contract_value: z.number().positive(),
     currency: z.string().length(3).default('USD'),
     target_margin: z.number().min(0).max(1),
+    // A handoff arrives with a target window, and these were accepted only on
+    // PATCH. zod strips unknown keys silently, so sending them at create
+    // succeeded and quietly discarded them.
+    scheduled_start: z.string().date().nullish(),
+    scheduled_end: z.string().date().nullish(),
     license_scope_note: z.string().nullish(),
   })
   .refine((v) => Boolean(v.estimate_import_id) || v.source_kind === 'manual', {
@@ -475,8 +480,8 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
        (tenant_id, project_number, business_unit_id, external_system_id, external_job_id,
         external_customer_id, estimate_import_id, name, address_line1, city, region,
         postal_code, jurisdiction_id, pm_id, estimator_id, contract_value, currency,
-        target_margin, license_scope_note)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+        target_margin, license_scope_note, scheduled_start, scheduled_end)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
      RETURNING *`,
     [
       ctx.staff.tenantId,
@@ -498,6 +503,8 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
       body.currency,
       body.target_margin,
       body.license_scope_note ?? null,
+      body.scheduled_start ?? null,
+      body.scheduled_end ?? null,
     ],
   );
   const project = rows[0]!;

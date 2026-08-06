@@ -21,7 +21,11 @@ import { seedDemoTenant } from '../src/demo/demoData.js';
 const PORT = Number(process.env.PORT ?? 3200);
 
 console.log('starting an in-process PostgreSQL…');
-const db = await PgliteDatabase.create(['db/001_schema.sql', 'db/002_seed.sql']);
+const db = await PgliteDatabase.create([
+  'db/001_schema.sql',
+  'db/002_seed.sql',
+  'db/004_change_orders.sql',
+]);
 
 await assertDatabaseContract(db);
 console.log('startup assertions passed (no BYPASSRLS, no ownership, RLS forced everywhere)');

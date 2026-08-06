@@ -18,7 +18,7 @@ Build inputs are in [`docs/handoff/`](docs/handoff/) — read
 | 2 | Budget, purchase orders, vendor bills, cost position | **built** |
 | 3 | Vendors, compliance documents, eligibility, expiry sweep | routes built; nightly expiry sweep and notifications not started |
 | 4 | Draws, exception views, manual adapter | **built** |
-| 5 | Scheduling, permits, change orders | scheduling and permits built; change orders not started |
+| 5 | Scheduling, permits, change orders | **built** |
 | 6 | Subcontractor portal | not started |
 | 7 | Field PWA | not started |
 | — | Project console (the reference mock, on live data) | **built** |
@@ -118,7 +118,7 @@ full record and delete fields.
 ## Layout
 
 ```
-db/                     001_schema.sql, 002_seed.sql, 003_roles.sql — the source of truth
+db/                     001_schema.sql, 002_seed.sql, 003_roles.sql, 004_change_orders.sql
 src/
   db/
     database.ts         the session contract: withTenant / withoutTenant

@@ -13,7 +13,11 @@ import { fileURLToPath } from 'node:url';
 import { splitSqlStatements } from '../src/db/splitSql.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const FILES = [path.join(repoRoot, 'db/001_schema.sql'), path.join(repoRoot, 'db/002_seed.sql')];
+const FILES = [
+  path.join(repoRoot, 'db/001_schema.sql'),
+  path.join(repoRoot, 'db/002_seed.sql'),
+  path.join(repoRoot, 'db/004_change_orders.sql'),
+];
 
 const dryRun = process.argv.includes('--dry-run');
 

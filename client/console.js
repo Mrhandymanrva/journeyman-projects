@@ -170,7 +170,7 @@ async function select(projectId) {
   el('boot').textContent = 'Loading…';
 
   try {
-    const [detail, cost, margin, budget, exceptions, drawData, permits, schedule, pos, logs] =
+    const [detail, cost, margin, budget, exceptions, drawData, permits, schedule, pos, logs, cos] =
       await Promise.all([
         api(`/projects/${projectId}`),
         api(`/projects/${projectId}/cost-position`),
@@ -182,12 +182,13 @@ async function select(projectId) {
         api(`/projects/${projectId}/schedule`),
         api(`/projects/${projectId}/purchase-orders`),
         api(`/projects/${projectId}/daily-logs`),
+        api(`/projects/${projectId}/change-orders`),
       ]);
 
     current = { id: projectId, ...detail };
     el('boot').hidden = true;
     el('shell').hidden = false;
-    render({ detail, cost, margin, budget, exceptions, drawData, permits, schedule, pos, logs });
+    render({ detail, cost, margin, budget, exceptions, drawData, permits, schedule, pos, logs, cos });
     document
       .querySelectorAll('#switch .chip')
       .forEach((b) => b.setAttribute('aria-pressed', b.dataset.id === projectId));
@@ -225,6 +226,7 @@ function render(d) {
   renderGates(p.gates);
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
+  renderChangeOrders(d.cos);
   renderSubs(d.schedule);
   renderLogs(d.logs);
   renderBlockers(d.exceptions, d.schedule, d.drawData);
@@ -1410,3 +1412,244 @@ el('budget-add').addEventListener('click', addBudgetLineDrawer);
 el('po-new').addEventListener('click', issuePoDrawer);
 el('sched-new').addEventListener('click', scheduleDrawer);
 el('log-new').addEventListener('click', dailyLogDrawer);
+
+// ----------------------------------------------------------- change orders
+
+let coLines = [];
+
+function renderChangeOrders(data) {
+  const cos = data.change_orders;
+  el('cotag').textContent = cos.length
+    ? `${cos.filter((c) => c.status === 'approved').length} of ${cos.length} approved`
+    : 'none';
+  el('co-new').hidden = !can('send_change_order');
+
+  if (cos.length === 0) {
+    el('cos').innerHTML =
+      '<div class="state">No change orders. This is the only sanctioned way to move a frozen budget.</div>';
+    return;
+  }
+
+  el('cos').innerHTML = cos
+    .map((co) => {
+      const pip =
+        co.status === 'approved'
+          ? 'ok'
+          : co.status === 'rejected' || co.status === 'void'
+            ? 'bad'
+            : co.status === 'sent'
+              ? 'warn'
+              : 'idle';
+      const margin =
+        co.customer_amount === 0
+          ? '—'
+          : `${Math.round(((co.customer_amount - co.cost_amount) / co.customer_amount) * 100)}%`;
+      return `<div class="row" data-co="${co.id}" style="cursor:pointer">
+        <span class="pip ${pip}"></span>
+        <div class="row-b">
+          <div class="row-t">CO ${co.co_number} · ${esc(co.description)}</div>
+          <div class="row-m">${esc(co.status)}${
+            co.schedule_impact_days ? ` · ${co.schedule_impact_days} day impact` : ''
+          } · cost ${money(co.cost_amount)} · margin ${margin}</div>
+        </div>
+        <div class="row-r">${signed(co.customer_amount)}</div></div>`;
+    })
+    .join('');
+
+  document.querySelectorAll('#cos [data-co]').forEach((node) =>
+    node.addEventListener('click', () => {
+      const co = cos.find((c) => c.id === node.dataset.co);
+      if (co) changeOrderDrawer(co, data.approval_threshold);
+    }),
+  );
+}
+
+function changeOrderDrawer(co, threshold) {
+  const overThreshold = co.customer_amount > threshold;
+  const mayApproveThis = overThreshold
+    ? can('approve_change_order_over_threshold')
+    : can('send_change_order');
+
+  openDrawer(
+    `CO ${co.co_number} — ${co.description}`,
+    `${messageSlot}
+     <p class="note">
+       <b>${signed(co.customer_amount)}</b> to the customer, <b>${money(co.cost_amount)}</b> of
+       cost${co.schedule_impact_days ? `, ${co.schedule_impact_days} days of schedule` : ''}.
+       Currently <b>${esc(co.status)}</b>.
+       ${
+         overThreshold
+           ? ` Above this account's ${money(threshold)} threshold, so owner or manager only.`
+           : ''
+       }
+     </p>
+     ${
+       co.lines.length
+         ? `<span class="lbl">Cost lines</span>${co.lines
+             .map(
+               (l) => `<div class="row"><div class="row-b">
+                 <div class="row-t">${esc(l.code)} ${esc(l.cost_code_description)}</div>
+                 <div class="row-m">${esc(l.cost_type)}${
+                   l.description ? ` · ${esc(l.description)}` : ''
+                 }</div></div>
+                 <div class="row-r">${signed(l.amount)}</div></div>`,
+             )
+             .join('')}`
+         : `<p class="msg bad">No cost lines. The customer amount will lift the revised
+            contract, but none of the cost reaches the budget — it will read as margin
+            that is not there.</p>`
+     }
+     <div class="actions right">
+       ${
+         co.status === 'draft' && can('send_change_order')
+           ? '<button class="btn primary" id="co-send" type="button">Send to customer</button>'
+           : ''
+       }
+       ${
+         co.status === 'sent' && mayApproveThis
+           ? '<button class="btn primary" id="co-approve" type="button">Record customer approval</button>'
+           : ''
+       }
+       ${
+         co.status !== 'approved' && can('send_change_order')
+           ? '<button class="btn danger" id="co-reject" type="button">Reject</button>'
+           : ''
+       }
+     </div>
+     ${
+       co.status === 'sent' && mayApproveThis
+         ? field(
+             'Date the customer agreed',
+             `<input id="co-date" type="date" value="${today()}">`,
+           )
+         : ''
+     }
+     ${
+       co.status === 'sent' && !mayApproveThis
+         ? `<p class="msg">${money(
+             co.customer_amount,
+           )} is above this account's approval threshold, so an owner or manager records it.</p>`
+         : ''
+     }`,
+    () => {
+      el('co-send')?.addEventListener('click', (e) =>
+        submit(e.target, () => api(`/change-orders/${co.id}/send`, { method: 'POST' })),
+      );
+      el('co-approve')?.addEventListener('click', (e) =>
+        submit(e.target, async () => {
+          const result = await api(`/change-orders/${co.id}/approve`, {
+            method: 'POST',
+            body: JSON.stringify({ customer_approved_at: el('co-date').value || null }),
+          });
+          if (result.warning) window.alert(result.warning.message);
+        }),
+      );
+      el('co-reject')?.addEventListener('click', (e) =>
+        submit(e.target, () => api(`/change-orders/${co.id}/reject`, { method: 'POST' })),
+      );
+    },
+  );
+}
+
+async function raiseChangeOrderDrawer() {
+  const codes = await api('/cost-codes');
+  coLines = [];
+
+  openDrawer(
+    'Raise a change order',
+    `${messageSlot}
+     <p class="note">The customer amount lifts the revised contract on approval —
+     the margin view computes that from approved change orders, so nothing here
+     touches the contract value. Cost lines move the budget, and the baseline
+     with it, which is what makes a change order the way past a frozen budget
+     rather than a note beside it.</p>
+     ${field('Description', '<textarea id="co-desc" placeholder="Customer upgraded the tile selection"></textarea>')}
+     <div class="two">
+       ${field('Customer amount', '<input id="co-amount" type="number" step="0.01" value="0">')}
+       ${field('Schedule impact, days', '<input id="co-days" type="number" step="1" value="0">')}
+     </div>
+     ${field('Reference in the revenue system', '<input id="co-ref" placeholder="optional">')}
+
+     <span class="lbl">Cost lines</span>
+     <p class="note">Negative amounts are allowed — a change order that removes
+     scope is still a change order, and a credit that cannot be recorded is a
+     credit somebody argues about later.</p>
+     <div id="co-line-list"></div>
+     <div class="two">
+       ${field('Cost code', `<select id="co-code">${codeOptions(codes)}</select>`)}
+       ${field('Amount', '<input id="co-line-amount" type="number" step="0.01" value="0">')}
+     </div>
+     <div class="actions">
+       <button class="btn sm" id="co-add-line" type="button">Add cost line</button>
+     </div>
+
+     <div class="actions right">
+       <button class="btn primary" id="co-save" type="button">Raise change order</button>
+     </div>`,
+    () => {
+      const redraw = () => {
+        el('co-line-list').innerHTML = coLines.length
+          ? coLines
+              .map(
+                (l, i) => `<div class="row"><div class="row-b">
+                  <div class="row-t">${esc(l.code)} ${esc(l.description)}</div>
+                  <div class="row-m">${esc(l.cost_type)}</div></div>
+                  <div class="row-r">${signed(l.amount)}
+                  <button class="btn sm danger" data-drop="${i}">remove</button></div></div>`,
+              )
+              .join('')
+          : '<p class="note">No cost lines yet.</p>';
+        document.querySelectorAll('#co-line-list [data-drop]').forEach((b) =>
+          b.addEventListener('click', () => {
+            coLines.splice(Number(b.dataset.drop), 1);
+            redraw();
+          }),
+        );
+      };
+      redraw();
+
+      el('co-add-line').addEventListener('click', () => {
+        const chosen = codes.find((c) => c.id === el('co-code').value);
+        const amount = Number(el('co-line-amount').value);
+        if (!chosen || !amount) {
+          drawerMessage('Pick a cost code and an amount that is not zero.');
+          return;
+        }
+        coLines.push({
+          cost_code_id: chosen.id,
+          // Follows the code's own default type, for the same reason the
+          // purchase order form does: the cost position matches a budget line
+          // on code AND type, so a mismatch lands the money nowhere.
+          cost_type: chosen.default_cost_type,
+          amount,
+          code: chosen.code,
+          description: chosen.description,
+        });
+        el('co-line-amount').value = '0';
+        drawerMessage('');
+        redraw();
+      });
+
+      el('co-save').addEventListener('click', (e) =>
+        submit(e.target, () =>
+          api(`/projects/${current.id}/change-orders`, {
+            method: 'POST',
+            body: JSON.stringify({
+              description: el('co-desc').value.trim(),
+              customer_amount: Number(el('co-amount').value),
+              schedule_impact_days: Number(el('co-days').value),
+              external_estimate_ref: el('co-ref').value.trim() || null,
+              lines: coLines.map(({ cost_code_id, cost_type, amount }) => ({
+                cost_code_id,
+                cost_type,
+                amount,
+              })),
+            }),
+          }),
+        ),
+      );
+    },
+  );
+}
+
+el('co-new').addEventListener('click', raiseChangeOrderDrawer);

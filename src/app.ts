@@ -13,6 +13,7 @@ import { gateRoutes } from './routes/gates.js';
 import { budgetRoutes } from './routes/budget.js';
 import { purchaseOrderRoutes } from './routes/purchaseOrders.js';
 import { vendorRoutes } from './routes/vendors.js';
+import { changeOrderRoutes } from './routes/changeOrders.js';
 import { drawRoutes } from './routes/draws.js';
 import { fieldOperationRoutes } from './routes/fieldOperations.js';
 import { estimateImportRoutes } from './routes/estimateImports.js';
@@ -93,6 +94,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(budgetRoutes(deps));
   staff.use(purchaseOrderRoutes(deps));
   staff.use(vendorRoutes(deps));
+  staff.use(changeOrderRoutes(deps));
   staff.use(drawRoutes(deps));
   staff.use(fieldOperationRoutes(deps));
   staff.use(estimateImportRoutes(deps));

@@ -43,6 +43,7 @@ interface ForeignIds {
   permitId: string;
   milestoneId: string;
   scheduleItemId: string;
+  changeOrderId: string;
 }
 let foreign: ForeignIds;
 
@@ -145,8 +146,16 @@ beforeAll(async () => {
   });
   expect(scheduleRes.status).toBe(201);
 
+  const coRes = await b.post(`/api/v1/projects/projects/${projectId}/change-orders`).send({
+    description: "Tenant B's change order",
+    customer_amount: 2400,
+    lines: [{ cost_code_id: costCodeId, cost_type: 'S', amount: 1500 }],
+  });
+  expect(coRes.status, JSON.stringify(coRes.body)).toBe(201);
+
   foreign = {
     projectId,
+    changeOrderId: coRes.body.data.id,
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
@@ -357,6 +366,43 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/vendors/:id/scores`,
     path: (f) => `${BASE}/vendors/${f.vendorId}/scores`,
     body: (f) => ({ project_id: f.projectId, quality_score: 1 }),
+  },
+
+  // --- phase 5: change orders ---------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/change-orders`,
+    path: (f) => `${BASE}/projects/${f.projectId}/change-orders`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/projects/:id/change-orders`,
+    path: (f) => `${BASE}/projects/${f.projectId}/change-orders`,
+    body: () => ({ description: 'Raised into another tenant', customer_amount: 100 }),
+  },
+  {
+    method: 'patch',
+    template: `${BASE}/change-orders/:id`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}`,
+    body: () => ({ customer_amount: 1 }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/change-orders/:id/send`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/send`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/change-orders/:id/approve`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/approve`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/change-orders/:id/reject`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/reject`,
+    body: () => ({}),
   },
 
   // --- phase 4: draws -----------------------------------------------------

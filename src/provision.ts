@@ -126,7 +126,7 @@ const owner = new pg.Client({
 });
 await owner.connect();
 
-for (const file of ['db/001_schema.sql', 'db/002_seed.sql']) {
+for (const file of ['db/001_schema.sql', 'db/002_seed.sql', 'db/004_change_orders.sql']) {
   const full = path.join(repoRoot, file);
   const statements = splitSqlStatements(readFileSync(full, 'utf8'));
   let applied = 0;

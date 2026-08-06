@@ -32,6 +32,25 @@ to show why.
 
 ---
 
+## A pattern worth deciding on
+
+Three times now a value a caller supplied has gone nowhere with nobody told:
+
+1. A purchase order raised against a cost code budgeted under a different cost
+   type — money absent from the cost position. Now warned.
+2. A change order carrying `cost_amount` with no lines — same. Now warned.
+3. `scheduled_start` and `scheduled_end` sent to `POST /projects` were accepted
+   and discarded, because zod strips unknown keys silently. Now accepted.
+
+The third is the general case: **every request schema in the module silently
+drops keys it does not recognise.** A typo in a field name is indistinguishable
+from omitting it. `.strict()` on the schemas turns that into a 400 naming the
+unexpected field.
+
+Not applied unilaterally — it would reject any client sending extra fields, and
+whether that is right depends on who ends up calling this. Worth ten minutes of
+your opinion.
+
 ## Found while deploying
 
 ### `projects.tenants` has no row-level security
@@ -134,12 +153,40 @@ percentage schedule on `tenant_settings` (e.g. 30/30/30/10 against contract
 value); or leave draws explicit per project, which for remodel work with
 irregular milestones may be the honest answer.
 
-### 3. Change order approval threshold (README open item 1)
+### 3. Change order approval threshold — DECIDED, needs your ratification
 
-Not reached — change orders are phase 5. Flagged so it does not surprise anyone:
-the capability table already distinguishes `approve_change_order_over_threshold`
-from `send_change_order`, so the threshold needs a home before that phase starts.
-`tenant_settings` is the natural place.
+README open item 1 asked: tenant setting, or hardcoded default?
+
+**Built as a tenant setting**, `tenant_settings.change_order_approval_threshold`,
+default 5000.00. At or below it a project manager may record customer approval;
+above it, owner or manager only — which is what the capability table already
+implied by separating `approve_change_order_over_threshold` from
+`send_change_order`.
+
+Reasoning: every other limit in this schema is per tenant — gate count, which
+gate freezes the baseline, compliance requirements, warn days, the cost code
+list. A hardcoded number would have been the only thing in the module a
+customer could not change. **The default of 5000 is a placeholder, not a
+recommendation.**
+
+### 3b. `change_order_lines` — a new table, needs your sign-off
+
+`db/004_change_orders.sql` is the first file that ADDS to the data model rather
+than correcting it. Two additions, both explained in the file.
+
+The load-bearing one: `change_orders.cost_amount` is a single number with no
+cost code on it, so an approved change order's cost had nowhere to go.
+`v_cost_position` matches on `(cost_code, cost_type)`; a scalar matches nothing.
+
+It also made a sentence the module already says untrue. Editing a budget after
+the freeze gate returns *"changes after the freeze belong on a change order"* —
+which is a dead end if a change order cannot reach the budget. Approving one is
+now the only sanctioned way to move a frozen baseline, and it needs lines to do
+it with. `cost_amount` is kept and derived from the lines, so nothing reading it
+today breaks.
+
+Drop the file and the feature degrades to what the schema originally described;
+nothing else depends on it.
 
 ### 4. Weekly exception report — per business unit or per tenant (README open item 2)
 
