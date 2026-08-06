@@ -18,6 +18,7 @@
  */
 import type { Database, SqlClient } from '../db/database.js';
 import { activateModule, writePlatformRows } from '../db/activation.js';
+import { seedDrawSchedule } from './../domain/drawSchedule.js';
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
@@ -208,6 +209,49 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   });
   log(`vendors: ${Object.keys(vendors).length} (Cardinal Painting GL expired 4 days ago)`);
 
+  /**
+   * Seeds the tenant's real draw schedule, then advances the first `invoiced`
+   * of them through earned, approved and invoiced, and optionally leaves the
+   * next one approved-but-uninvoiced — the exception this module exists to
+   * surface.
+   *
+   * Uses the template rather than hand-written amounts so the demo shows the
+   * actual 30/30/30/10 with its retainage held. A demo that hardcodes the
+   * numbers demonstrates the numbers, not the feature.
+   */
+  async function seedDraws(
+    projectId: string,
+    invoiced: number,
+    approvedNotInvoiced: number,
+    contractValue: number,
+    invoicePrefix: string,
+  ) {
+    await db.withTenant(TENANT_ID, async (c) => {
+      await seedDrawSchedule(c, TENANT_ID, projectId, contractValue);
+      for (let i = 1; i <= invoiced; i++) {
+        await c.query(
+          `UPDATE projects.draws
+              SET status = 'invoiced', earned_at = now() - interval '20 days',
+                  approved_by = $3, approved_at = now() - interval '14 days',
+                  external_invoice_number = $4,
+                  external_invoice_recorded_at = now() - interval '12 days'
+            WHERE project_id = $1 AND sequence_number = $2`,
+          [projectId, i, ids.staff.manager, `${invoicePrefix}-${i}`],
+        );
+      }
+      for (let i = invoiced + 1; i <= invoiced + approvedNotInvoiced; i++) {
+        await c.query(
+          `UPDATE projects.draws
+              SET status = 'approved', earned_at = now() - interval '8 days',
+                  approved_by = $3, approved_at = now() - interval '6 days'
+            WHERE project_id = $1 AND sequence_number = $2`,
+          [projectId, i, ids.staff.manager],
+        );
+      }
+    });
+  }
+
+
   // -------------------------------------------------------------- projects ---
   interface BudgetSpec {
     code: string;
@@ -377,34 +421,9 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     })),
   ]);
 
-  await db.withTenant(TENANT_ID, async (c) => {
-    // Draws: two invoiced, one approved and NOT invoiced — the exception the
-    // module exists to surface — and two still scheduled.
-    const draws: Array<[number, string, string, number, string, string | null]> = [
-      [1, 'Deposit', 'Contract signature', 10450, 'invoiced', '118432-1'],
-      [2, 'Draw 1', 'Demolition complete', 10450, 'invoiced', '118432-2'],
-      [3, 'Draw 2', 'Rough inspections passed', 8360, 'approved', null],
-      [4, 'Draw 3', 'Substantial completion', 8360, 'scheduled', null],
-      [5, 'Final', 'Punch complete and final inspection', 4180, 'scheduled', null],
-    ];
-    for (const [seq, label, trigger, amount, status, invoice] of draws) {
-      await c.query(
-        `INSERT INTO projects.draws
-           (tenant_id, project_id, sequence_number, label, trigger_milestone, amount, status,
-            earned_at, approved_by, approved_at, external_invoice_number,
-            external_invoice_recorded_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7::projects.draw_status,
-                 CASE WHEN $7 <> 'scheduled' THEN now() - interval '20 days' END,
-                 CASE WHEN $7 <> 'scheduled' THEN $8::uuid END,
-                 CASE WHEN $7 <> 'scheduled' THEN now() - interval '6 days' END,
-                 -- $9 appears only as a bare value and inside IS NOT NULL, so
-                 -- there is nothing for Postgres to infer its type from.
-                 $9::text,
-                 CASE WHEN $9::text IS NOT NULL THEN now() - interval '5 days' END)`,
-        [TENANT_ID, whitfield, seq, label, trigger, amount, status, ids.staff.manager, invoice],
-      );
-    }
+  await seedDraws(whitfield, 2, 1, 41800, '118432');
 
+  await db.withTenant(TENANT_ID, async (c) => {
     const permit = await c.query<{ id: string }>(
       `INSERT INTO projects.permits
          (tenant_id, project_id, jurisdiction_id, permit_type, permit_number, applied_on, issued_on)
@@ -500,17 +519,6 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    await c.query(
-      `INSERT INTO projects.draws
-         (tenant_id, project_id, sequence_number, label, trigger_milestone, amount, status,
-          external_invoice_number, external_invoice_recorded_at)
-       VALUES ($1,$2,1,'Deposit','Contract signature',20520,'invoiced','119017-1', now()),
-              ($1,$2,2,'Draw 1','Demolition and rough started',17100,'scheduled',NULL,NULL),
-              ($1,$2,3,'Draw 2','Rough inspections passed',13680,'scheduled',NULL,NULL),
-              ($1,$2,4,'Draw 3','Substantial completion',10260,'scheduled',NULL,NULL),
-              ($1,$2,5,'Final','Punch and final inspection',6840,'scheduled',NULL,NULL)`,
-      [TENANT_ID, okonkwo],
-    );
     for (const [title, vendorKey, s, e] of [
       ['Electrical rough', 'elec', 20, 22],
       ['Plumbing rough', 'plumb', 21, 23],
@@ -523,7 +531,8 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       );
     }
   });
-  log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
+  await seedDraws(okonkwo, 1, 0, 68400, '119017');
+log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
 
   // --- Delaney: healthy, nothing blocking
   const delaneyBudget: BudgetSpec[] = [
@@ -588,17 +597,6 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    await c.query(
-      `INSERT INTO projects.draws
-         (tenant_id, project_id, sequence_number, label, trigger_milestone, amount, status,
-          external_invoice_number, external_invoice_recorded_at)
-       VALUES ($1,$2,1,'Deposit','Contract signature',14300,'invoiced','117980-1',now()),
-              ($1,$2,2,'Draw 1','Demolition and rough started',14300,'invoiced','117980-2',now()),
-              ($1,$2,3,'Draw 2','Rough inspections passed',11440,'invoiced','117980-3',now()),
-              ($1,$2,4,'Draw 3','Substantial completion',11440,'invoiced','117980-4',now()),
-              ($1,$2,5,'Final','Punch and final inspection',5720,'scheduled',NULL,NULL)`,
-      [TENANT_ID, delaney],
-    );
     for (const [title, vendorKey, s, e] of [
       ['Interior painting', 'paint', 6, 9],
       ['Flooring install', 'floor', 9, 11],
@@ -611,6 +609,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       );
     }
   });
-  log('project: Delaney — Basement Finish (healthy)');
+  await seedDraws(delaney, 3, 0, 57200, '117980');
+log('project: Delaney — Basement Finish (healthy)');
 
 }
