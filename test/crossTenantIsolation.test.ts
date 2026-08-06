@@ -545,6 +545,28 @@ describe('cross-tenant isolation', () => {
     expect(numbers).not.toContain('TENANT-B-0001');
   });
 
+  it('the reference collections never leak across tenants', async () => {
+    // These have no :id, so the parameterised-route coverage rule above does
+    // not see them. They are still tenant-scoped reads and RLS is the only
+    // thing filtering them — which is the point, but it has to be asserted.
+    const a = h.as(A.staff.owner!.token);
+    const b = h.as(B.staff.owner!.token);
+
+    for (const path of ['/cost-codes', '/business-units', '/staff']) {
+      const mine = await a.get(`/api/v1/projects${path}`);
+      const theirs = await b.get(`/api/v1/projects${path}`);
+      expect(mine.status, path).toBe(200);
+      expect(theirs.status, path).toBe(200);
+
+      const mineIds = new Set((mine.body.data as Array<{ id: string }>).map((r) => r.id));
+      const overlap = (theirs.body.data as Array<{ id: string }>).filter((r) =>
+        mineIds.has(r.id),
+      );
+      expect(overlap, `${path} returned rows belonging to both tenants`).toEqual([]);
+      expect(mineIds.size, `${path} returned nothing, so this proves nothing`).toBeGreaterThan(0);
+    }
+  });
+
   it('a session for a staff member of another tenant does not resolve', async () => {
     // The token names tenant A but a staff row belonging to B. The tenant
     // transaction opens on A, RLS hides B's staff row, and the session fails

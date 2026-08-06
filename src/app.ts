@@ -7,6 +7,7 @@ import { ApiError } from './http/errors.js';
 import { staffAuthentication, type StaffSessionStore } from './http/staffSession.js';
 import type { MemoryStaffSessions } from './http/memoryStaffSessions.js';
 import { sessionRoutes } from './routes/session.js';
+import { referenceRoutes } from './routes/reference.js';
 import { projectRoutes } from './routes/projects.js';
 import { gateRoutes } from './routes/gates.js';
 import { budgetRoutes } from './routes/budget.js';
@@ -86,6 +87,7 @@ export function createApp(opts: AppOptions): Express {
   const staff = express.Router();
   staff.use(staffAuthentication(opts.staffSessions));
   staff.use(sessionRoutes(deps));
+  staff.use(referenceRoutes(deps));
   staff.use(projectRoutes(deps));
   staff.use(gateRoutes(deps));
   staff.use(budgetRoutes(deps));

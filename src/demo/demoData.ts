@@ -54,6 +54,46 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   const counts = await activateModule(db, TENANT_ID, 'Richmond');
   log(`activated: ${counts.costCodes} cost codes, ${counts.gates} gate templates`);
 
+  // Checklists on the shipped gate templates. activate_tenant() seeds gates
+  // with an empty checklist because their content is tenant configuration —
+  // but a gate with nothing to tick makes the whole control look decorative,
+  // and the checklist is what actually blocks approval.
+  const CHECKLISTS: Record<number, Array<{ key: string; label: string }>> = {
+    0: [
+      { key: 'signed', label: 'Signed contract on file' },
+      { key: 'deposit', label: 'Deposit received' },
+      { key: 'scope', label: 'Scope of work agreed with the customer' },
+    ],
+    1: [
+      { key: 'budget', label: 'Budget built from the sold estimate' },
+      { key: 'selections', label: 'Customer selections locked' },
+      { key: 'permit', label: 'Permit requirement determined' },
+    ],
+    2: [
+      { key: 'subs', label: 'Trade partners booked and compliant' },
+      { key: 'materials', label: 'Long-lead materials ordered' },
+      { key: 'site', label: 'Site protection and access arranged' },
+    ],
+    3: [
+      { key: 'punch', label: 'Punch list walked with the customer' },
+      { key: 'inspections', label: 'All inspections passed' },
+    ],
+    4: [
+      { key: 'warranty', label: 'Warranty documents issued' },
+      { key: 'final_clean', label: 'Final clean complete' },
+      { key: 'retention', label: 'Retention released to trade partners' },
+    ],
+  };
+  await db.withTenant(TENANT_ID, async (c) => {
+    for (const [gate, items] of Object.entries(CHECKLISTS)) {
+      await c.query(
+        `UPDATE projects.gate_templates SET checklist = $3::jsonb
+          WHERE tenant_id = $1 AND gate_number = $2`,
+        [TENANT_ID, Number(gate), JSON.stringify(items)],
+      );
+    }
+  });
+
   const ids = await db.withTenant(TENANT_ID, async (c) => {
     const staff: Record<string, string> = {};
     for (const [key, name, email, role] of [

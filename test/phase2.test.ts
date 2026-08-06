@@ -647,3 +647,72 @@ async function costCodeIdFor(code: string): Promise<string> {
   );
   return rows.rows[0]!.id;
 }
+
+describe('commitments that would land nowhere', () => {
+  it('warns when a PO cost type does not match the budget line for that code', async () => {
+    // v_cost_position matches a commitment to a budget line on cost code AND
+    // cost type. A mismatch joins to nothing: the money does not show as
+    // committed, does not show as variance, and is absent from the only number
+    // this module exists to produce.
+    const { projectId, lines } = await projectWithBudget();
+    const tile = lines.find((l) => l.code === '1120')!; // budgeted as S
+    const res = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/purchase-orders`)
+      .send({
+        po_number: 'PO-MISMATCH',
+        supplier_name: 'Somebody',
+        cost_code_id: tile.cost_code_id,
+        cost_type: 'M', // budgeted as S
+        amount: 1000,
+        scope_text: 'x',
+        issue: true,
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.warning.code).toBe('no_matching_budget_line');
+    expect(res.body.data.warning.budgeted_as).toContain('S');
+
+    // And the demonstration that the warning is not decorative.
+    const cost = await owner().get(`/api/v1/projects/projects/${projectId}/cost-position`);
+    const row = (cost.body.data as any[]).find((r) => r.cost_code === '1120');
+    expect(row.committed_open).toBe(0);
+  });
+
+  it('does not warn when the types agree', async () => {
+    const { projectId, lines } = await projectWithBudget();
+    const tile = lines.find((l) => l.code === '1120')!;
+    const res = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/purchase-orders`)
+      .send({
+        po_number: 'PO-MATCH',
+        supplier_name: 'Somebody',
+        cost_code_id: tile.cost_code_id,
+        cost_type: 'S',
+        amount: 1000,
+        scope_text: 'x',
+        issue: true,
+      });
+    expect(res.body.data.warning).toBeNull();
+
+    const cost = await owner().get(`/api/v1/projects/projects/${projectId}/cost-position`);
+    const row = (cost.body.data as any[]).find((r) => r.cost_code === '1120');
+    expect(row.committed_open).toBe(1000);
+  });
+
+  it('warns when nothing is budgeted against the code at all', async () => {
+    const { projectId } = await projectWithBudget();
+    const unbudgeted = await costCodeIdFor('1440');
+    const res = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/purchase-orders`)
+      .send({
+        po_number: 'PO-UNBUDGETED',
+        supplier_name: 'Somebody',
+        cost_code_id: unbudgeted,
+        cost_type: 'L',
+        amount: 500,
+        scope_text: 'x',
+        issue: true,
+      });
+    expect(res.body.data.warning.code).toBe('no_matching_budget_line');
+    expect(res.body.data.warning.budgeted_as).toEqual([]);
+  });
+});

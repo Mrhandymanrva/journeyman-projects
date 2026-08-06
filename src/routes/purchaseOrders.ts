@@ -133,7 +133,45 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
           body.issue ? new Date().toISOString() : null,
         ],
       );
-      sendData(ctx.res, { ...rows[0], amount: num(rows[0]!.amount) }, undefined, 201);
+      // v_cost_position matches a commitment to a budget line on cost code AND
+      // cost type. A purchase order raised against a code that is budgeted
+      // under a different type joins to nothing: it does not appear as
+      // committed, it does not appear as a variance, and the money is simply
+      // absent from the only number this module exists to produce.
+      //
+      // Not a rejection — committing before budgeting is legitimate, and a
+      // refusal here would push the cost outside the system entirely. A named
+      // warning, like the overbilling one.
+      const budgeted = await ctx.db.query<{ cost_type: string }>(
+        `SELECT cost_type::text AS cost_type FROM projects.budget_lines
+          WHERE project_id = $1 AND cost_code_id = $2`,
+        [projectId, body.cost_code_id],
+      );
+      const matches = budgeted.rows.some((r) => r.cost_type === body.cost_type);
+
+      sendData(
+        ctx.res,
+        {
+          ...rows[0],
+          amount: num(rows[0]!.amount),
+          warning: matches
+            ? null
+            : {
+                code: 'no_matching_budget_line',
+                message:
+                  budgeted.rows.length > 0
+                    ? `This cost code is budgeted as ${budgeted.rows
+                        .map((r) => r.cost_type)
+                        .join('/')}, not ${body.cost_type}. The commitment will not show ` +
+                      `against the budget line until the two agree.`
+                    : `Nothing is budgeted against this cost code, so the commitment ` +
+                      `will not appear in the cost position.`,
+                budgeted_as: budgeted.rows.map((r) => r.cost_type),
+              },
+        },
+        undefined,
+        201,
+      );
     }),
   );
 

@@ -38,6 +38,7 @@
   <div class="rail-in">
     <div class="mark"><b id="tenant">—</b><span>Project Console</span></div>
     <div class="switch" id="switch"></div>
+    <button class="btn sm" id="project-new" type="button">New project</button>
     <div class="who" id="who" hidden></div>
   </div>
 </div>
@@ -55,12 +56,17 @@
 
     <div id="notice"></div>
 
+    <div class="stage-bar" id="stagebar"></div>
+
     <div class="gates" id="gates"></div>
 
     <div class="grid">
       <div>
         <div class="card">
-          <div class="card-h"><span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span></div>
+          <div class="card-h">
+            <span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span>
+            <button class="btn sm" id="budget-add" type="button">Add line</button>
+          </div>
           <div class="card-b">
             <div class="bh"><div class="lbl">Cost code</div><div class="lbl">Budget</div><div class="lbl">Variance</div></div>
             <div id="budget"></div>
@@ -74,8 +80,27 @@
         </div>
 
         <div class="card">
-          <div class="card-h"><span class="lbl">Trade partners this week</span><span class="tag" id="stag"></span></div>
+          <div class="card-h">
+            <span class="lbl">Purchase orders</span><span class="tag" id="potag"></span>
+            <button class="btn sm" id="po-new" type="button">Issue PO</button>
+          </div>
+          <div class="card-b" id="pos"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <span class="lbl">Trade partners this week</span><span class="tag" id="stag"></span>
+            <button class="btn sm" id="sched-new" type="button">Schedule work</button>
+          </div>
           <div class="card-b" id="subs"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <span class="lbl">Daily log</span><span class="tag" id="logtag"></span>
+            <button class="btn sm" id="log-new" type="button">Write today's log</button>
+          </div>
+          <div class="card-b" id="logs"></div>
         </div>
       </div>
 
@@ -142,6 +167,16 @@
       <code>books@demo.test</code>.
     </p>
   </form>
+</div>
+
+<div class="drawer-veil" id="drawer" hidden>
+  <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+    <div class="drawer-h">
+      <h2 id="drawer-title"></h2>
+      <button class="x" id="drawer-close" type="button" aria-label="Close">&times;</button>
+    </div>
+    <div class="drawer-b" id="drawer-body"></div>
+  </div>
 </div>
 
 <script src="/console.js" type="module"></script>

@@ -172,9 +172,18 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       const nameOf = (staffId: unknown) =>
         people.rows.find((p) => p.id === staffId)?.full_name ?? null;
 
+      // Joined to the template for approver_role and freezes_baseline. Without
+      // them the caller cannot tell who is allowed to approve a gate, and a
+      // console that guesses "owner" is a console that hides the button from
+      // the manager whose job it actually is.
       const gates = await ctx.db.query(
-        `SELECT gate_number, title, status, checklist, approved_by, approved_at, rejected_note
-           FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
+        `SELECT g.gate_number, g.title, g.status::text AS status, g.checklist,
+                g.approved_by, g.approved_at, g.rejected_note,
+                gt.approver_role::text AS approver_role, gt.freezes_baseline
+           FROM projects.stage_gates g
+           LEFT JOIN projects.gate_templates gt
+                  ON gt.tenant_id = g.tenant_id AND gt.gate_number = g.gate_number
+          WHERE g.project_id = $1 ORDER BY g.gate_number`,
         [id],
       );
       const draws = await ctx.db.query<{
