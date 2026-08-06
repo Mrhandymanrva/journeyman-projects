@@ -119,19 +119,28 @@
     <p class="err" id="signin-error"></p>
     <label>
       <span class="lbl">Email</span>
+      <!-- Filled in, not hinted. These were placeholders naming a tenant that
+           did not exist on this instance, which reads as "here are your
+           credentials" right up until it does not work. -->
       <input id="signin-email" type="email" autocomplete="username" required
-             placeholder="owner@example.test">
+             value="owner@demo.test">
     </label>
     <label>
       <span class="lbl">Tenant slug</span>
-      <input id="signin-tenant" placeholder="richmond" required>
+      <input id="signin-tenant" required value="demo">
     </label>
     <label>
       <span class="lbl">Access token</span>
       <input id="signin-token" type="password" autocomplete="off" required
-             placeholder="shared secret">
+             placeholder="DEV_LOGIN_TOKEN">
     </label>
     <button type="submit">Sign in</button>
+    <p class="hint">
+      The token is the <code>DEV_LOGIN_TOKEN</code> variable on this service.
+      Other roles on the demo account, which each see a different console:
+      <code>pm@demo.test</code>, <code>office@demo.test</code>,
+      <code>books@demo.test</code>.
+    </p>
   </form>
 </div>
 
