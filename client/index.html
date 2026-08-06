@@ -112,7 +112,9 @@
     <p>
       Development sign-in. The platform owns the real staff session; this
       exchanges an email for one against the module's own session store, and
-      only runs when <code>DEV_LOGIN</code> is switched on.
+      only runs when <code>DEV_LOGIN</code> is switched on. The access token is
+      a shared secret so that finding this URL is not by itself enough to get
+      in — it is a holding position, not authentication.
     </p>
     <p class="err" id="signin-error"></p>
     <label>
@@ -123,6 +125,11 @@
     <label>
       <span class="lbl">Tenant slug</span>
       <input id="signin-tenant" placeholder="richmond" required>
+    </label>
+    <label>
+      <span class="lbl">Access token</span>
+      <input id="signin-token" type="password" autocomplete="off" required
+             placeholder="shared secret">
     </label>
     <button type="submit">Sign in</button>
   </form>

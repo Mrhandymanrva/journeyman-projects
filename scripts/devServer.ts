@@ -33,16 +33,24 @@ await seedDemoTenant({
 });
 
 const staffSessions = new MemoryStaffSessions();
+// Fixed and published in the banner below: this listens on localhost with
+// throwaway data, so a secret nobody can read is friction without safety.
+const DEV_TOKEN = 'local-dev';
 const app = createApp({
   database: db,
   staffSessions,
-  devLogin: { enabled: true, sessions: staffSessions, nodeEnv: 'development' },
+  devLogin: {
+    enabled: true,
+    sessions: staffSessions,
+    nodeEnv: 'development',
+    accessToken: DEV_TOKEN,
+  },
 });
 
 app.listen(PORT, () => {
   console.log(`
   Console:  http://localhost:${PORT}
-  Sign in:  owner@demo.test  ·  tenant slug: demo
+  Sign in:  owner@demo.test  ·  tenant slug: demo  ·  access token: ${DEV_TOKEN}
 
   Other roles worth trying, because they see a different console:
     pm@demo.test      project manager — no margin, no invoice recording

@@ -75,6 +75,9 @@ el('signin-form').addEventListener('submit', async (event) => {
       body: JSON.stringify({
         email: el('signin-email').value.trim(),
         tenant_slug: el('signin-tenant').value.trim(),
+        // Never stored. Held only for the length of this request — a shared
+        // secret in localStorage is a shared secret in every future XSS.
+        access_token: el('signin-token').value,
       }),
     });
     const body = await res.json();

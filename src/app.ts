@@ -25,7 +25,13 @@ export interface AppOptions {
    * with no password. Requires a MemoryStaffSessions store, and is refused
    * outright when NODE_ENV is production.
    */
-  devLogin?: { enabled: boolean; sessions: MemoryStaffSessions; nodeEnv: string };
+  devLogin?: {
+    enabled: boolean;
+    sessions: MemoryStaffSessions;
+    nodeEnv: string;
+    /** Required. Every dev sign-in request must present it. */
+    accessToken: string;
+  };
   /** Serve the console from client/. Off in tests. */
   serveConsole?: boolean;
 }
@@ -59,12 +65,22 @@ export function createApp(opts: AppOptions): Express {
           'session from an email address with no password.',
       );
     }
+    if (!opts.devLogin.accessToken) {
+      throw new Error(
+        'DEV_LOGIN requires DEV_LOGIN_TOKEN. Without it, anyone who finds the ' +
+          'hostname is signed in as an owner.',
+      );
+    }
     // eslint-disable-next-line no-console
     console.warn(
-      '\n  DEV_LOGIN is on. POST /api/v1/dev/session will mint a staff session\n' +
-        '  for any active email on any account, with no password.\n',
+      '\n  DEV_LOGIN is on. POST /api/v1/dev/session mints a staff session for\n' +
+        '  any active email on any account, given the shared access token.\n' +
+        '  This is a holding position until platform sign-in lands.\n',
     );
-    app.use('/api/v1', devSessionRoutes(opts.database, opts.devLogin.sessions));
+    app.use(
+      '/api/v1',
+      devSessionRoutes(opts.database, opts.devLogin.sessions, opts.devLogin.accessToken),
+    );
   }
 
   const staff = express.Router();

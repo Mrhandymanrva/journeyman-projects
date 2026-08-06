@@ -4,6 +4,8 @@ export interface Env {
   nodeEnv: string;
   /** Mounts the passwordless dev sign-in. Refused when nodeEnv is production. */
   devLogin: boolean;
+  /** Shared secret every dev sign-in must present. Required when devLogin is on. */
+  devLoginToken: string;
 }
 
 /**
@@ -57,10 +59,31 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   }
 
   const nodeEnv = source.NODE_ENV ?? 'development';
+  const devLogin = source.DEV_LOGIN === 'true' && nodeEnv !== 'production';
+  const devLoginToken = source.DEV_LOGIN_TOKEN ?? '';
+
+  if (devLogin && !devLoginToken) {
+    throw new MissingConfigError(
+      'DEV_LOGIN is on but DEV_LOGIN_TOKEN is not set.',
+      [
+        'Dev sign-in mints a staff session from an email address with no password.',
+        'On anything reachable from the internet, that means whoever finds the',
+        'hostname is signed in as an owner.',
+        '',
+        'Set DEV_LOGIN_TOKEN to a long random string and give it to the people who',
+        'should be able to look at the console. It is a shared secret, not',
+        'authentication — a holding position until platform sign-in lands.',
+        '',
+        'Or set DEV_LOGIN=false and leave the deployment locked.',
+      ].join('\n'),
+    );
+  }
+
   return {
     port: Number(source.PORT ?? 3200),
     databaseUrl,
     nodeEnv,
-    devLogin: source.DEV_LOGIN === 'true' && nodeEnv !== 'production',
+    devLogin,
+    devLoginToken,
   };
 }

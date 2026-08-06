@@ -62,7 +62,12 @@ const staffSessions = new MemoryStaffSessions();
 const app = createApp({
   database,
   staffSessions,
-  devLogin: { enabled: env.devLogin, sessions: staffSessions, nodeEnv: env.nodeEnv },
+  devLogin: {
+    enabled: env.devLogin,
+    sessions: staffSessions,
+    nodeEnv: env.nodeEnv,
+    accessToken: env.devLoginToken,
+  },
 });
 const server = app.listen(env.port, () => {
   console.log(`journeyman-projects listening on :${env.port} (${env.nodeEnv})`);

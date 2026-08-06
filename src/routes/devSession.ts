@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Database } from '../db/database.js';
@@ -8,27 +9,45 @@ import { parseBody } from './shared.js';
 
 /**
  * Development sign-in. This mints a staff session from an email address with
- * no password and no proof of anything.
+ * no proof that the person asking is that person.
  *
  * It exists because the platform owns the real staff session and the console
- * needs a way in before that integration lands. It is mounted only when
- * DEV_LOGIN=true, and createApp refuses to mount it at all when NODE_ENV is
- * production — a single env var flipped by accident should not be enough to
- * turn a production deployment into an open door, so there are two conditions
- * and one of them cannot be set by a dashboard.
+ * needs a way in before that integration lands. Three conditions gate it:
+ *
+ *   1. DEV_LOGIN=true
+ *   2. NODE_ENV is not production — createApp throws rather than mounting it,
+ *      so one variable flipped by accident is not enough to open the door
+ *   3. DEV_LOGIN_TOKEN is set, and every request must present it
+ *
+ * The third is what makes it survivable on a public URL. Without it, anyone
+ * who finds the hostname is signed in as an owner. With it, the hostname alone
+ * is not enough — which is a shared secret rather than authentication, and is
+ * a holding position, not a design.
  *
  * Delete this file when the platform resolver lands.
  */
-export function devSessionRoutes(database: Database, sessions: MemoryStaffSessions): Router {
+export function devSessionRoutes(
+  database: Database,
+  sessions: MemoryStaffSessions,
+  accessToken: string,
+): Router {
   const router = Router();
 
   const schema = z.object({
     email: z.string().email(),
     tenant_slug: z.string().min(1),
+    access_token: z.string().min(1),
   });
 
   router.post('/dev/session', (req, res, next) => {
     const body = parseBody(schema, req.body);
+
+    if (!constantTimeEquals(body.access_token, accessToken)) {
+      // 401 with nothing else. No hint about which part was wrong, and the
+      // comparison does not return early on the first differing byte.
+      next(new ApiError('unauthenticated', 'That access token is not valid.'));
+      return;
+    }
 
     // The tenant lookup runs without a tenant set, which reads through RLS as
     // zero rows on every tenant-scoped table — `tenants` is not one of them,
@@ -65,4 +84,15 @@ export function devSessionRoutes(database: Database, sessions: MemoryStaffSessio
   });
 
   return router;
+}
+
+/**
+ * Length is not secret — comparing buffers of different sizes throws in
+ * timingSafeEqual, so that is checked first and separately.
+ */
+function constantTimeEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
 }
