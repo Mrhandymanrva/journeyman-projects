@@ -8,3 +8,5 @@ dist/
 # transient: role passwords generated during provisioning, deleted after use
 .railway-provision-secrets
 .railway/
+
+.dev-login-token.local

@@ -41,65 +41,90 @@ otherwise. It is the last line of defence, not the mechanism.
 
 ## Railway, start to finish
 
-The deploy will crash-loop on `DATABASE_URL is required` until there is a
-database. That is the app refusing to start rather than a bug — a projects
-module with no database has nothing to serve — but here is the whole sequence.
+This is the sequence that actually worked, not the one that looked like it
+would. The difference matters: a managed Postgres has **no public endpoint**
+unless you enable a TCP proxy, so nothing you run from a laptop can reach it.
+Provisioning has to happen inside the deployment.
 
 **1. Add a PostgreSQL service** to the same Railway project.
 
-**2. Reference it from the app service.** You are not typing a connection
-string; you are pointing at the service, so it keeps working when the password
-rotates:
+**2. Set these on the app service.** `${{Postgres.*}}` are service references,
+not typed-in strings, so they survive a password rotation:
 
 ```
-DATABASE_URL = ${{Postgres.DATABASE_URL}}
+ADMIN_DATABASE_URL = ${{Postgres.DATABASE_URL}}
+JP_OWNER_PASSWORD  = <long random string>
+JP_APP_PASSWORD    = <long random string>
+DATABASE_URL       = postgresql://jp_app:<JP_APP_PASSWORD>@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}
 ```
 
-**3. Provision the two roles.** From your machine, against the Postgres
-service's *public* URL (Railway shows it under the database's Connect tab):
+`ADMIN_DATABASE_URL` is used only by the pre-deploy step. The app itself only
+ever reads `DATABASE_URL`, which is `jp_app` — a role with no superuser, no
+BYPASSRLS, and no ownership of anything.
 
-```bash
-ADMIN_DATABASE_URL='postgres://postgres:…@…proxy.rlwy.net:PORT/railway' JP_OWNER_PASSWORD='…' JP_APP_PASSWORD='…' pnpm db:provision
+**3. Deploy.** `railway.json` runs `node dist/provision.js` before the app
+starts. It creates both roles, installs `citext`, applies the schema as
+`jp_owner`, applies the grants, and verifies the result. It is idempotent, so
+it runs on every deploy and is also how grants reach a table a later migration
+adds.
+
+A healthy first deploy logs:
+
+```
+connected as postgres (superuser)
+role jp_owner ready (created)
+role jp_app ready (created)
+extension citext ready
+applied db/001_schema.sql (91/91 statements)
+applied db/002_seed.sql (7/7 statements)
+grants applied
+
+verification (every value must be false or 0):
+  ok    jp_app is superuser = false
+  ok    jp_app has BYPASSRLS = false
+  ok    tables owned by jp_app = 0
+  ok    tenant-scoped tables without FORCE RLS = 0
+  ok    tenant-scoped tables missing entirely = 0
 ```
 
-It creates `jp_owner` and `jp_app`, applies the schema as the owner, sets
-grants, verifies, and prints the connection string the app should use.
+If any check fails the deploy stops there. That is the point of them.
 
-**4. Point the app at `jp_app`,** replacing the reference from step 2 with the
-string step 3 printed. This is the step that matters: until you do it, the app
-is connecting as a superuser and row-level security does nothing. The startup
-assertions will refuse to boot, which is the backstop and not the fix.
-
-**5. Redeploy.** The log should read `journeyman-projects listening on :3200`.
-
-### Getting into the console on a deployed instance
+### Getting into the console on a staging instance
 
 There is no platform identity integration yet, so the only sign-in that exists
-is `POST /api/v1/dev/session` — it mints a staff session from an email address
-with **no password**. It is mounted only when `DEV_LOGIN=true`, and refused
-outright when `NODE_ENV=production`.
-
-For a **staging or preview** deployment, that is fine and is how you get in:
+mints a staff session from an email address. Three things gate it, and all
+three are required:
 
 ```
-DEV_LOGIN = true
-NODE_ENV  = staging          # anything other than "production"
+NODE_ENV        = staging          # anything other than "production"
+DEV_LOGIN       = true
+DEV_LOGIN_TOKEN = <long random string>
 ```
 
-Then seed a demo account and sign in as `owner@demo.test`:
+Without `DEV_LOGIN_TOKEN` the app refuses to start, because dev login without a
+shared secret means whoever finds the hostname is signed in as an owner. With
+it, the hostname alone is not enough. It is a shared secret, not
+authentication — see `docs/OPEN_ITEMS.md` §0 for the three ways that closes.
 
-```bash
-DATABASE_URL='<the jp_app url>' pnpm seed:demo
-```
+`NODE_ENV=production` makes the app refuse to mount dev sign-in at all, so a
+production deployment currently has **no way in**. That is deliberate: an
+unusable deployment beats an open one.
 
-**Do not do this for a real customer.** Before a paying tenant exists, staff
-sign-in has to come from the platform — see `docs/OPEN_ITEMS.md`. `NODE_ENV=production`
-makes the app refuse to mount dev sign-in at all, which means today a
-production deployment has no way in at all. That is deliberate: an unusable
-deployment is better than an open one, but it is a gap that has to close before
-launch.
+### Demo data
 
-## Provisioning, once per database
+Same constraint — no public endpoint, nothing to connect to from outside. Set
+`SEED_DEMO=true` and redeploy; the pre-deploy step rebuilds the demo account
+after provisioning passes. Refused under `NODE_ENV=production`, because demo
+tenants and customer data must never share a database.
+
+Turn it off again once seeded, or every deploy rebuilds it and discards
+anything you did in the console.
+
+## Provisioning from outside, when the host does expose the database
+
+Only possible where there is a reachable endpoint — a self-hosted Postgres, or
+a managed one with a TCP proxy switched on. Otherwise use the pre-deploy step
+above.
 
 ```bash
 export ADMIN_DATABASE_URL='postgres://postgres:…@host:5432/railway'
@@ -123,12 +148,23 @@ REASSIGN OWNED BY postgres TO jp_owner;
 ## Application environment
 
 ```
-DATABASE_URL=postgres://jp_app:…@host:5432/railway
-PORT=3200
-NODE_ENV=production
+DATABASE_URL     postgres://jp_app:…@host:5432/railway     required
+PORT             3200                                      default
+NODE_ENV         production | staging | development         default development
+DEV_LOGIN        true | false                               default false
+DEV_LOGIN_TOKEN  <shared secret>                            required if DEV_LOGIN=true
 ```
 
-That is the whole list. Nothing else is read.
+Read by the pre-deploy provisioner only, never by the app:
+
+```
+ADMIN_DATABASE_URL   a superuser connection
+JP_OWNER_PASSWORD
+JP_APP_PASSWORD
+SEED_DEMO            true rebuilds the demo account; refused in production
+```
+
+That is the whole list.
 
 ## Activating a tenant
 
