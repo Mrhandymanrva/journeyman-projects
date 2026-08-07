@@ -44,6 +44,7 @@ interface ForeignIds {
   milestoneId: string;
   scheduleItemId: string;
   changeOrderId: string;
+  externalInvoiceId: string;
 }
 let foreign: ForeignIds;
 
@@ -153,9 +154,17 @@ beforeAll(async () => {
   });
   expect(coRes.status, JSON.stringify(coRes.body)).toBe(201);
 
+  const invRes = await b.post('/api/v1/projects/external-invoices').send({
+    external_invoice_number: 'TENANT-B-INV-1',
+    amount: 500,
+    project_id: projectId,
+  });
+  expect(invRes.status, JSON.stringify(invRes.body)).toBe(201);
+
   foreign = {
     projectId,
     changeOrderId: coRes.body.data.id,
+    externalInvoiceId: invRes.body.data.id,
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
@@ -366,6 +375,19 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/vendors/:id/scores`,
     path: (f) => `${BASE}/vendors/${f.vendorId}/scores`,
     body: (f) => ({ project_id: f.projectId, quality_score: 1 }),
+  },
+
+  // --- external invoices --------------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/external-invoices`,
+    path: (f) => `${BASE}/projects/${f.projectId}/external-invoices`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/external-invoices/:id/apply`,
+    path: (f) => `${BASE}/external-invoices/${f.externalInvoiceId}/apply`,
+    body: (f) => ({ draw_id: f.drawId }),
   },
 
   // --- statement ----------------------------------------------------------

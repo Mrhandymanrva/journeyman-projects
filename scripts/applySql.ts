@@ -18,6 +18,7 @@ const FILES = [
   path.join(repoRoot, 'db/002_seed.sql'),
   path.join(repoRoot, 'db/004_change_orders.sql'),
   path.join(repoRoot, 'db/005_draw_schedule.sql'),
+  path.join(repoRoot, 'db/006_external_invoices.sql'),
 ];
 
 const dryRun = process.argv.includes('--dry-run');

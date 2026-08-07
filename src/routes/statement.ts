@@ -33,6 +33,10 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         contract_value: string;
       }>(ctx, projectId, 'project_number, name, currency, contract_value');
 
+      // Invoiced is measured by what has been APPLIED to each draw, not by
+      // whether a single invoice number happens to be stamped on it. A
+      // milestone satisfied by nine technician visits is nine applications,
+      // and the scalar only ever held the first.
       const draws = await ctx.db.query<{
         id: string;
         sequence_number: number;
@@ -43,11 +47,16 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         is_retainage: boolean;
         external_invoice_number: string | null;
         external_invoice_verified_at: string | null;
+        applied_amount: string;
+        invoice_count: string;
       }>(
-        `SELECT id, sequence_number, label, trigger_milestone, amount,
-                status::text AS status, is_retainage,
-                external_invoice_number, external_invoice_verified_at
-           FROM projects.draws WHERE project_id = $1 ORDER BY sequence_number`,
+        `SELECT d.id, d.sequence_number, d.label, d.trigger_milestone, d.amount,
+                d.status::text AS status, d.is_retainage,
+                d.external_invoice_number, d.external_invoice_verified_at,
+                v.applied_amount, v.invoice_count
+           FROM projects.draws d
+           JOIN projects.v_draw_application v ON v.draw_id = d.id
+          WHERE d.project_id = $1 ORDER BY d.sequence_number`,
         [projectId],
       );
 
@@ -82,23 +91,27 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         amount: num(d.amount) ?? 0,
         status: d.status,
         is_retainage: d.is_retainage,
+        applied_amount: num(d.applied_amount) ?? 0,
+        invoice_count: Number(d.invoice_count ?? 0),
         external_invoice_number: d.external_invoice_number,
         // Invoiced means an invoice number is recorded against it. Whether that
         // number was verified against the revenue system is reported
         // separately, because "we think we billed it" and "we know we billed
         // it" are different states and a statement should not blur them.
-        invoiced: Boolean(d.external_invoice_number),
+        invoiced: (num(d.applied_amount) ?? 0) > 0,
         verified: Boolean(d.external_invoice_verified_at),
       }));
 
       const scheduled = drawRows.reduce((s, d) => s + d.amount, 0);
-      const invoiced = drawRows.filter((d) => d.invoiced).reduce((s, d) => s + d.amount, 0);
+      // Sum of what has actually been applied, so a part-billed milestone
+      // reports the part rather than all or nothing.
+      const invoiced = drawRows.reduce((s, d) => s + d.applied_amount, 0);
       const retainageHeld = drawRows
-        .filter((d) => d.is_retainage && !d.invoiced)
-        .reduce((s, d) => s + d.amount, 0);
+        .filter((d) => d.is_retainage)
+        .reduce((s, d) => s + (d.amount - d.applied_amount), 0);
       const earnedNotInvoiced = drawRows
-        .filter((d) => !d.invoiced && (d.status === 'earned' || d.status === 'approved'))
-        .reduce((s, d) => s + d.amount, 0);
+        .filter((d) => d.status === 'earned' || d.status === 'approved')
+        .reduce((s, d) => s + (d.amount - d.applied_amount), 0);
 
       sendData(ctx.res, {
         project_number: project.project_number,

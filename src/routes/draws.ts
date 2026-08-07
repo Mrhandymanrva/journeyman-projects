@@ -38,11 +38,18 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
       const adapter = await resolveAdapter(ctx.db, project.external_system_id);
 
       const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `SELECT id, sequence_number, label, trigger_milestone, amount,
-                status::text AS status, earned_at, approved_by, approved_at,
-                external_invoice_number, external_invoice_recorded_at,
-                external_invoice_verified_at
-           FROM projects.draws WHERE project_id = $1 ORDER BY sequence_number`,
+        // is_retainage and the applied total travel with the draw: the console
+        // cannot mark money as held rather than merely unbilled without them,
+        // and a milestone satisfied by nine technician visits has an applied
+        // total the scalar invoice number never showed.
+        `SELECT d.id, d.sequence_number, d.label, d.trigger_milestone, d.amount,
+                d.status::text AS status, d.earned_at, d.approved_by, d.approved_at,
+                d.external_invoice_number, d.external_invoice_recorded_at,
+                d.external_invoice_verified_at, d.is_retainage,
+                v.applied_amount, v.unapplied_amount, v.invoice_count
+           FROM projects.draws d
+           JOIN projects.v_draw_application v ON v.draw_id = d.id
+          WHERE d.project_id = $1 ORDER BY d.sequence_number`,
         [projectId],
       );
 
@@ -169,6 +176,42 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         );
       }
 
+      // This route is the shortcut: "the whole of this draw was invoiced, as
+      // this one invoice". It records an external_invoice and applies all of it
+      // to the draw, so there is ONE way the system counts something as
+      // invoiced. Before, this stamped a scalar and the statement — which now
+      // sums applications — read it as unbilled.
+      //
+      // Where a milestone is satisfied by many technician visits, use
+      // POST /external-invoices and apply them individually.
+      const recorded = await ctx.db.query<{ id: string }>(
+        `INSERT INTO projects.external_invoices
+           (tenant_id, external_system_id, project_id, external_invoice_number,
+            amount, invoiced_on, source, recorded_by)
+         SELECT $1, p.external_system_id, p.id, $3, $4, CURRENT_DATE, 'manual', $5
+           FROM projects.projects p WHERE p.id = $2
+         RETURNING id`,
+        [
+          ctx.staff.tenantId,
+          draw.project_id,
+          body.external_invoice_number,
+          num(draw.amount) ?? 0,
+          ctx.staff.staffId,
+        ],
+      );
+      await ctx.db.query(
+        `INSERT INTO projects.draw_invoice_applications
+           (tenant_id, draw_id, external_invoice_id, amount_applied, applied_by, note)
+         VALUES ($1,$2,$3,$4,$5,'Recorded against the whole draw')`,
+        [
+          ctx.staff.tenantId,
+          drawId,
+          recorded.rows[0]!.id,
+          num(draw.amount) ?? 0,
+          ctx.staff.staffId,
+        ],
+      );
+
       // recorded_at, verified_at and status are all set by the database
       // trigger. Deliberately not repeated here — two implementations of a
       // stamp is one implementation that drifts.
@@ -281,5 +324,15 @@ async function loadVisibleDraw(ctx: StaffContext, drawId: string): Promise<DrawR
 }
 
 function serialiseDraw(row: Record<string, unknown>): Record<string, unknown> {
-  return { ...row, amount: num(row.amount) };
+  return {
+    ...row,
+    amount: num(row.amount),
+    ...(row.applied_amount === undefined
+      ? {}
+      : {
+          applied_amount: num(row.applied_amount),
+          unapplied_amount: num(row.unapplied_amount),
+          invoice_count: Number(row.invoice_count ?? 0),
+        }),
+  };
 }
