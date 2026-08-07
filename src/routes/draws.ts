@@ -176,41 +176,56 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         );
       }
 
-      // This route is the shortcut: "the whole of this draw was invoiced, as
-      // this one invoice". It records an external_invoice and applies all of it
-      // to the draw, so there is ONE way the system counts something as
-      // invoiced. Before, this stamped a scalar and the statement — which now
-      // sums applications — read it as unbilled.
+      // Shortcut for the common case: this draw was billed, and here is the
+      // number the resulting invoice carries in the revenue system. It issues
+      // the project invoice and records its external reference in one call,
+      // because that is what "record the invoice number for this draw" means
+      // now that this module produces the customer's document.
       //
-      // Where a milestone is satisfied by many technician visits, use
-      // POST /external-invoices and apply them individually.
-      const recorded = await ctx.db.query<{ id: string }>(
-        `INSERT INTO projects.external_invoices
-           (tenant_id, external_system_id, project_id, external_invoice_number,
-            amount, invoiced_on, source, recorded_by)
-         SELECT $1, p.external_system_id, p.id, $3, $4, CURRENT_DATE, 'manual', $5
-           FROM projects.projects p WHERE p.id = $2
-         RETURNING id`,
-        [
-          ctx.staff.tenantId,
-          draw.project_id,
-          body.external_invoice_number,
-          num(draw.amount) ?? 0,
-          ctx.staff.staffId,
-        ],
+      // Use POST /draws/:id/invoice and POST /invoices/:id/external-ref when
+      // the two happen at different times, which is the usual case once the
+      // adapter is doing the recording.
+      const existing = await ctx.db.query<{ id: string }>(
+        `SELECT id FROM projects.project_invoices
+          WHERE draw_id = $1 AND status <> 'void'`,
+        [drawId],
       );
-      await ctx.db.query(
-        `INSERT INTO projects.draw_invoice_applications
-           (tenant_id, draw_id, external_invoice_id, amount_applied, applied_by, note)
-         VALUES ($1,$2,$3,$4,$5,'Recorded against the whole draw')`,
-        [
-          ctx.staff.tenantId,
-          drawId,
-          recorded.rows[0]!.id,
-          num(draw.amount) ?? 0,
-          ctx.staff.staffId,
-        ],
-      );
+      if (existing.rows[0]) {
+        await ctx.db.query(
+          `UPDATE projects.project_invoices
+              SET external_ref = $2, external_recorded_at = now()
+            WHERE id = $1 AND external_ref IS NULL`,
+          [existing.rows[0].id, body.external_invoice_number],
+        );
+      } else {
+        const project = await ctx.db.query<{ project_number: string }>(
+          `SELECT project_number FROM projects.projects WHERE id = $1`,
+          [draw.project_id],
+        );
+        const next = await ctx.db.query<{ n: number }>(
+          `SELECT COALESCE(MAX(sequence_number), 0) + 1 AS n
+             FROM projects.project_invoices WHERE project_id = $1`,
+          [draw.project_id],
+        );
+        const sequence = next.rows[0]!.n;
+        await ctx.db.query(
+          `INSERT INTO projects.project_invoices
+             (tenant_id, project_id, invoice_number, sequence_number, draw_id, amount,
+              description, external_ref, external_recorded_at, issued_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now(), $9)`,
+          [
+            ctx.staff.tenantId,
+            draw.project_id,
+            `${project.rows[0]!.project_number}-${String(sequence).padStart(2, '0')}`,
+            sequence,
+            drawId,
+            num(draw.amount) ?? 0,
+            `${draw.label ?? 'Draw'} — ${draw.trigger_milestone ?? ''}`.trim(),
+            body.external_invoice_number,
+            ctx.staff.staffId,
+          ],
+        );
+      }
 
       // recorded_at, verified_at and status are all set by the database
       // trigger. Deliberately not repeated here — two implementations of a

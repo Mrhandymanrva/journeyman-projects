@@ -132,6 +132,7 @@ for (const file of [
   'db/004_change_orders.sql',
   'db/005_draw_schedule.sql',
   'db/006_external_invoices.sql',
+  'db/007_project_invoices.sql',
 ]) {
   const full = path.join(repoRoot, file);
   const statements = splitSqlStatements(readFileSync(full, 'utf8'));

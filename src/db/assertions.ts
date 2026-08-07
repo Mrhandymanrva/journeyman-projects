@@ -54,6 +54,7 @@ export const TENANT_SCOPED_TABLES = [
   'draw_templates',
   'external_invoices',
   'draw_invoice_applications',
+  'project_invoices',
   'draws',
   'jurisdictions',
   'permits',

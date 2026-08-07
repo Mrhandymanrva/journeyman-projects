@@ -45,6 +45,7 @@ interface ForeignIds {
   scheduleItemId: string;
   changeOrderId: string;
   externalInvoiceId: string;
+  projectInvoiceId: string;
 }
 let foreign: ForeignIds;
 
@@ -161,10 +162,17 @@ beforeAll(async () => {
   });
   expect(invRes.status, JSON.stringify(invRes.body)).toBe(201);
 
+  // A billed draw, so tenant A has a project invoice to try to reach.
+  await b.post(`/api/v1/projects/draws/${drawRes.body.data[0].id}/earn`);
+  await b.post(`/api/v1/projects/draws/${drawRes.body.data[0].id}/approve`);
+  const piRes = await b.post(`/api/v1/projects/draws/${drawRes.body.data[0].id}/invoice`).send({});
+  expect(piRes.status, JSON.stringify(piRes.body)).toBe(201);
+
   foreign = {
     projectId,
     changeOrderId: coRes.body.data.id,
     externalInvoiceId: invRes.body.data.id,
+    projectInvoiceId: piRes.body.data.id,
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
@@ -388,6 +396,48 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/external-invoices/:id/apply`,
     path: (f) => `${BASE}/external-invoices/${f.externalInvoiceId}/apply`,
     body: (f) => ({ draw_id: f.drawId }),
+  },
+
+  // --- project invoices ---------------------------------------------------
+  {
+    method: 'get',
+    template: `${BASE}/projects/:id/invoices`,
+    path: (f) => `${BASE}/projects/${f.projectId}/invoices`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/draws/:id/invoice`,
+    path: (f) => `${BASE}/draws/${f.drawId}/invoice`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/change-orders/:id/invoice`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/invoice`,
+    body: () => ({}),
+  },
+  {
+    method: 'get',
+    template: `${BASE}/invoices/:id`,
+    path: (f) => `${BASE}/invoices/${f.projectInvoiceId}`,
+  },
+  {
+    method: 'post',
+    template: `${BASE}/invoices/:id/send`,
+    path: (f) => `${BASE}/invoices/${f.projectInvoiceId}/send`,
+    body: () => ({}),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/invoices/:id/external-ref`,
+    path: (f) => `${BASE}/invoices/${f.projectInvoiceId}/external-ref`,
+    body: () => ({ external_ref: 'STOLEN-1' }),
+  },
+  {
+    method: 'post',
+    template: `${BASE}/invoices/:id/void`,
+    path: (f) => `${BASE}/invoices/${f.projectInvoiceId}/void`,
+    body: () => ({}),
   },
 
   // --- statement ----------------------------------------------------------

@@ -168,8 +168,10 @@ describe('the statement', () => {
     expect(after.body.data.invoiced_to_date).toBe(12540);
     expect(after.body.data.earned_not_yet_invoiced).toBe(0);
     expect(after.body.data.remaining_to_invoice).toBe(41800 - 12540);
-    // Recorded is not verified, and a statement must not blur the two.
     expect(after.body.data.draws[0].invoiced).toBe(true);
+    // Carrying a reference in the revenue system is a different claim from
+    // having been verified against it.
+    expect(after.body.data.draws[0].recorded_in_revenue_system).toBe(true);
     expect(after.body.data.draws[0].verified).toBe(false);
   });
 

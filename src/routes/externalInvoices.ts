@@ -221,19 +221,10 @@ export function externalInvoiceRoutes(deps: StaffRouterDeps): Router {
       );
       const unapplied = num(state.rows[0]?.unapplied_amount) ?? 0;
 
-      // A draw becomes invoiced when it is fully covered, not when the first
-      // invoice lands on it. The scalar is stamped alongside for anything still
-      // reading it — see db/006_external_invoices.sql.
-      if (unapplied <= 0.005) {
-        await ctx.db.query(
-          `UPDATE projects.draws
-              SET status = 'invoiced',
-                  external_invoice_number = COALESCE(external_invoice_number, $2),
-                  external_invoice_recorded_at = COALESCE(external_invoice_recorded_at, now())
-            WHERE id = $1 AND status <> 'paid'`,
-          [body.draw_id, invoice.external_invoice_number],
-        );
-      }
+      // Deliberately does NOT change the draw's status. Matching technician
+      // invoices to a milestone says the work is evidenced, not that anybody
+      // has been asked for money. A draw becomes 'invoiced' when a project
+      // invoice is issued for it — see db/007_project_invoices.sql.
 
       sendData(ctx.res, {
         draw_id: body.draw_id,
@@ -241,7 +232,7 @@ export function externalInvoiceRoutes(deps: StaffRouterDeps): Router {
         draw_amount: num(state.rows[0]?.draw_amount),
         applied_to_draw: num(state.rows[0]?.applied_amount),
         still_unapplied_on_draw: unapplied,
-        draw_fully_invoiced: unapplied <= 0.005,
+        draw_fully_evidenced: unapplied <= 0.005,
       });
     }),
   );

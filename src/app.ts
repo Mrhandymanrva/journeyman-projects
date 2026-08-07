@@ -17,6 +17,7 @@ import { changeOrderRoutes } from './routes/changeOrders.js';
 import { drawRoutes } from './routes/draws.js';
 import { statementRoutes } from './routes/statement.js';
 import { externalInvoiceRoutes } from './routes/externalInvoices.js';
+import { projectInvoiceRoutes } from './routes/projectInvoices.js';
 import { fieldOperationRoutes } from './routes/fieldOperations.js';
 import { estimateImportRoutes } from './routes/estimateImports.js';
 import { devSessionRoutes } from './routes/devSession.js';
@@ -100,6 +101,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(drawRoutes(deps));
   staff.use(statementRoutes(deps));
   staff.use(externalInvoiceRoutes(deps));
+  staff.use(projectInvoiceRoutes(deps));
   staff.use(fieldOperationRoutes(deps));
   staff.use(estimateImportRoutes(deps));
   app.use('/api/v1/projects', staff);

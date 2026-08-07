@@ -93,7 +93,9 @@ describe('applying invoices to a draw', () => {
     expect(row.applied_amount).toBe(12540);
     expect(row.unapplied_amount).toBe(0);
     expect(row.invoice_count).toBe(3);
-    expect(row.status).toBe('invoiced');
+    // Deliberately NOT 'invoiced'. Matching technician detail to a milestone
+    // says the work is evidenced, not that the customer has been billed.
+    expect(row.status).not.toBe('invoiced');
   });
 
   it('marks the draw invoiced only when it is fully covered', async () => {
@@ -199,21 +201,39 @@ describe('the leakage report', () => {
   });
 });
 
-describe('the statement reads applications, not the scalar', () => {
-  it('reports a part-billed milestone as the part, not all or nothing', async () => {
+describe('detail is evidence, billing is the invoice', () => {
+  it('applied detail does not make the customer billed', async () => {
+    // The correction. Nine technician visits matched to a milestone says the
+    // work happened. Nobody has been asked for money until an invoice exists.
     const inv = await record({ project_id: projectId, amount: 5000 });
     await office()
       .post(`/api/v1/projects/external-invoices/${inv.id}/apply`)
       .send({ draw_id: draws[0]!.id });
 
     const res = await owner().get(`/api/v1/projects/projects/${projectId}/statement`);
-    expect(res.body.data.invoiced_to_date).toBe(5000);
-    expect(res.body.data.remaining_to_invoice).toBe(41800 - 5000);
-    expect(res.body.data.draws[0].applied_amount).toBe(5000);
-    expect(res.body.data.draws[0].invoice_count).toBe(1);
+    expect(res.body.data.invoiced_to_date).toBe(0);
+    expect(res.body.data.remaining_to_invoice).toBe(41800);
+    expect(res.body.data.draws[0].supporting_detail_applied).toBe(5000);
+    expect(res.body.data.draws[0].supporting_invoice_count).toBe(1);
+    expect(res.body.data.draws[0].invoiced).toBe(false);
   });
 
-  it('reports retainage still held when partly billed', async () => {
+  it('issuing the invoice is what bills it', async () => {
+    const deposit = draws[0]!;
+    await owner().post(`/api/v1/projects/draws/${deposit.id}/earn`);
+    await owner().post(`/api/v1/projects/draws/${deposit.id}/approve`);
+
+    const issued = await office().post(`/api/v1/projects/draws/${deposit.id}/invoice`).send({});
+    expect(issued.status, JSON.stringify(issued.body)).toBe(201);
+    expect(issued.body.data.amount).toBe(12540);
+
+    const res = await owner().get(`/api/v1/projects/projects/${projectId}/statement`);
+    expect(res.body.data.invoiced_to_date).toBe(12540);
+    expect(res.body.data.draws[0].invoice_number).toBe(issued.body.data.invoice_number);
+    expect(res.body.data.draws[0].recorded_in_revenue_system).toBe(false);
+  });
+
+  it('retainage stays held until its own invoice is issued', async () => {
     const retainage = draws.find((d) => d.is_retainage)!;
     const inv = await record({ project_id: projectId, amount: 1000 });
     await office()
@@ -221,6 +241,6 @@ describe('the statement reads applications, not the scalar', () => {
       .send({ draw_id: retainage.id });
 
     const res = await owner().get(`/api/v1/projects/projects/${projectId}/statement`);
-    expect(res.body.data.retainage_held).toBe(4180 - 1000);
+    expect(res.body.data.retainage_held).toBe(4180);
   });
 });

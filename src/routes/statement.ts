@@ -33,10 +33,11 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         contract_value: string;
       }>(ctx, projectId, 'project_number, name, currency, contract_value');
 
-      // Invoiced is measured by what has been APPLIED to each draw, not by
-      // whether a single invoice number happens to be stamped on it. A
-      // milestone satisfied by nine technician visits is nine applications,
-      // and the scalar only ever held the first.
+      // Invoiced is measured by the invoices THIS MODULE issued — the
+      // documents the customer actually received. Technician detail matched to
+      // a draw is reported alongside as evidence of the work, and is
+      // deliberately not the same number: nine visits matched to a milestone
+      // says the work happened, not that anybody has been asked to pay.
       const draws = await ctx.db.query<{
         id: string;
         sequence_number: number;
@@ -49,13 +50,23 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         external_invoice_verified_at: string | null;
         applied_amount: string;
         invoice_count: string;
+        billed_invoice_number: string | null;
+        billed_amount: string | null;
+        billed_on: string | null;
+        billed_external_ref: string | null;
       }>(
         `SELECT d.id, d.sequence_number, d.label, d.trigger_milestone, d.amount,
                 d.status::text AS status, d.is_retainage,
                 d.external_invoice_number, d.external_invoice_verified_at,
-                v.applied_amount, v.invoice_count
+                v.applied_amount, v.invoice_count,
+                pi.invoice_number AS billed_invoice_number,
+                pi.amount         AS billed_amount,
+                pi.issued_on      AS billed_on,
+                pi.external_ref   AS billed_external_ref
            FROM projects.draws d
            JOIN projects.v_draw_application v ON v.draw_id = d.id
+           LEFT JOIN projects.project_invoices pi
+                  ON pi.draw_id = d.id AND pi.status <> 'void'
           WHERE d.project_id = $1 ORDER BY d.sequence_number`,
         [projectId],
       );
@@ -68,12 +79,16 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         status: string;
         customer_approved_at: string | null;
         external_estimate_ref: string | null;
+        invoice_number: string | null;
       }>(
-        `SELECT id, co_number, description, customer_amount, status::text AS status,
-                customer_approved_at, external_estimate_ref
-           FROM projects.change_orders
-          WHERE project_id = $1 AND status = 'approved'
-          ORDER BY co_number`,
+        `SELECT co.id, co.co_number, co.description, co.customer_amount,
+                co.status::text AS status, co.customer_approved_at,
+                co.external_estimate_ref, pi.invoice_number
+           FROM projects.change_orders co
+           LEFT JOIN projects.project_invoices pi
+                  ON pi.change_order_id = co.id AND pi.status <> 'void'
+          WHERE co.project_id = $1 AND co.status = 'approved'
+          ORDER BY co.co_number`,
         [projectId],
       );
 
@@ -91,27 +106,31 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         amount: num(d.amount) ?? 0,
         status: d.status,
         is_retainage: d.is_retainage,
-        applied_amount: num(d.applied_amount) ?? 0,
-        invoice_count: Number(d.invoice_count ?? 0),
+        // Evidence of the work behind the milestone.
+        supporting_detail_applied: num(d.applied_amount) ?? 0,
+        supporting_invoice_count: Number(d.invoice_count ?? 0),
+        // The document the customer received, if one has been issued.
+        billed_amount: num(d.billed_amount) ?? 0,
+        invoice_number: d.billed_invoice_number,
+        billed_on: d.billed_on,
+        recorded_in_revenue_system: Boolean(d.billed_external_ref),
         external_invoice_number: d.external_invoice_number,
         // Invoiced means an invoice number is recorded against it. Whether that
         // number was verified against the revenue system is reported
         // separately, because "we think we billed it" and "we know we billed
         // it" are different states and a statement should not blur them.
-        invoiced: (num(d.applied_amount) ?? 0) > 0,
+        invoiced: Boolean(d.billed_invoice_number),
         verified: Boolean(d.external_invoice_verified_at),
       }));
 
       const scheduled = drawRows.reduce((s, d) => s + d.amount, 0);
-      // Sum of what has actually been applied, so a part-billed milestone
-      // reports the part rather than all or nothing.
-      const invoiced = drawRows.reduce((s, d) => s + d.applied_amount, 0);
+      const invoiced = drawRows.reduce((s, d) => s + d.billed_amount, 0);
       const retainageHeld = drawRows
         .filter((d) => d.is_retainage)
-        .reduce((s, d) => s + (d.amount - d.applied_amount), 0);
+        .reduce((s, d) => s + (d.amount - d.billed_amount), 0);
       const earnedNotInvoiced = drawRows
         .filter((d) => d.status === 'earned' || d.status === 'approved')
-        .reduce((s, d) => s + (d.amount - d.applied_amount), 0);
+        .reduce((s, d) => s + (d.amount - d.billed_amount), 0);
 
       sendData(ctx.res, {
         project_number: project.project_number,
@@ -129,10 +148,22 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         draw_schedule_total: round2(scheduled),
         change_orders_invoiced_separately: round2(approvedChanges),
 
-        invoiced_to_date: round2(invoiced),
+        invoiced_to_date: round2(
+          invoiced +
+            changeOrders.rows
+              .filter((co) => co.invoice_number)
+              .reduce((sum, co) => sum + (num(co.customer_amount) ?? 0), 0),
+        ),
         retainage_held: round2(retainageHeld),
         earned_not_yet_invoiced: round2(earnedNotInvoiced),
-        remaining_to_invoice: round2(original + approvedChanges - invoiced),
+        remaining_to_invoice: round2(
+          original +
+            approvedChanges -
+            invoiced -
+            changeOrders.rows
+              .filter((co) => co.invoice_number)
+              .reduce((sum, co) => sum + (num(co.customer_amount) ?? 0), 0),
+        ),
 
         draws: drawRows,
         change_orders: changeOrders.rows.map((co) => ({
@@ -142,9 +173,9 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
           customer_amount: num(co.customer_amount),
           approved_at: co.customer_approved_at,
           external_estimate_ref: co.external_estimate_ref,
-          // Invoiced separately from the draw schedule. Nothing tracks whether
-          // that has happened yet — see docs/INTEGRATION_DECISIONS.md.
-          invoiced: null,
+          // Invoiced separately from the draw schedule, on its own document.
+          invoice_number: co.invoice_number,
+          invoiced: Boolean(co.invoice_number),
         })),
       });
     }),
