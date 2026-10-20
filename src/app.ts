@@ -1,55 +1,28 @@
-import { accountingRoutes } from "./routes/accounting.js";
-import type { AccountingGateway } from "./adapters/quickbooks.js";
-import { recordExportRoutes } from "./routes/recordExports.js";
-import { projectControlRoutes } from "./routes/projectControls.js";
-import { PasswordSessions, passwordAuthRoutes } from "./http/passwordAuth.js";
-import { userRoutes } from "./routes/users.js";
-import { stScheduleRoutes } from "./routes/stSchedule.js";
-import { stProjectRoutes } from "./routes/stProjects.js";
-import { vendorIntakeRoutes } from "./routes/vendorIntake.js";
-import { bidRequestRoutes, bidResponseRoutes } from "./routes/bidRequests.js";
-import { bidMailConfig, type BidMailConfig } from "./adapters/bidMail.js";
-import { scheduleChangeRoutes } from "./routes/scheduleChanges.js";
-import { directoryRoutes } from "./routes/directories.js";
-import { sourceRoutes } from "./routes/sources.js";
-import { portfolioVendorRoutes } from "./routes/portfolioVendors.js";
-import { portfolioRoutes } from "./routes/portfolio.js";
-import type { PortfolioFeedConfig } from "./adapters/portfolioFeed.js";
-import type { SourceConnections } from "./adapters/sourceConnections.js";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import express, { type Express } from "express";
-import type { Database } from "./db/database.js";
-import { errorHandler } from "./http/envelope.js";
-import { ApiError } from "./http/errors.js";
-import {
-  staffAuthentication,
-  type StaffSessionStore,
-} from "./http/staffSession.js";
-import type { MemoryStaffSessions } from "./http/memoryStaffSessions.js";
-import { sessionRoutes } from "./routes/session.js";
-import { referenceRoutes } from "./routes/reference.js";
-import { projectRoutes } from "./routes/projects.js";
-import { gateRoutes } from "./routes/gates.js";
-import { budgetRoutes } from "./routes/budget.js";
-import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
-import { vendorRoutes } from "./routes/vendors.js";
-import { changeOrderRoutes } from "./routes/changeOrders.js";
-import { drawRoutes } from "./routes/draws.js";
-import { statementRoutes } from "./routes/statement.js";
-import { externalInvoiceRoutes } from "./routes/externalInvoices.js";
-import { projectInvoiceRoutes } from "./routes/projectInvoices.js";
-import { planningRoutes } from "./routes/planning.js";
-import { fieldOperationRoutes } from "./routes/fieldOperations.js";
-import { estimateImportRoutes } from "./routes/estimateImports.js";
-import { devSessionRoutes } from "./routes/devSession.js";
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import express, { type Express } from 'express';
+import type { Database } from './db/database.js';
+import { errorHandler } from './http/envelope.js';
+import { ApiError } from './http/errors.js';
+import { staffAuthentication, type StaffSessionStore } from './http/staffSession.js';
+import type { MemoryStaffSessions } from './http/memoryStaffSessions.js';
+import { sessionRoutes } from './routes/session.js';
+import { referenceRoutes } from './routes/reference.js';
+import { projectRoutes } from './routes/projects.js';
+import { gateRoutes } from './routes/gates.js';
+import { budgetRoutes } from './routes/budget.js';
+import { purchaseOrderRoutes } from './routes/purchaseOrders.js';
+import { vendorRoutes } from './routes/vendors.js';
+import { changeOrderRoutes } from './routes/changeOrders.js';
+import { drawRoutes } from './routes/draws.js';
+import { statementRoutes } from './routes/statement.js';
+import { externalInvoiceRoutes } from './routes/externalInvoices.js';
+import { projectInvoiceRoutes } from './routes/projectInvoices.js';
+import { fieldOperationRoutes } from './routes/fieldOperations.js';
+import { estimateImportRoutes } from './routes/estimateImports.js';
+import { devSessionRoutes } from './routes/devSession.js';
 
 export interface AppOptions {
-  accounting?: AccountingGateway;
-  sources?: SourceConnections;
-  bidMail?: BidMailConfig;
-  /** Read-only portfolio summary for the configured tenant's owner dashboard. */
-  portfolio?: PortfolioFeedConfig;
   database: Database;
   staffSessions: StaffSessionStore;
   /**
@@ -81,117 +54,70 @@ const here = path.dirname(fileURLToPath(import.meta.url));
  */
 export function createApp(opts: AppOptions): Express {
   const app = express();
-  app.disable("x-powered-by");
-  app.use(
-    "/api/v1/projects/vendors/:id/documents/upload",
-    express.json({ limit: "12mb" }),
-  );
-  app.use(
-    "/api/v1/projects/projects/:id/controls/:recordId/file",
-    express.json({ limit: "12mb" }),
-  );
-  app.use(express.json({ limit: "2mb" }));
-  app.use("/api/v1/bid-response", bidResponseRoutes(opts.database));
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '2mb' }));
 
-  app.get('/api/v1/auth/config', (_req,res) => {
-    res.set('Cache-Control','no-store').json({data:{devLoginEnabled: Boolean(opts.devLogin?.enabled && opts.devLogin.nodeEnv !== 'production')}});
-  });
-  const sessions = new PasswordSessions(opts.database, opts.staffSessions);
-  const deps = { database: opts.database, sessions };
-  app.use(
-    "/api/v1/auth",
-    passwordAuthRoutes(opts.database, opts.staffSessions),
-  );
+  const deps = { database: opts.database, sessions: opts.staffSessions };
 
-  if (opts.portfolio) {
-    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, opts.portfolio));
-    app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, opts.portfolio));
-  }
-
-  app.get("/health", (_req, res) => {
-    res.json({ data: { status: "ok" } });
+  app.get('/health', (_req, res) => {
+    res.json({ data: { status: 'ok' } });
   });
 
   if (opts.devLogin?.enabled) {
-    if (opts.devLogin.nodeEnv === "production") {
+    if (opts.devLogin.nodeEnv === 'production') {
       throw new Error(
-        "DEV_LOGIN cannot be enabled with NODE_ENV=production. It mints a staff " +
-          "session from an email address with no password.",
+        'DEV_LOGIN cannot be enabled with NODE_ENV=production. It mints a staff ' +
+          'session from an email address with no password.',
       );
     }
     if (!opts.devLogin.accessToken) {
       throw new Error(
-        "DEV_LOGIN requires DEV_LOGIN_TOKEN. Without it, anyone who finds the " +
-          "hostname is signed in as an owner.",
+        'DEV_LOGIN requires DEV_LOGIN_TOKEN. Without it, anyone who finds the ' +
+          'hostname is signed in as an owner.',
       );
     }
     // eslint-disable-next-line no-console
     console.warn(
-      "\n  DEV_LOGIN is on. POST /api/v1/dev/session mints a staff session for\n" +
-        "  any active email on any account, given the shared access token.\n" +
-        "  This is a holding position until platform sign-in lands.\n",
+      '\n  DEV_LOGIN is on. POST /api/v1/dev/session mints a staff session for\n' +
+        '  any active email on any account, given the shared access token.\n' +
+        '  This is a holding position until platform sign-in lands.\n',
     );
     app.use(
-      "/api/v1",
-      devSessionRoutes(
-        opts.database,
-        opts.devLogin.sessions,
-        opts.devLogin.accessToken,
-      ),
+      '/api/v1',
+      devSessionRoutes(opts.database, opts.devLogin.sessions, opts.devLogin.accessToken),
     );
   }
 
   const staff = express.Router();
-  staff.use(staffAuthentication(sessions));
+  staff.use(staffAuthentication(opts.staffSessions));
   staff.use(sessionRoutes(deps));
-  staff.use(userRoutes(deps, opts.sources));
   staff.use(referenceRoutes(deps));
   staff.use(projectRoutes(deps));
-  staff.use(projectControlRoutes(deps));
-  staff.use(recordExportRoutes(deps, opts.sources));
   staff.use(gateRoutes(deps));
   staff.use(budgetRoutes(deps));
-  staff.use(accountingRoutes(deps,opts.accounting));
-  staff.use(purchaseOrderRoutes(deps,opts.accounting));
+  staff.use(purchaseOrderRoutes(deps));
   staff.use(vendorRoutes(deps));
-  staff.use(vendorIntakeRoutes(deps));
-  staff.use(bidRequestRoutes(deps, opts.bidMail ?? bidMailConfig()));
   staff.use(changeOrderRoutes(deps));
   staff.use(drawRoutes(deps));
   staff.use(statementRoutes(deps));
   staff.use(externalInvoiceRoutes(deps));
   staff.use(projectInvoiceRoutes(deps));
   staff.use(fieldOperationRoutes(deps));
-  staff.use(planningRoutes(deps));
-  staff.use(directoryRoutes(deps, opts.sources));
-  staff.use(stProjectRoutes(deps, opts.sources));
-  staff.use(scheduleChangeRoutes(deps, opts.sources));
-  staff.use(sourceRoutes(deps, opts.sources));
-  staff.use(stScheduleRoutes(deps, opts.sources));
   staff.use(estimateImportRoutes(deps));
-  app.use("/api/v1/projects", staff);
+  app.use('/api/v1/projects', staff);
 
-  app.use("/api/v1", (_req, _res, next) => {
-    next(new ApiError("not_found", "No such route."));
+  app.use('/api/v1', (_req, _res, next) => {
+    next(new ApiError('not_found', 'No such route.'));
   });
 
   if (opts.serveConsole !== false) {
     // Static, no build step. The console is the reference mock ported to live
     // data — vanilla HTML and CSS, which is what it was handed over as.
-    const clientDir = path.resolve(here, "../client");
-    app.use(
-      "/pdfjs",
-      express.static(path.resolve(here, "../node_modules/pdfjs-dist"), {
-        index: false,
-        maxAge: 0,
-      }),
-    );
+    const clientDir = path.resolve(here, '../client');
     // No far-future caching: these are hand-written files with stable names
     // and no content hash, so a cached console.js is a console that silently
     // keeps running last week's code after a deploy.
-    app.use(
-      express.static(clientDir, { index: "index.html", etag: true, maxAge: 0 }),
-    );
+    app.use(express.static(clientDir, { index: 'index.html', etag: true, maxAge: 0 }));
   }
 
   app.use(errorHandler);
