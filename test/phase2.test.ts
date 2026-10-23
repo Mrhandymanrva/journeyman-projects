@@ -70,6 +70,18 @@ async function compliantVendor(name = 'Acme Tile') {
   return vendorId;
 }
 
+async function agreementFields(vendorId: string) {
+  const vendor = await owner().get(`/api/v1/projects/vendors/${vendorId}`);
+  const agreement = (vendor.body.data.documents as Array<{ id: string; kind: string }>).find(
+    (d) => d.kind === 'master_agreement',
+  );
+  expect(agreement, 'compliant vendor uploads a master agreement').toBeTruthy();
+  return {
+    agreement_document_id: agreement!.id,
+    agreement_signed_at: '2026-10-01T00:00:00.000Z',
+  };
+}
+
 describe('budget and the baseline freeze', () => {
   it('lines can be added and edited before the freeze', async () => {
     const { projectId, lines } = await projectWithBudget();
@@ -269,6 +281,7 @@ describe('purchase orders', () => {
         amount: 5000,
         scope_text: 'Set tile',
         issue: true,
+        ...(await agreementFields(vendorId)),
       });
 
     const cost = await owner().get(`/api/v1/projects/projects/${projectId}/cost-position`);
@@ -295,6 +308,7 @@ describe('vendor bills', () => {
         amount: 5000,
         scope_text: 'Set tile',
         issue: true,
+        ...(await agreementFields(vendorId)),
       });
     return { projectId, poId: po.body.data.id as string, vendorId };
   }
@@ -321,16 +335,18 @@ describe('vendor bills', () => {
     expect(row.total_committed).toBe(5000);
   });
 
-  it('overbilling warns and still records — it does not refuse', async () => {
-    // An overrun that the software refuses to record is an overrun that lives
-    // in somebody's inbox instead of the cost position.
+  it('overbilling a subcontract line is refused', async () => {
+    // A subcontract commitment is the contract. Recording past it used to warn
+    // and accept the bill; that hid the missing change order. Material
+    // purchases still warn, because the payment has often already happened.
     const { poId } = await issuedPo();
     const res = await owner()
       .post(`/api/v1/projects/purchase-orders/${poId}/bills`)
       .send({ vendor_invoice_number: 'INV-OVER', amount: 5600 });
-    expect(res.status).toBe(201);
-    expect(res.body.data.warning.code).toBe('exceeds_purchase_order');
-    expect(res.body.data.warning.over_by).toBe(600);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe('conflict');
+    expect(res.body.error.details.code).toBe('exceeds_po_line');
+    expect(res.body.error.details.over_by).toBe(600);
   });
 
   it('a duplicate invoice number on the same PO is rejected', async () => {
@@ -621,6 +637,7 @@ describe('project exceptions', () => {
         amount: 6500, // baseline was 5200
         scope_text: 'Set tile, more than planned',
         issue: true,
+        ...(await agreementFields(vendorId)),
       });
 
     const res = await owner().get(`/api/v1/projects/projects/${projectId}/exceptions`);

@@ -40,6 +40,7 @@ interface ForeignIds {
   vendorId: string;
   documentId: string;
   poId: string;
+  poLineId: string;
   billId: string;
   drawId: string;
   jurisdictionId: string;
@@ -91,6 +92,7 @@ beforeAll(async () => {
 
   const kinds = await b.get("/api/v1/projects/compliance-requirements");
   let documentId = "";
+  let agreementId = "";
   for (const req of kinds.body.data as Array<{
     kind: string;
     required: boolean;
@@ -105,6 +107,7 @@ beforeAll(async () => {
       });
     expect(doc.status).toBe(201);
     documentId ||= doc.body.data.id;
+    if (req.kind === "master_agreement") agreementId = doc.body.data.id;
   }
   expect(
     (await b.post(`/api/v1/projects/vendors/${vendorId}/activate`)).status,
@@ -124,8 +127,14 @@ beforeAll(async () => {
       amount: 5200,
       scope_text: "Set tile to primary bath",
       issue: true,
+      agreement_document_id: agreementId,
+      agreement_signed_at: "2026-10-01T00:00:00.000Z",
     });
   expect(poRes.status, JSON.stringify(poRes.body)).toBe(201);
+  const poLines = await b.get(
+    `/api/v1/projects/purchase-orders/${poRes.body.data.id}/lines`,
+  );
+  expect(poLines.status).toBe(200);
 
   const billRes = await b
     .post(`/api/v1/projects/purchase-orders/${poRes.body.data.id}/bills`)
@@ -231,6 +240,7 @@ beforeAll(async () => {
     vendorId,
     documentId,
     poId: poRes.body.data.id,
+    poLineId: poLines.body.data[0].id,
     billId: billRes.body.data.id,
   };
 });
@@ -559,6 +569,43 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/bills/:id/reject`,
     path: (f) => `${BASE}/bills/${f.billId}/reject`,
     body: () => ({}),
+  },
+  {
+    method: "get",
+    template: `${BASE}/purchase-orders/:id/lines`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/lines`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/purchase-orders/:id/lines`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/lines`,
+    body: (f) => ({
+      cost_code_id: f.costCodeId,
+      cost_type: "S",
+      original_amount: 10,
+    }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/po-lines/:lineId`,
+    path: (f) => `${BASE}/po-lines/${f.poLineId}`,
+    body: () => ({ original_amount: 1 }),
+  },
+  {
+    method: "delete",
+    template: `${BASE}/po-lines/:lineId`,
+    path: (f) => `${BASE}/po-lines/${f.poLineId}`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/purchase-orders/:id/qbo-candidates`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/qbo-candidates`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/bills/:id/link-qbo`,
+    path: (f) => `${BASE}/bills/${f.billId}/link-qbo`,
+    body: () => ({ qbo_txn_type: "Purchase", qbo_id: "9001" }),
   },
 
   // --- phase 3: vendors and compliance ------------------------------------

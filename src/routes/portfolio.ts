@@ -140,8 +140,18 @@ async function buildSummary(db: SqlClient, tenantId: string) {
   )[0];
   const bills = (
     await q<{ n: string; amount: string }>(
-      `SELECT count(*)::text AS n, COALESCE(SUM(amount),0)::text AS amount
-         FROM projects.vendor_bills WHERE status = 'received'`,
+      `SELECT count(*)::text AS n, COALESCE(SUM(b.amount),0)::text AS amount
+         FROM projects.vendor_bills b
+         JOIN projects.purchase_orders po ON po.id = b.po_id
+        WHERE b.status = 'received' AND b.source = 'journeyman' AND po.kind = 'subcontract'`,
+    )
+  )[0];
+  const materialBills = (
+    await q<{ n: string; amount: string }>(
+      `SELECT count(*)::text AS n, COALESCE(SUM(b.amount),0)::text AS amount
+         FROM projects.vendor_bills b
+         JOIN projects.purchase_orders po ON po.id = b.po_id
+        WHERE b.status = 'received' AND po.kind = 'material'`,
     )
   )[0];
   const cos = (
@@ -207,6 +217,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
     purchasing: {
       open_purchase_orders: money(pos),
       bills_awaiting_approval: money(bills),
+      material_bills_unmatched: money(materialBills),
       change_orders_awaiting_customer: money(cos),
     },
   };

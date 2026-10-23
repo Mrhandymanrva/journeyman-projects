@@ -13,13 +13,15 @@ import { ApiError, notFound } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseUuidParam, parseBody } from "./shared.js";
 import { queueVendor, type AccountingGateway } from "../adapters/quickbooks.js";
+import { buildVendorBillPayload, type BillCostGroup } from "../domain/vendorBillPayload.js";
+import { assertSubcontractCompliance } from "../domain/vendorCompliance.js";
 export async function prepareBillAccounting(
   ctx: StaffContext,
   billId: string,
   gateway?: AccountingGateway,
 ) {
   const result = await ctx.db.query<any>(
-    `SELECT b.*,po.project_id,po.vendor_id,po.po_number,po.status AS po_status,p.name AS project_name,p.project_number,p.qbo_customer_id,v.qbo_id AS vendor_qbo_id,v.qbo_w9_id,v.qbo_tax_reviewed_at,v.archived FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id JOIN projects.projects p ON p.id=po.project_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id WHERE b.id=$1 FOR UPDATE OF b`,
+    `SELECT b.*,po.project_id,po.vendor_id,po.po_number,po.status AS po_status,po.kind::text AS kind,po.cost_type::text AS po_cost_type,p.name AS project_name,p.project_number,p.qbo_customer_id,v.qbo_id AS vendor_qbo_id,v.qbo_w9_id,v.qbo_tax_reviewed_at,v.archived FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id JOIN projects.projects p ON p.id=po.project_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id WHERE b.id=$1 FOR UPDATE OF b`,
     [billId],
   );
   const b = result.rows[0];
@@ -42,11 +44,17 @@ export async function prepareBillAccounting(
       "conflict",
       "Only a bill awaiting approval can be approved.",
     );
-  if (b.po_status !== "issued")
+  if (b.po_status !== "issued" && b.po_status !== "partially_billed")
     throw new ApiError(
       "conflict",
       "Issue the purchase order before approving its bill.",
     );
+  await assertSubcontractCompliance(
+    ctx.db,
+    { kind: b.kind, vendor_id: b.vendor_id },
+    "bill_approval",
+    b.invoice_date ? String(b.invoice_date) : null,
+  );
   if (!gateway) return; // Standalone installs retain the existing approval workflow.
   if (gateway.tenantId !== ctx.staff.tenantId)
     throw new ApiError(
@@ -114,27 +122,31 @@ export async function prepareBillAccounting(
       "validation_failed",
       "QuickBooks bills require a positive amount and an invoice number no longer than 21 characters.",
     );
-  const bill = {
-    DocNumber: b.vendor_invoice_number,
-    TxnDate: String(b.invoice_date).slice(0, 10),
-    DueDate: String(b.due_date).slice(0, 10),
-    PrivateNote: `Journeyman PM bill ${b.id} | Project ${b.project_number}: ${b.project_name} | PO ${b.po_number}`,
-    Line: [
-      {
-        Amount: Number(b.amount),
-        Description: (
-          b.description || `Project ${b.project_number} / PO ${b.po_number}`
-        ).slice(0, 4000),
-        DetailType: "AccountBasedExpenseLineDetail",
-        AccountBasedExpenseLineDetail: {
-          AccountRef: { value: body.qbo_account_id },
-          ...(b.qbo_customer_id
-            ? { CustomerRef: { value: b.qbo_customer_id }, BillableStatus: "NotBillable" }
-            : {}),
-        },
-      },
-    ],
-  };
+  const grouped = await ctx.db.query<{ cost_type: string; gross: string }>(
+    `SELECT l.cost_type::text AS cost_type, SUM(bl.gross_amount)::text AS gross
+       FROM projects.bill_lines bl
+       JOIN projects.po_lines l ON l.id = bl.po_line_id
+      WHERE bl.bill_id = $1
+      GROUP BY l.cost_type`,
+    [billId],
+  );
+  const groups: BillCostGroup[] = grouped.rows.length
+    ? grouped.rows.map((row) => ({ costType: row.cost_type, amount: Number(row.gross) }))
+    : [{ costType: b.po_cost_type ?? "S", amount: Number(b.amount) }];
+  const bill = buildVendorBillPayload({
+    id: b.id,
+    invoiceNumber: b.vendor_invoice_number,
+    invoiceDate: String(b.invoice_date),
+    dueDate: String(b.due_date),
+    projectNumber: b.project_number,
+    projectName: b.project_name,
+    poNumber: b.po_number,
+    amount: Number(b.amount),
+    description: b.description ?? "",
+    accountId: body.qbo_account_id,
+    customerId: b.qbo_customer_id,
+    groups,
+  });
   await ctx.db.query(
     `UPDATE projects.vendor_bills SET qbo_account_id=$2 WHERE id=$1`,
     [billId, body.qbo_account_id],
@@ -214,7 +226,7 @@ export function accountingRoutes(
       const id = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, id, "id");
       const rows = await ctx.db.query(
-        `SELECT b.id,b.po_id,b.vendor_invoice_number,b.amount,b.retention_held,b.status::text,b.invoice_date,b.due_date,b.description,b.qbo_id,b.qbo_balance,b.qbo_checked_at,b.qbo_message,b.qbo_account_id,b.approved_at,po.po_number,po.amount AS contracted,COALESCE(v.legal_name,po.supplier_name) AS vendor,q.state AS sync_state,q.message AS sync_message,(SELECT COALESCE(sum(other.amount),0) FROM projects.vendor_bills other WHERE other.po_id=po.id AND other.status<>'rejected') AS billed_to_date FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id LEFT JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE po.project_id=$1 ORDER BY b.received_at DESC`,
+        `SELECT b.id,b.po_id,b.vendor_invoice_number,b.amount,b.retention_held,b.source,b.qbo_txn_type,b.status::text,b.invoice_date,b.due_date,b.description,b.qbo_id,b.qbo_balance,b.qbo_checked_at,b.qbo_message,b.qbo_account_id,b.approved_at,po.po_number,po.kind::text AS po_kind,po.amount AS contracted,COALESCE(v.legal_name,po.supplier_name) AS vendor,q.state AS sync_state,q.message AS sync_message,(SELECT COALESCE(sum(other.amount),0) FROM projects.vendor_bills other WHERE other.po_id=po.id AND other.status<>'rejected') AS billed_to_date FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id LEFT JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE po.project_id=$1 ORDER BY b.received_at DESC`,
         [id],
       );
       const p = (

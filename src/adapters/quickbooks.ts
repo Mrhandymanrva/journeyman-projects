@@ -1,4 +1,7 @@
 import type { Database, SqlClient } from "../db/database.js";
+import { ApiError } from "../http/errors.js";
+import { explainBridgeLineRejection, sumLineAmounts } from "../domain/vendorBillPayload.js";
+import { assertSubcontractCompliance } from "../domain/vendorCompliance.js";
 export interface AccountingGateway {
   tenantId: string;
   call(
@@ -246,7 +249,7 @@ export async function runAccounting(db: Database, gateway: AccountingGateway) {
           );
         w9Id = String(attached.Attachable.Id);
       }
-    } else {
+    } else if (job.kind === "bill") {
       const linked = await db.withTenant(tenant, (s) =>
         s.query<{ qbo_id: string | null }>(
           `SELECT qbo_id FROM projects.vendors WHERE id=$1`,
@@ -258,6 +261,26 @@ export async function runAccounting(db: Database, gateway: AccountingGateway) {
         throw new AccountingFailure(
           "Vendor has not reached QuickBooks. Sync the vendor first, then retry this bill.",
         );
+      const compliance = await db.withTenant(tenant, (s) =>
+        s.query<{ kind: string; vendor_id: string | null; invoice_date: string | null }>(
+          `SELECT po.kind::text AS kind, po.vendor_id, b.invoice_date::text AS invoice_date
+             FROM projects.vendor_bills b
+             JOIN projects.purchase_orders po ON po.id = b.po_id
+            WHERE b.id = $1`,
+          [job.record_id],
+        ),
+      );
+      const po = compliance.rows[0];
+      if (!po) throw new AccountingFailure("Vendor bill not found.", false);
+      try {
+        await db.withTenant(tenant, (s) =>
+          assertSubcontractCompliance(s, po, "payment", po.invoice_date),
+        );
+      } catch (error) {
+        if (error instanceof ApiError)
+          throw new AccountingFailure(error.message, false);
+        throw error;
+      }
       const payload = { ...job.payload.bill, VendorRef: { value: vendorId } };
       const found = (
         (await call({ action: "bills", number: payload.DocNumber }))
@@ -272,19 +295,32 @@ export async function runAccounting(db: Database, gateway: AccountingGateway) {
         );
       if (!entity && !job.check_only) {
         sent = true;
-        entity = (
-          await call({ action: "createBill", requestId: job.id, payload })
-        ).Bill;
+        try {
+          entity = (
+            await call({ action: "createBill", requestId: job.id, payload })
+          ).Bill;
+        } catch (error) {
+          if (error instanceof AccountingFailure) {
+            const explained = explainBridgeLineRejection(
+              payload.Line?.length ?? 0,
+              error.message,
+            );
+            if (explained) throw new AccountingFailure(explained, false);
+          }
+          throw error;
+        }
       }
-      if (
-        entity &&
-        Math.abs(Number(entity.TotalAmt) - Number(payload.Line[0].Amount)) >
-          0.005
-      )
+      const expected = sumLineAmounts(payload.Line ?? []);
+      if (entity && Math.abs(Number(entity.TotalAmt) - expected) > 0.005)
         throw new AccountingFailure(
           "QuickBooks bill amount differs from the approved PM amount.",
           true,
         );
+    } else {
+      throw new AccountingFailure(
+        `Accounting queue kind "${job.kind}" is not sent by this worker.`,
+        false,
+      );
     }
     if (!entity?.Id)
       throw new AccountingFailure(
@@ -330,7 +366,7 @@ export async function refreshAccountingBalances(
 ) {
   const bills = await db.withTenant(gateway.tenantId, (s) =>
     s.query<{ id: string; qbo_id: string; amount: string; realm: string }>(
-      `SELECT b.id,b.qbo_id,b.amount,q.realm FROM projects.vendor_bills b JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE b.qbo_id IS NOT NULL AND (b.qbo_checked_at IS NULL OR b.qbo_checked_at<now()-interval '5 minutes') ORDER BY b.qbo_checked_at NULLS FIRST LIMIT 20`,
+      `SELECT b.id,b.qbo_id,b.amount,q.realm FROM projects.vendor_bills b JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE b.qbo_id IS NOT NULL AND COALESCE(b.qbo_txn_type,'') <> 'Purchase' AND (b.qbo_checked_at IS NULL OR b.qbo_checked_at<now()-interval '5 minutes') ORDER BY b.qbo_checked_at NULLS FIRST LIMIT 20`,
     ),
   );
   for (const bill of bills.rows)
