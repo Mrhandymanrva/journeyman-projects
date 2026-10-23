@@ -228,10 +228,9 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         throw new ApiError('conflict', `This change order is already ${co.status}.`);
       }
 
-      // "Send" records that it went out. Producing and delivering the document
-      // is still the revenue system's job — this module originates the
-      // consolidated project invoice, not the change order paperwork. See
-      // docs/INTEGRATION_DECISIONS.md.
+      // "Send" records that it went out. Customer invoices are created in
+      // ServiceTitan only. This call does not write an invoice to ServiceTitan
+      // or QuickBooks. See docs/INTEGRATION_DECISIONS.md.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.change_orders SET status = 'sent', sent_at = now()
           WHERE id = $1

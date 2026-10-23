@@ -176,15 +176,13 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         );
       }
 
-      // Shortcut for the common case: this draw was billed, and here is the
-      // number the resulting invoice carries in the revenue system. It issues
-      // the project invoice and records its external reference in one call,
-      // because that is what "record the invoice number for this draw" means
-      // now that this module produces the customer's document.
+      // Shortcut for the common case: someone billed this draw in ServiceTitan,
+      // and here is that invoice number. This stores the number on a local
+      // project_invoices row. It does not create or write a customer invoice
+      // to ServiceTitan or QuickBooks.
       //
       // Use POST /draws/:id/invoice and POST /invoices/:id/external-ref when
-      // the two happen at different times, which is the usual case once the
-      // adapter is doing the recording.
+      // the local row and the recorded number happen at different times.
       const existing = await ctx.db.query<{ id: string }>(
         `SELECT id FROM projects.project_invoices
           WHERE draw_id = $1 AND status <> 'void'`,
