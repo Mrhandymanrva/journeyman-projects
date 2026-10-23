@@ -106,7 +106,11 @@ exports them to QuickBooks.** Journeyman reads ServiceTitan invoices to track
 draws and billing status, and it never creates or writes customer invoices to
 ServiceTitan or QuickBooks. While ServiceTitan is the revenue system, the local
 invoice actions return 409 and the console hides them; they still work only
-when ServiceTitan is not the revenue system. Vendor bills still go from Journeyman to QuickBooks
+when ServiceTitan is not the revenue system. Staff can still record, correct,
+or clear the ServiceTitan invoice number on a draw
+(`PATCH /draws/:id/external-invoice`) without creating a local invoice.
+Automatic matching of ServiceTitan invoices to draws is planned and is not
+built. Vendor bills still go from Journeyman to QuickBooks
 through the purchase_orders `/api/pm-accounting` bridge. Scheduling is pulled,
 not pushed: in-house appointments are created in ServiceTitan and mirrored
 here. The ServiceTitan writes that already exist — project notes, file

@@ -837,6 +837,12 @@ const ROUTES: RouteCase[] = [
     body: () => ({ external_invoice_number: "A-STEALS-INVOICE" }),
   },
   {
+    method: "patch",
+    template: `${BASE}/draws/:id/external-invoice`,
+    path: (f) => `${BASE}/draws/${f.drawId}/external-invoice`,
+    body: () => ({ external_invoice_number: "A-STEALS-INVOICE" }),
+  },
+  {
     method: "post",
     template: `${BASE}/draws/:id/verify`,
     path: (f) => `${BASE}/draws/${f.drawId}/verify`,

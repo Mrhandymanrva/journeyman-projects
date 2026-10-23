@@ -24,6 +24,13 @@ const externalInvoiceSchema = z.object({
   external_invoice_number: z.string().trim().min(1),
 });
 
+// Null clears the number. An empty string is a validation error, not a clear.
+// TODO: automatic matching of ServiceTitan invoices to draws is planned and
+// is not built. The draw has no column for a ServiceTitan invoice id or date.
+const recordExternalInvoiceSchema = z.object({
+  external_invoice_number: z.string().trim().min(1).nullable(),
+});
+
 export function drawRoutes(deps: StaffRouterDeps): Router {
   const router = Router();
 
@@ -60,7 +67,9 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         revenue_system: adapter.displayName,
         verification_available: adapter.verifyInvoices,
         // False while ServiceTitan is the revenue system. The console hides
-        // the local invoice recorder; the API refuses the same writes.
+        // the local invoice recorder and offers the number-only control
+        // instead. POST /draws/:id/external-invoice still refuses; PATCH on
+        // the same path only stores the number.
         local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
         draws: rows.map(serialiseDraw),
       });
@@ -254,6 +263,40 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
     }),
   );
 
+  // Number only. No project_invoices row, and no write to ServiceTitan or
+  // QuickBooks. This is the action that stays available while ServiceTitan
+  // owns revenue. Correcting a number re-stamps the draw; clearing it reverts
+  // an invoiced draw. The same number is left untouched.
+  // TODO: automatic matching of ServiceTitan invoices to draws is planned
+  // and is not built. There is no draw column for the invoice id or date.
+  router.patch(
+    '/draws/:id/external-invoice',
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, 'record_external_invoice');
+      const drawId = parseUuidParam(ctx.req.params.id, 'Draw');
+      const draw = await loadVisibleDraw(ctx, drawId);
+      const body = parseBody(recordExternalInvoiceSchema, ctx.req.body);
+
+      if (body.external_invoice_number === draw.external_invoice_number) {
+        await sendRecordedDraw(ctx, drawId, draw.project_id);
+        return;
+      }
+
+      await ctx.db.query(
+        `UPDATE projects.draws
+            SET external_invoice_number = $2,
+                external_invoice_recorded_by = $3
+          WHERE id = $1`,
+        [
+          drawId,
+          body.external_invoice_number,
+          body.external_invoice_number === null ? null : ctx.staff.staffId,
+        ],
+      );
+      await sendRecordedDraw(ctx, drawId, draw.project_id);
+    }),
+  );
+
   router.post(
     '/draws/:id/verify',
     staffRoute(deps, async (ctx) => {
@@ -324,6 +367,28 @@ interface DrawRow extends Record<string, unknown> {
   status: string;
   amount: string;
   external_invoice_number: string | null;
+}
+
+async function sendRecordedDraw(
+  ctx: StaffContext,
+  drawId: string,
+  projectId: string,
+): Promise<void> {
+  const { rows } = await ctx.db.query<Record<string, unknown>>(
+    `SELECT id, status::text AS status, amount, external_invoice_number,
+            external_invoice_recorded_at, external_invoice_verified_at
+       FROM projects.draws WHERE id = $1`,
+    [drawId],
+  );
+  const project = await ctx.db.query<{ external_system_id: string | null }>(
+    `SELECT external_system_id FROM projects.projects WHERE id = $1`,
+    [projectId],
+  );
+  const adapter = await resolveAdapter(ctx.db, project.rows[0]?.external_system_id ?? null);
+  sendData(ctx.res, {
+    ...serialiseDraw(rows[0]!),
+    verification_available: adapter.verifyInvoices,
+  });
 }
 
 async function loadVisibleDraw(ctx: StaffContext, drawId: string): Promise<DrawRow> {
