@@ -26,7 +26,6 @@ END $$;
 
 ALTER TABLE purchase_orders
   ADD COLUMN IF NOT EXISTS kind po_kind NOT NULL DEFAULT 'subcontract',
-  ADD COLUMN IF NOT EXISTS retainage_pct numeric(5,2) NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS st_job_id bigint,
   ADD COLUMN IF NOT EXISTS st_project_id bigint,
   ADD COLUMN IF NOT EXISTS agreement_document_id uuid REFERENCES vendor_documents(id) ON DELETE SET NULL,
@@ -35,13 +34,6 @@ ALTER TABLE purchase_orders
 
 ALTER TABLE purchase_orders ALTER COLUMN cost_code_id DROP NOT NULL;
 ALTER TABLE purchase_orders ALTER COLUMN cost_type DROP NOT NULL;
-
-DO $$ BEGIN
-  ALTER TABLE purchase_orders
-    ADD CONSTRAINT purchase_orders_retainage_pct_check
-    CHECK (retainage_pct BETWEEN 0 AND 50);
-EXCEPTION WHEN duplicate_object THEN NULL;
-END $$;
 
 CREATE TABLE IF NOT EXISTS po_lines (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
