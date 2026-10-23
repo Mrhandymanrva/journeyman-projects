@@ -236,6 +236,19 @@ describe('bills against purchase order lines', () => {
     });
     expect(bill.status, JSON.stringify(bill.body)).toBe(201);
     await readyForQuickBooks(ctx.vendorId);
+    await h.db.withTenant(t.id, (c) =>
+      c.query(`UPDATE projects.accounting_config SET accounts = $1::jsonb`, [
+        JSON.stringify([
+          { id: '71', name: 'Subcontractors' },
+          { id: '80', name: 'Materials' },
+        ]),
+      ]),
+    );
+    const mapped = await owner().patch('/api/v1/projects/accounting/cost-type-accounts').send({
+      accounts: { L: null, M: '80', S: '71', O: null },
+    });
+    expect(mapped.status, JSON.stringify(mapped.body)).toBe(200);
+    expect(mapped.body.data.accounts).toMatchObject({ M: '80', S: '71' });
     expect(
       (await owner().post(`/api/v1/projects/bills/${bill.body.data.id}/approve`).send({ qbo_account_id: '71' })).status,
     ).toBe(200);

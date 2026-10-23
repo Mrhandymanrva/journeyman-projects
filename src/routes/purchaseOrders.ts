@@ -53,6 +53,7 @@ const patchPoSchema = z.object({
   agreement_signed_at: z.string().datetime().nullish(),
   st_job_id: z.number().int().positive().nullish(),
   st_project_id: z.number().int().positive().nullish(),
+  project_id: z.string().uuid().optional(),
 });
 
 const billLineSchema = z
@@ -143,15 +144,16 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
 
       const kind = body.kind ?? (body.vendor_id ? 'subcontract' : 'material');
       await assertStLinks(ctx, projectId, body.st_job_id, body.st_project_id);
-      if (body.issue) {
-        await assertReadyToIssue(ctx.db, {
-          kind,
-          vendorId: body.vendor_id ?? null,
-          agreementDocumentId: body.agreement_document_id ?? null,
-          agreementSignedAt: body.agreement_signed_at ?? null,
-          lineCount: 1,
-        });
-      }
+      const agreementWarning = body.issue
+        ? await assertReadyToIssue(ctx.db, {
+            kind,
+            vendorId: body.vendor_id ?? null,
+            agreementDocumentId: body.agreement_document_id ?? null,
+            agreementSignedAt: body.agreement_signed_at ?? null,
+            lineCount: 1,
+            createdAt: new Date(),
+          })
+        : null;
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.purchase_orders
            (tenant_id, project_id, po_number, vendor_id, supplier_name, cost_code_id,
@@ -239,6 +241,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
                       `will not appear in the cost position.`,
                 budgeted_as: budgeted.rows.map((r) => r.cost_type),
               },
+          agreement_warning: agreementWarning,
         },
         undefined,
         201,
@@ -249,10 +252,23 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
   router.patch(
     '/purchase-orders/:id',
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'issue_purchase_order');
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
       const po = await loadVisiblePo(ctx, poId);
       const body = parseBody(patchPoSchema, ctx.req.body);
+      const edited = (Object.keys(body) as Array<keyof typeof body>).filter((key) => body[key] !== undefined);
+      const reclassifyOnly =
+        edited.length > 0 && edited.every((key) => key === 'kind' || key === 'project_id');
+      if (reclassifyOnly) {
+        if (!can(ctx.staff.role, 'issue_purchase_order') && !can(ctx.staff.role, 'approve_vendor_bill')) {
+          throw new ApiError(
+            'forbidden',
+            `Your role (${ctx.staff.role}) cannot mark a purchase order as a material purchase or move it to another project.`,
+            { role: ctx.staff.role },
+          );
+        }
+      } else {
+        requireCapability(ctx.staff.role, 'issue_purchase_order');
+      }
 
       if (po.status === 'void') {
         throw new ApiError('conflict', 'A void purchase order cannot be amended.');
@@ -280,25 +296,27 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         throw new ApiError('conflict', 'An issued purchase order cannot return to draft.');
       }
       if (po.status !== 'draft') {
-        const locked = ['amount', 'scope_text', 'exclusions', 'window_start', 'window_end', 'kind'] as const;
+        const locked = ['amount', 'scope_text', 'exclusions', 'window_start', 'window_end'] as const;
         if (locked.some((key) => body[key] !== undefined)) {
           throw new ApiError(
             'conflict',
-            'An issued purchase order can change status and its ServiceTitan or agreement links. Amounts change through an approved change order.',
+            'An issued purchase order can change its kind, its project, its status, and its ServiceTitan or agreement links. Amounts change through an approved change order.',
           );
         }
       }
+      let agreementWarning: { message: string } | null = null;
       if (body.status === 'issued' && po.status === 'draft') {
         const count = await ctx.db.query<{ n: string }>(
           `SELECT count(*)::text AS n FROM projects.po_lines WHERE po_id = $1`,
           [poId],
         );
-        await assertReadyToIssue(ctx.db, {
+        agreementWarning = await assertReadyToIssue(ctx.db, {
           kind: body.kind ?? po.kind,
           vendorId: po.vendor_id,
           agreementDocumentId: body.agreement_document_id ?? po.agreement_document_id,
           agreementSignedAt: body.agreement_signed_at ?? po.agreement_signed_at,
           lineCount: Number(count.rows[0]?.n ?? 0),
+          createdAt: po.created_at,
         });
       }
       await assertStLinks(
@@ -345,6 +363,14 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       if (body.agreement_signed_at !== undefined) set('agreement_signed_at = $?', body.agreement_signed_at);
       if (body.st_job_id !== undefined) set('st_job_id = $?', body.st_job_id);
       if (body.st_project_id !== undefined) set('st_project_id = $?', body.st_project_id);
+      if (body.project_id !== undefined && body.project_id !== po.project_id) {
+        await loadVisibleProject(ctx, body.project_id, 'id');
+        set('project_id = $?', body.project_id);
+        await ctx.db.query(
+          `UPDATE projects.po_lines SET budget_line_id = NULL WHERE po_id = $1`,
+          [poId],
+        );
+      }
       if (body.status === 'issued' && po.status === 'draft') {
         set('issued_by = $?', ctx.staff.staffId);
         fields.push('issued_at = now()');
@@ -358,10 +384,10 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         `UPDATE projects.purchase_orders SET ${fields.join(', ')}
           WHERE id = $1
           RETURNING id, po_number, status::text AS status, amount, kind::text AS kind,
-                    scope_text, exclusions, window_start, window_end, issued_at, vendor_id`,
+                    project_id, scope_text, exclusions, window_start, window_end, issued_at, vendor_id`,
         [poId, ...values],
       );
-      sendData(ctx.res, presentPo(rows[0]!));
+      sendData(ctx.res, { ...presentPo(rows[0]!), agreement_warning: agreementWarning });
     }),
   );
 
@@ -754,6 +780,7 @@ interface PoRow extends Record<string, unknown> {
   agreement_signed_at: string | null;
   cost_code_id: string | null;
   cost_type: string | null;
+  created_at: string | Date;
 }
 
 interface PoLineRow {
@@ -778,7 +805,7 @@ async function loadVisiblePo(ctx: StaffContext, poId: string): Promise<PoRow> {
     `SELECT id, project_id, po_number, status::text AS status, amount::text AS amount,
             vendor_id, kind::text AS kind,
             agreement_document_id, agreement_signed_at::text AS agreement_signed_at,
-            cost_code_id, cost_type::text AS cost_type,
+            cost_code_id, cost_type::text AS cost_type, created_at,
             scope_text, exclusions, window_start, window_end, issued_at
        FROM projects.purchase_orders WHERE id = $1`,
     [poId],

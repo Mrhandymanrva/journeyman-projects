@@ -6,6 +6,7 @@ import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from './shared.js';
 import { applyApprovedChangeOrder, applyChangeOrderToPurchaseOrders } from '../domain/changeOrders.js';
+import { serviceTitanOwnsRevenue } from '../domain/localInvoices.js';
 
 const lineSchema = z.object({
   cost_code_id: z.string().uuid(),
@@ -67,6 +68,7 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
 
       sendData(ctx.res, {
         approval_threshold: settings,
+        local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
         change_orders: rows.map((co) => ({
           ...co,
           customer_amount: num(co.customer_amount),

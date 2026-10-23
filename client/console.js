@@ -760,7 +760,11 @@ function renderDraws(drawData) {
         // The signature interaction. In the mock this wrote to a local object;
         // here it is a real write, and it is only offered to a role that holds
         // record_external_invoice — a button that 403s is worse than no button.
-        ref = canRecord
+        // While ServiceTitan is the revenue system the control is absent: the
+        // API would refuse the local invoice row.
+        ref = drawData.local_invoices_allowed === false
+          ? `<div class="stref"><span class="w">Customer invoices are created in ServiceTitan. Journeyman will not record a local invoice.</span></div>`
+          : canRecord
           ? `<div class="stref">
         <span class="w">No invoice recorded in ${esc(drawData.revenue_system)}</span>
         <input id="in-${dr.id}" placeholder="Invoice #" aria-label="Invoice number in the revenue system">
@@ -1210,17 +1214,23 @@ function renderPurchaseOrders(pos) {
 }
 
 async function issuePoDrawer() {
-  const [codes, vendors] = await Promise.all([
+  const [codes, vendors, accountSettings] = await Promise.all([
     api("/cost-codes"),
     api("/vendors?per_page=200"),
+    api("/accounting/cost-type-accounts"),
   ]);
+  const graceDays = Number(accountSettings?.agreement_grace_days ?? 14);
   openDrawer(
     "Issue a purchase order",
     `${messageSlot}
      <p class="note">A vendor must be compliant to be issued a purchase order.
      Committing money to someone who cannot legally be put on site is the
      expensive half of that mistake, and it happens days before anyone tries to
-     schedule them.</p>
+     schedule them. A signed vendor master agreement satisfies the agreement
+     gate. A per-PO subcontract is optional. With neither, a subcontract can
+     still be issued for ${graceDays} days after it is created, and the screen
+     shows a warning. After that, issue is blocked and the message says why.
+     Certificates of insurance and the W-9 check are unchanged.</p>
      ${field("PO number", '<input id="po-number" placeholder="PO-0001">')}
      ${field(
        "Vendor",
@@ -1246,7 +1256,7 @@ async function issuePoDrawer() {
      ${field("Scope of work", '<textarea id="po-scope"></textarea>')}
      ${field("Exclusions", '<textarea id="po-excl"></textarea>')}
      ${field("Agreement signed", '<input id="po-signed" type="date">')}
-     ${field("Signed agreement", '<select id="po-agreement"><option value="">— required to issue a subcontract —</option></select>')}
+     ${field("Signed agreement", `<select id="po-agreement"><option value="">— none; a warning applies for ${graceDays} days —</option></select>`)}
      ${field("ServiceTitan job", '<select id="po-st-job"><option value="">— none —</option></select>')}
      <p class="note" id="po-st-project"></p>
      <label style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
@@ -1268,7 +1278,7 @@ async function issuePoDrawer() {
       followCode();
       const loadAgreement = async () => {
         const id = el("po-vendor").value;
-        el("po-agreement").innerHTML = '<option value="">— required to issue a subcontract —</option>';
+        el("po-agreement").innerHTML = `<option value="">— none; a warning applies for ${graceDays} days —</option>`;
         if (!id) return;
         const vendor = await api(`/vendors/${id}`);
         for (const doc of vendor.documents || []) {
@@ -1316,6 +1326,7 @@ async function issuePoDrawer() {
             }),
           }).then((created) => {
             if (created.warning) window.alert(created.warning.message);
+            if (created.agreement_warning) window.alert(created.agreement_warning.message);
           }),
         ),
       );
@@ -1711,12 +1722,12 @@ function renderChangeOrders(data) {
   document.querySelectorAll("#cos [data-co]").forEach((node) =>
     node.addEventListener("click", () => {
       const co = cos.find((c) => c.id === node.dataset.co);
-      if (co) changeOrderDrawer(co, data.approval_threshold);
+      if (co) changeOrderDrawer(co, data.approval_threshold, data.local_invoices_allowed);
     }),
   );
 }
 
-function changeOrderDrawer(co, threshold) {
+function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   const overThreshold = co.customer_amount > threshold;
   const mayApproveThis = overThreshold
     ? can("approve_change_order_over_threshold")
@@ -1729,6 +1740,11 @@ function changeOrderDrawer(co, threshold) {
        <b>${signed(co.customer_amount)}</b> to the customer, <b>${money(co.cost_amount)}</b> of
        cost${co.schedule_impact_days ? `, ${co.schedule_impact_days} days of schedule` : ""}.
        Currently <b>${esc(co.status)}</b>.
+       ${
+         localInvoicesAllowed === false
+           ? " Customer invoices are created in ServiceTitan, so this change order is not invoiced from Journeyman."
+           : ""
+       }
        ${
          overThreshold
            ? ` Above this account's ${money(threshold)} threshold, so owner or manager only.`

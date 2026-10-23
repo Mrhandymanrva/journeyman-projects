@@ -27,6 +27,7 @@ export const CAPABILITIES = {
   edit_budget_before_freeze: ['owner', 'manager', 'project_manager'],
   issue_purchase_order: ['owner', 'manager', 'project_manager'],
   approve_vendor_bill: ['owner', 'manager', 'bookkeeper'],
+  manage_company_settings: ['owner', 'manager'],
   approve_draw: ['owner', 'manager'],
   record_external_invoice: ['owner', 'manager', 'office'],
   send_change_order: ['owner', 'manager', 'project_manager'],
