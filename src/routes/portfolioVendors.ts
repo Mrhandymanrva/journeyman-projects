@@ -94,17 +94,21 @@ export function portfolioVendorRoutes(database: Database, config: PortfolioFeedC
     const b = parsed.data;
     database
       .withTenant(config.tenantId, async (db) => {
-        const cur = await db.query<{ updated_at: Date; qbo_id: string | null }>(`SELECT updated_at, qbo_id FROM projects.vendors WHERE id = $1`, [id]);
+        const cur = await db.query<Record<string, any>>(`SELECT * FROM projects.vendors WHERE id = $1 FOR UPDATE`, [id]);
         if (!cur.rows[0]) throw new ApiError("not_found", "Vendor not found.");
         if (b.qbo_id && !cur.rows[0].qbo_id) await db.query(`UPDATE projects.vendors SET qbo_id = $2, updated_at = updated_at WHERE id = $1`, [id, b.qbo_id]);
         const theirs = new Date(b.updated_at).getTime(), ours = new Date(cur.rows[0].updated_at).getTime();
-        if (!(theirs > ours)) return { applied: false, vendor: await loadOne(db, id) };
-        const vals = COLS.map((k) => b[k] ?? null);
+        const blank=(v:unknown)=>v==null || v==='' || (Array.isArray(v)&&v.length===0);
+        const current=cur.rows[0]!;
+        const vals = COLS.map(k=>theirs>ours ? (blank(b[k]) ? current[k] : b[k]) : (blank(current[k]) && !blank(b[k]) ? b[k] : current[k]));
+        const changed=COLS.some((k,i)=>JSON.stringify(current[k])!==JSON.stringify(vals[i]));
+        if(!changed) return {applied:false,vendor:await loadOne(db,id)};
+        const mergedTime=new Date(Math.max(theirs,ours+1)).toISOString();
         await db.query(
           `UPDATE projects.vendors SET ${COLS.map((k, i) => `${k} = $${i + 2}`).join(", ")}, updated_at = $${COLS.length + 2}::timestamptz WHERE id = $1`,
-          [id, ...vals, b.updated_at],
+          [id, ...vals, mergedTime],
         );
-        if (b.archived) await db.query(`UPDATE projects.scheduling_resources SET active = false WHERE vendor_id = $1`, [id]).catch(() => undefined);
+        if (vals[COLS.indexOf("archived")]) await db.query(`UPDATE projects.scheduling_resources SET active = false WHERE vendor_id = $1`, [id]).catch(() => undefined);
         return { applied: true, vendor: await loadOne(db, id) };
       })
       .then((out) => sendData(res, out))

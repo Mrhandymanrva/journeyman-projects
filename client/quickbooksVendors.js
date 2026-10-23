@@ -102,7 +102,7 @@ export function createQuickBooksVendors({
       const pm = data.pm;
       open(
         "Check QuickBooks — " + pm.legal_name,
-        `<p>PM is the source of truth for shared vendor details. Populated PM values overwrite the corresponding QuickBooks values when you sync. Blank PM fields are filled from QuickBooks. W-9 attachments and tax ID/1099 review use Vendor setup & W-9 review.</p><p id="qb-message" role="status"></p>${
+        `<p>The most recently updated record supplies shared vendor details. Populated older values fill missing fields; blanks never erase existing information. W-9 attachments and tax ID/1099 review use Vendor setup & W-9 review.</p><p id="qb-message" role="status"></p>${
           qb
             ? `<p>QuickBooks vendor: <strong>${esc(qb.display_name || qb.legal_name)}</strong> (#${esc(qb.qbo_id)})${!qb.active ? " — INACTIVE" : ""}</p><div class="sub-table"><table><thead><tr><th>Field</th><th>PM value</th><th>QuickBooks value</th></tr></thead><tbody>${Object.entries(
                 fields,
@@ -113,7 +113,7 @@ export function createQuickBooksVendors({
                 )
                 .join(
                   "",
-                )}</tbody></table></div><label><input type="checkbox" id="qb-confirm"> I confirm these are the same vendor and want PM values synced to QuickBooks.</label><button class="btn primary" id="qb-sync" ${qb.active ? "" : "disabled"}>Sync PM values to QuickBooks</button>`
+                )}</tbody></table></div><label><input type="checkbox" id="qb-confirm"> I confirm these are the same vendor and want the latest details synchronized.</label><button class="btn primary" id="qb-sync" ${qb.active ? "" : "disabled"}>Sync latest details</button>`
             : `<p>${data.matches.length ? "Multiple matches found. Choose the correct vendor." : "No exact-name match found. Browse QuickBooks to match a vendor with a different name, or use Vendor setup & W-9 review to create a new vendor."}</p>`
         } ${!pm.qbo_id ? '<button class="btn" id="qb-browse">Find existing QuickBooks vendor</button>' : ""} <button class="btn" id="qb-back">Back to PM vendor</button>`,
         () => {
@@ -123,7 +123,7 @@ export function createQuickBooksVendors({
             el("qb-sync").onclick = async () => {
               if (!el("qb-confirm").checked) {
                 el("qb-message").textContent =
-                  "Confirm the vendor match and PM values first.";
+                  "Confirm the vendor match first.";
                 return;
               }
               el("qb-sync").disabled = true;

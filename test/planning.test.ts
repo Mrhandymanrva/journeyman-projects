@@ -513,3 +513,16 @@ it("archives companies and their crews reversibly without deleting profiles", as
     ).status,
   ).toBe(200);
 });
+
+it('moves successors in both directions and rejects a stale drag atomically',async()=>{
+ const a=await activity({title:'Demo',window_start:'2026-09-01',window_end:'2026-09-02'});
+ const b=await activity({title:'Framing',window_start:'2026-09-04',window_end:'2026-09-06',dependencies:[{predecessor_id:a}]});
+ const c=await activity({title:'Finish',window_start:'2026-09-07',window_end:'2026-09-08',dependencies:[{predecessor_id:b}]});
+ const moved=await owner().patch(base+'/schedule/'+a).send({window_start:'2026-09-04',window_end:'2026-09-05',expected_window_start:'2026-09-01',expected_window_end:'2026-09-02'});
+ expect(moved.status,JSON.stringify(moved.body)).toBe(200);
+ expect((await schedule()).find(r=>r.id===b)).toMatchObject({window_start:'2026-09-07',window_end:'2026-09-09'});
+ expect((await schedule()).find(r=>r.id===c)).toMatchObject({window_start:'2026-09-10',window_end:'2026-09-11'});
+ expect((await owner().patch(base+'/schedule/'+a).send({window_start:'2026-09-01',expected_window_start:'2026-09-01'})).status).toBe(409);
+ expect((await owner().patch(base+'/schedule/'+a).send({window_start:'2026-09-01',window_end:'2026-09-02'})).status).toBe(200);
+ expect((await schedule()).find(r=>r.id===c)).toMatchObject({window_start:'2026-09-07',window_end:'2026-09-08'});
+});

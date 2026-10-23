@@ -49,7 +49,8 @@ describe("portfolio vendor feed", () => {
     const base = { legal_name: "Harbor Concrete Co.", email: v.email, trades: ["concrete", "excavation"], phone: "555-0142" };
     const older = await auth(feed().put(`/api/v1/portfolio/vendors/${v.id}`)).send({ ...base, updated_at: new Date(Date.parse(v.updated_at) - 60_000).toISOString() });
     expect(older.status, JSON.stringify(older.body)).toBe(200);
-    expect(older.body.data.applied).toBe(false);
+    expect(older.body.data.applied).toBe(true);
+    expect(older.body.data.vendor.phone).toBe("555-0142");
     expect(older.body.data.vendor.legal_name).toBe("Harbor Concrete");
     const stamp = new Date(Date.parse(v.updated_at) + 60_000).toISOString();
     const newer = await auth(feed().put(`/api/v1/portfolio/vendors/${v.id}`)).send({ ...base, updated_at: stamp });

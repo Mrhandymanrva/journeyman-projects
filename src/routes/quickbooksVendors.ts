@@ -1,3 +1,4 @@
+import {parseVendorAddress} from '../domain/vendorAddress.js';
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -356,7 +357,8 @@ export function quickbooksVendorRoutes(
             "conflict",
             "Check QuickBooks first to verify the connected company.",
           );
-        return { ...p, v, qboId: body.qbo_id, requestId: randomUUID() };
+        const otherEmails=(await ctx.db.query<{email:string}>('SELECT email FROM projects.vendors WHERE id<>$1',[id])).rows.map(r=>r.email.toLowerCase());
+        return { ...p, v, otherEmails, qboId: body.qbo_id, requestId: randomUUID() };
       },
       async (p) => {
         const read = await call(p, { action: "vendor", id: p.qboId });
@@ -368,6 +370,7 @@ export function quickbooksVendorRoutes(
           return { error: "QuickBooks vendor is missing or inactive." };
         // Name matching is only a proposal: explicit confirmation selects the existing vendor.
         const merged: any = {};
+        const qbNewer=Date.parse(read.response.result.Vendor?.MetaData?.LastUpdatedTime??"")>new Date(p.v.updated_at).getTime();
         for (const key of [
           "legal_name",
           "email",
@@ -376,12 +379,13 @@ export function quickbooksVendorRoutes(
           "primary_contact",
           "notes",
         ] as const)
-          merged[key] = String(p.v[key] || qb[key] || "").trim();
+          merged[key] = String((qbNewer ? qb[key] || p.v[key] : p.v[key] || qb[key]) || "").trim();
         if (
           !merged.email ||
           !z.string().email().safeParse(merged.email).success
         )
           return { error: "A valid vendor email is required." };
+        if(p.otherEmails.includes(merged.email.toLowerCase()))return {error:'The merged email belongs to another PM vendor. Resolve the duplicate before syncing.'};
         const contact = merged.primary_contact.split(/\s+/);
         const payload = {
           DisplayName: merged.legal_name.slice(0, 100),
@@ -390,21 +394,7 @@ export function quickbooksVendorRoutes(
           ...(merged.phone
             ? { PrimaryPhone: { FreeFormNumber: merged.phone.slice(0, 30) } }
             : {}),
-          ...(merged.address
-            ? {
-                BillAddr: {
-                  Line1: merged.address.slice(0, 500),
-                  Line2: "",
-                  Line3: "",
-                  Line4: "",
-                  Line5: "",
-                  City: "",
-                  CountrySubDivisionCode: "",
-                  PostalCode: "",
-                  Country: "",
-                },
-              }
-            : {}),
+          ...(merged.address ? {BillAddr:merged.address===qb.address ? read.response.result.Vendor.BillAddr : (()=>{const a=parseVendorAddress(merged.address);return a ? {Line1:a.street,Line2:a.unit,City:a.city,CountrySubDivisionCode:a.state,PostalCode:a.zip,Country:a.country} : {Line1:merged.address.slice(0,500),Line2:'',Line3:'',Line4:'',Line5:'',City:'',CountrySubDivisionCode:'',PostalCode:'',Country:''};})()} : {}),
           ...(merged.primary_contact
             ? {
                 GivenName: contact[0].slice(0, 100),
@@ -440,6 +430,7 @@ export function quickbooksVendorRoutes(
         if (
           !current ||
           current.archived ||
+          new Date(current.updated_at).getTime()!==new Date(p.v.updated_at).getTime() ||
           (current.qbo_id && current.qbo_id !== p.qboId)
         )
           throw new ApiError(
@@ -449,14 +440,14 @@ export function quickbooksVendorRoutes(
         const merged =
           "merged" in result ? (result.merged as Record<string, string>) : {};
         await ctx.db.query(
-          `UPDATE projects.vendors SET qbo_id=$2,phone=COALESCE(NULLIF(phone,''),$3),address=COALESCE(NULLIF(address,''),$4),primary_contact=COALESCE(NULLIF(primary_contact,''),$5),notes=COALESCE(NULLIF(notes,''),$6) WHERE id=$1`,
+          `UPDATE projects.vendors SET qbo_id=$2,phone=$3,address=$4,primary_contact=$5,notes=$6,legal_name=$7,email=$8 WHERE id=$1`,
           [
             p.v.id,
             p.qboId,
             merged.phone,
             merged.address,
             merged.primary_contact,
-            merged.notes,
+            merged.notes, merged.legal_name, merged.email,
           ],
         );
         await queueVendor(ctx.db, ctx.staff.tenantId, {

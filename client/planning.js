@@ -1,3 +1,4 @@
+import {renderGantt,bindGantt} from "./gantt.js";
 import { createSubcontractors } from "./subcontractors.js";
 import { renderScheduleBoard, issues } from "./scheduleBoard.js";
 import { createSourceViews } from "./sources.js";
@@ -105,7 +106,8 @@ export function createPlanning({
     const revision = ++generation;
     const project = current();
     const from = el("planning-from").value || day();
-    const to = addDays(from, 13);
+    const days = Number(el("planning-zoom").value);
+    const to = addDays(from, days-1);
     el("planning-range").textContent = `${from} – ${to}`;
     el("planning-rows").textContent = "Loading schedule…";
     try {
@@ -192,7 +194,8 @@ export function createPlanning({
             `<div><strong>${n}</strong><span>${label}</span></div>`,
         )
         .join("");
-      el("planning-rows").innerHTML = renderScheduleBoard({
+      el("planning-rows").innerHTML = (el("planning-view").value === "timeline" ? renderGantt : renderScheduleBoard)({
+        days,
         rows,
         from,
         view: el("planning-view").value,
@@ -202,6 +205,11 @@ export function createPlanning({
         esc,
         today: day(),
       });
+      bindGantt(el("planning-rows"), {rows, save: async (row, dates) => {
+        await api("/schedule/"+row.id,{method:"PATCH",body:JSON.stringify({...dates,expected_window_start:row.window_start,expected_window_end:row.window_end})});
+        projectRows=await api("/projects/"+project.id+"/schedule");
+        await lookahead();
+      }});
       el("planning-rows")
         .querySelectorAll("[data-st-appointment]")
         .forEach((b) =>
@@ -577,17 +585,17 @@ export function createPlanning({
   el("planning-job").addEventListener("click", jobs);
   el("planning-from").addEventListener("change", lookahead);
   el("planning-all").addEventListener("change", lookahead);
-  for (const id of ["planning-view", "planning-phase", "planning-filter"])
+  for (const id of ["planning-view", "planning-phase", "planning-filter", "planning-zoom"])
     el(id).addEventListener("change", lookahead);
   el("planning-prev").addEventListener("click", () => {
     el("planning-from").value = addDays(
       el("planning-from").value || day(),
-      -14,
+      -Number(el("planning-zoom").value),
     );
     void lookahead();
   });
   el("planning-next").addEventListener("click", () => {
-    el("planning-from").value = addDays(el("planning-from").value || day(), 14);
+    el("planning-from").value = addDays(el("planning-from").value || day(), Number(el("planning-zoom").value));
     void lookahead();
   });
   el("planning-today").addEventListener("click", () => {

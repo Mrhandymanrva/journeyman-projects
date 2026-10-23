@@ -326,7 +326,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
 
       const outstanding = await ctx.db.query<{ kind: string; state: string }>(
         `SELECT kind::text AS kind, state FROM projects.v_vendor_compliance
-          WHERE vendor_id = $1 AND state IN ('missing','expired')`,
+          WHERE vendor_id = $1 AND blocks_scheduling AND state IN ('missing','expired')`,
         [vendorId],
       );
       if (outstanding.rows.length > 0) {

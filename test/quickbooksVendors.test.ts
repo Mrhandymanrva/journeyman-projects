@@ -51,3 +51,10 @@ it('uses the linked QB ID for W-9 setup instead of creating another vendor after
  await h.db.withTenant(t.id,s=>s.query(`INSERT INTO projects.vendor_documents(tenant_id,vendor_id,kind,file_name,media_type,file_data,file_size,verified_by,verified_at) VALUES($1,$2,'tax_form','w9.pdf','application/pdf',$3,12,$4,now())`,[t.id,linked.id,Buffer.from('%PDF-fixture'),t.staff.owner!.id]));
  calls=[];await runAccounting(h.db,gateway);expect(calls.map(c=>c.action)).toEqual(['vendor','w9']);expect(calls[0].id).toBe('301');
 });
+it('takes newer QuickBooks contact edits without allowing blanks to erase PM details',async()=>{
+ records=[{...full('306'),PrimaryEmailAddr:{Address:'newerqb@example.test'},MetaData:{LastUpdatedTime:'2099-01-01T00:00:00Z'},PrimaryPhone:null}];
+ const created=await owner().post(base+'/vendors').send({legal_name:'Recent sync test',email:'recent@example.test',phone:'8045559999'});const id=created.body.data.id;
+ calls=[];const result=await owner().post(base+'/vendors/'+id+'/quickbooks-sync').send({qbo_id:'306',confirmed:true});expect(result.status,JSON.stringify(result.body)).toBe(200);
+ const v=(await owner().get(base+'/vendors/'+id)).body.data;expect(v.legal_name).toBe('QB Plumbing');expect(v.email).toBe('newerqb@example.test');expect(v.phone).toBe('8045559999');
+ expect(calls.find(c=>c.action==='syncVendor').payload.BillAddr).toEqual(records[0].BillAddr);
+});

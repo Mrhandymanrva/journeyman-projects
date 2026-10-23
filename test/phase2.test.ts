@@ -716,3 +716,12 @@ describe('commitments that would land nowhere', () => {
     expect(res.body.data.warning.budgeted_as).toEqual([]);
   });
 });
+
+it('unsigned agreements are advisory while missing insurance still blocks activation',async()=>{
+ const vendorId=await compliantVendor('Agreement advisory');
+ await h.db.withTenant(t.id,db=>db.query("DELETE FROM projects.vendor_documents WHERE vendor_id=$1 AND kind='master_agreement'",[vendorId]));
+ const r=await owner().post('/api/v1/projects/vendors/'+vendorId+'/activate');
+ expect(r.status,JSON.stringify(r.body)).toBe(200);
+ await h.db.withTenant(t.id,db=>db.query("DELETE FROM projects.vendor_documents WHERE vendor_id=$1 AND kind='gl_insurance'",[vendorId]));
+ expect((await owner().post('/api/v1/projects/vendors/'+vendorId+'/activate')).status).toBe(409);
+});

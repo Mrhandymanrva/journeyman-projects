@@ -1,3 +1,4 @@
+import {scheduleSnapshot,cascadeSchedule} from "../domain/scheduleCascade.js";
 import {
   planningFields,
   validatePlanning,
@@ -384,6 +385,8 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
           ...planningFields,
           depends_on: z.string().uuid().nullish(),
           title: z.string().min(1).optional(),
+          expected_window_start: z.string().date().optional(),
+          expected_window_end: z.string().date().optional(),
           window_start: z.string().date().optional(),
           window_end: z.string().date().optional(),
           status: z
@@ -407,6 +410,10 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
         body,
         itemId,
       );
+      const beforeSchedule = await scheduleSnapshot(ctx.db, existing.rows[0].project_id);
+      const latest = beforeSchedule.find(r=>r.id===itemId)!;
+      if((body.expected_window_start && body.expected_window_start!==latest.window_start)||(body.expected_window_end && body.expected_window_end!==latest.window_end)) throw new ApiError("conflict","This activity changed. Refresh the schedule before moving it.");
+      existing.rows[0].window_start=latest.window_start;existing.rows[0].window_end=latest.window_end;
       if (
         (body.window_start ?? existing.rows[0].window_start) >
         (body.window_end ?? existing.rows[0].window_end)
@@ -417,6 +424,7 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
         );
       }
       const {
+        expected_window_start, expected_window_end,
         resource_ids,
         dependencies: ignored,
         depends_on,
@@ -445,7 +453,8 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
           resource_ids,
           dependencies,
         );
-        sendData(ctx.res, { id: itemId });
+        const shifted = await cascadeSchedule(ctx.db, existing.rows[0].project_id, beforeSchedule, itemId);
+        sendData(ctx.res, { id: itemId, shifted });
         return;
       }
 
@@ -472,7 +481,8 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
         resource_ids,
         dependencies,
       );
-      sendData(ctx.res, rows[0]);
+      const shifted = (body.window_start || body.window_end || dependencies !== undefined) ? await cascadeSchedule(ctx.db, existing.rows[0].project_id, beforeSchedule, itemId) : [];
+      sendData(ctx.res, {...rows[0], ...shifted.find(r=>r.id===itemId), shifted});
     }),
   );
 
