@@ -332,7 +332,18 @@ export function accountingRoutes(
           [id],
         )
       ).rows[0];
-      sendData(ctx.res, { bills: rows.rows, ...p });
+      sendData(ctx.res, {
+        bills: rows.rows.map((bill) => ({
+          ...bill,
+          card_charge_state:
+            bill.po_kind === "material" && bill.status === "received" && !bill.qbo_id
+              ? "awaiting_card_charge"
+              : bill.po_kind === "material" && bill.qbo_id
+                ? "matched"
+                : null,
+        })),
+        ...p,
+      });
     }),
   );
   router.patch(

@@ -66,6 +66,21 @@ const billLineSchema = z
     message: 'Give pct_complete_to_date or gross_amount on each line, not both',
   });
 
+const materialBillSchema = z
+  .object({
+    vendor_id: z.string().uuid().nullish(),
+    supplier_name: z.string().trim().min(1).max(200).nullish(),
+    cost_code_id: z.string().uuid(),
+    amount: z.number().positive(),
+    order_number: z.string().trim().min(1).max(21),
+    invoice_date: z.string().date().optional(),
+    description: z.string().max(4000).optional(),
+  })
+  .refine((v) => Boolean(v.vendor_id) || Boolean(v.supplier_name), {
+    message: 'Provide a vendor or a supplier name',
+    path: ['vendor_id'],
+  });
+
 const createBillSchema = z
   .object({
     vendor_invoice_number: z.string().min(1).max(21),
@@ -249,6 +264,114 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
     }),
   );
 
+  router.post(
+    '/projects/:id/material-bills',
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, 'issue_purchase_order');
+      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
+      await loadVisibleProject(ctx, projectId, 'id');
+      const body = parseBody(materialBillSchema, ctx.req.body);
+      await requireOwnedRow(ctx.db, 'cost_codes', body.cost_code_id, 'cost_code_id', 'AND active');
+      await requireOwnedRow(ctx.db, 'vendors', body.vendor_id, 'vendor_id');
+      const taken = await ctx.db.query(
+        `SELECT 1 FROM projects.purchase_orders WHERE po_number = $1`,
+        [body.order_number],
+      );
+      if (taken.rows.length) {
+        throw new ApiError(
+          'conflict',
+          'That order number is already used on a purchase order. Record the bill on that order, or use a different order number.',
+        );
+      }
+      const description = body.description?.trim() || `Material order ${body.order_number}`;
+      const created = await ctx.db.query<{ id: string }>(
+        `INSERT INTO projects.purchase_orders
+           (tenant_id, project_id, po_number, vendor_id, supplier_name, cost_code_id,
+            cost_type, amount, scope_text, status, issued_by, issued_at, kind)
+         VALUES ($1,$2,$3,$4,$5,$6,'M'::projects.cost_type,$7,$8,
+                 'issued'::projects.po_status,$9,now(),'material'::projects.po_kind)
+         RETURNING id`,
+        [
+          ctx.staff.tenantId,
+          projectId,
+          body.order_number,
+          body.vendor_id ?? null,
+          body.supplier_name ?? null,
+          body.cost_code_id,
+          body.amount,
+          description,
+          ctx.staff.staffId,
+        ],
+      );
+      const poId = created.rows[0]!.id;
+      const line = await ctx.db.query<{ id: string }>(
+        `INSERT INTO projects.po_lines
+           (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount, budget_line_id)
+         VALUES ($1,$2,1,$3,'M'::projects.cost_type,$4,$5,
+           (SELECT id FROM projects.budget_lines
+             WHERE project_id = $6 AND cost_code_id = $3 AND cost_type = 'M'::projects.cost_type
+             LIMIT 1))
+         RETURNING id`,
+        [ctx.staff.tenantId, poId, body.cost_code_id, description, body.amount, projectId],
+      );
+      const bill = await ctx.db.query<{ id: string }>(
+        `INSERT INTO projects.vendor_bills
+           (tenant_id, po_id, vendor_invoice_number, amount, invoice_date, due_date, description)
+         VALUES ($1,$2,$3,$4,COALESCE($5::date,CURRENT_DATE),COALESCE($5::date,CURRENT_DATE),$6)
+         RETURNING id`,
+        [ctx.staff.tenantId, poId, body.order_number, body.amount, body.invoice_date ?? null, description],
+      );
+      const billId = bill.rows[0]!.id;
+      await ctx.db.query(
+        `INSERT INTO projects.bill_lines
+           (tenant_id, bill_id, po_line_id, gross_amount)
+         VALUES ($1,$2,$3,$4)`,
+        [ctx.staff.tenantId, billId, line.rows[0]!.id, body.amount],
+      );
+      const budgeted = await ctx.db.query<{ cost_type: string }>(
+        `SELECT cost_type::text AS cost_type FROM projects.budget_lines
+          WHERE project_id = $1 AND cost_code_id = $2`,
+        [projectId, body.cost_code_id],
+      );
+      const matches = budgeted.rows.some((row) => row.cost_type === 'M');
+      const named = body.vendor_id
+        ? await ctx.db.query<{ legal_name: string }>(
+            `SELECT legal_name FROM projects.vendors WHERE id = $1`,
+            [body.vendor_id],
+          )
+        : { rows: [] as Array<{ legal_name: string }> };
+      sendData(
+        ctx.res,
+        {
+          id: billId,
+          po_id: poId,
+          po_number: body.order_number,
+          vendor_invoice_number: body.order_number,
+          vendor: named.rows[0]?.legal_name ?? body.supplier_name,
+          amount: body.amount,
+          status: 'received',
+          po_kind: 'material',
+          cost_code_id: body.cost_code_id,
+          card_charge_state: 'awaiting_card_charge',
+          warning: matches
+            ? null
+            : {
+                code: 'no_matching_budget_line',
+                message:
+                  budgeted.rows.length > 0
+                    ? `This cost code is budgeted as ${budgeted.rows
+                        .map((row) => row.cost_type)
+                        .join('/')}, not M. The material order will not show against the budget line until the two agree.`
+                    : 'Nothing is budgeted against this cost code as material, so the order will not appear in the cost position until a material budget line exists.',
+                budgeted_as: budgeted.rows.map((row) => row.cost_type),
+              },
+        },
+        undefined,
+        201,
+      );
+    }),
+  );
+
   router.patch(
     '/purchase-orders/:id',
     staffRoute(deps, async (ctx) => {
@@ -396,7 +519,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
     '/purchase-orders/:id/bills',
     staffRoute(deps, async (ctx) => {
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
-      await loadVisiblePo(ctx, poId);
+      const po = await loadVisiblePo(ctx, poId);
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, vendor_invoice_number, amount, retention_held, status::text AS status,
                 received_at, approved_by, approved_at, paid_at, file_key, exported_at, invoice_date, due_date,
@@ -408,6 +531,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         ctx.res,
         rows.map((r) => ({
           ...r,
+          po_kind: po.kind,
           amount: num(r.amount),
           retention_held: num(r.retention_held),
         })),
@@ -610,7 +734,30 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       async (prepared) => readBridge(accounting!, prepared),
       async (ctx, prepared, result) => {
         if (!result.ok) throw bridgeRejection(prepared.action, result.message);
-        sendData(ctx.res, { transactions: normalizePayables(result.result) });
+        const pending = await ctx.db.query<{
+          amount: string;
+          invoice_date: string | null;
+          vendor: string | null;
+        }>(
+          `SELECT b.amount::text AS amount, b.invoice_date::text AS invoice_date,
+                  COALESCE(v.legal_name, po.supplier_name) AS vendor
+             FROM projects.vendor_bills b
+             JOIN projects.purchase_orders po ON po.id = b.po_id
+             LEFT JOIN projects.vendors v ON v.id = po.vendor_id
+            WHERE b.po_id = $1 AND b.status = 'received' AND po.kind = 'material'
+            ORDER BY b.received_at DESC
+            LIMIT 1`,
+          [prepared.poId],
+        );
+        const bill = pending.rows[0];
+        sendData(ctx.res, {
+          transactions: rankPayables(
+            normalizePayables(result.result),
+            bill
+              ? { amount: num(bill.amount) ?? 0, invoiceDate: bill.invoice_date, vendor: bill.vendor }
+              : null,
+          ),
+        });
       },
     ),
   );
@@ -620,7 +767,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
     staffExternalRoute(
       deps,
       async (ctx) => {
-        requireCapability(ctx.staff.role, 'approve_vendor_bill');
+        requireCapability(ctx.staff.role, 'link_material_purchase');
         const billId = parseUuidParam(ctx.req.params.id, 'Vendor bill');
         const body = parseBody(
           z.object({
@@ -637,9 +784,10 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
           status: string;
           qbo_id: string | null;
           source: string;
+          kind: string;
         }>(
           `SELECT b.id, b.po_id, po.project_id, b.amount::text AS amount, b.status::text AS status,
-                  b.qbo_id, b.source
+                  b.qbo_id, b.source, po.kind::text AS kind
              FROM projects.vendor_bills b
              JOIN projects.purchase_orders po ON po.id = b.po_id
             WHERE b.id = $1`,
@@ -648,6 +796,12 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         const row = bill.rows[0];
         if (!row) throw notFound('Vendor bill not found');
         await loadVisibleProject(ctx, row.project_id, 'id');
+        if (row.kind !== 'material') {
+          throw new ApiError(
+            'conflict',
+            'Only a material purchase is linked to an existing QuickBooks charge. A subcontract bill is approved, not linked. Nothing was sent to QuickBooks.',
+          );
+        }
         if (row.status === 'rejected') {
           throw new ApiError('conflict', 'A rejected bill cannot be linked to QuickBooks.');
         }
@@ -700,25 +854,37 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
           );
         }
         const total = Number(txn.TotalAmt);
-        if (!Number.isFinite(total) || Math.abs(total - prepared.gross) > 0.005) {
+        if (!Number.isFinite(total)) {
           throw new ApiError(
             'conflict',
-            `That QuickBooks ${prepared.txnType} is ${Number.isFinite(total) ? total.toFixed(2) : 'an unknown amount'}, and this bill is ${prepared.gross.toFixed(2)}.`,
+            `That QuickBooks ${prepared.txnType} has no total, so it was not linked. Nothing was sent to QuickBooks.`,
           );
         }
+        const variance = roundMoney(total - prepared.gross);
+        const varianceMessage =
+          Math.abs(variance) <= 0.005
+            ? null
+            : `Card charge is ${total.toFixed(2)} and this material order is ${prepared.gross.toFixed(2)}. Variance ${variance.toFixed(2)} (tax, shipping, or a price difference). The project cost stays the order amount. Nothing was sent to QuickBooks.`;
         const balance = Number(txn.Balance ?? 0);
         const paid = prepared.txnType === 'Purchase' || balance === 0;
         const { rows } = await ctx.db.query<Record<string, unknown>>(
           `UPDATE projects.vendor_bills
               SET source = 'qbo_link', qbo_id = $2, qbo_txn_type = $3, qbo_balance = $4,
-                  qbo_checked_at = now(), qbo_message = NULL,
+                  qbo_checked_at = now(), qbo_message = $6,
                   status = CASE WHEN $5 THEN 'paid'::projects.bill_status ELSE 'approved'::projects.bill_status END,
                   paid_at = CASE WHEN $5 THEN COALESCE(paid_at, now()) ELSE paid_at END
             WHERE id = $1
-            RETURNING id, status::text AS status, qbo_id, qbo_txn_type, source, amount, qbo_balance`,
-          [prepared.billId, prepared.qboId, prepared.txnType, Number.isFinite(balance) ? balance : null, paid],
+            RETURNING id, status::text AS status, qbo_id, qbo_txn_type, source, amount, qbo_balance, qbo_message`,
+          [
+            prepared.billId,
+            prepared.qboId,
+            prepared.txnType,
+            Number.isFinite(balance) ? balance : null,
+            paid,
+            varianceMessage,
+          ],
         );
-        sendData(ctx.res, presentMoney(rows[0]!, ['amount', 'qbo_balance']));
+        sendData(ctx.res, { ...presentMoney(rows[0]!, ['amount', 'qbo_balance']), variance });
       },
     ),
   );
@@ -1028,6 +1194,7 @@ interface QboRead {
   qboId?: string;
   realm: string | null;
   vendorQboId: string | null;
+  poId?: string;
 }
 
 async function prepareQboRead(
@@ -1035,8 +1202,14 @@ async function prepareQboRead(
   accounting: AccountingGateway | undefined,
   poId: string,
 ): Promise<QboRead & { skipped?: boolean }> {
-  requireCapability(ctx.staff.role, 'approve_vendor_bill');
+  requireCapability(ctx.staff.role, 'link_material_purchase');
   const po = await loadVisiblePo(ctx, poId);
+  if (po.kind !== 'material') {
+    throw new ApiError(
+      'conflict',
+      'QuickBooks matching is for a material purchase. Nothing was linked or queued.',
+    );
+  }
   if (!accounting) {
     throw new ApiError(
       'conflict',
@@ -1058,7 +1231,7 @@ async function prepareQboRead(
     vendorQboId = vendor.rows[0]?.qbo_id ?? null;
   }
   const config = await ctx.db.query<{ realm: string }>(`SELECT realm FROM projects.accounting_config`);
-  return { action: 'payables', realm: config.rows[0]?.realm ?? null, vendorQboId };
+  return { action: 'payables', realm: config.rows[0]?.realm ?? null, vendorQboId, poId: po.id };
 }
 
 async function readBridge(
@@ -1099,7 +1272,56 @@ function normalizePayables(result: any) {
       total: Number(txn.TotalAmt ?? 0),
       balance: txn.Balance == null ? null : Number(txn.Balance),
       txn_date: txn.TxnDate ?? null,
+      vendor_name: txn.VendorRef?.name ?? txn.EntityRef?.name ?? null,
     }));
   };
   return [...take('Bill'), ...take('Purchase')];
+}
+
+interface PayableCandidate {
+  id: string | null;
+  txn_type: 'Bill' | 'Purchase';
+  doc_number: string | null;
+  total: number;
+  balance: number | null;
+  txn_date: string | null;
+  vendor_name: string | null;
+}
+
+function namesMatch(left: string | null, right: string | null): boolean {
+  const a = (left ?? '').trim().toLowerCase();
+  const b = (right ?? '').trim().toLowerCase();
+  if (!a || !b) return false;
+  return a.includes(b) || b.includes(a);
+}
+
+function daysApart(left: string | null, right: string | null): number {
+  if (!left || !right) return 365;
+  const a = Date.parse(left);
+  const b = Date.parse(right);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 365;
+  return Math.abs(a - b) / 86_400_000;
+}
+
+function rankPayables(
+  transactions: PayableCandidate[],
+  bill: { amount: number; invoiceDate: string | null; vendor: string | null } | null,
+) {
+  const scored = transactions.map((txn) => {
+    const variance = bill ? roundMoney(Number(txn.total) - bill.amount) : null;
+    const amountDelta = variance == null ? Number.POSITIVE_INFINITY : Math.abs(variance);
+    return {
+      ...txn,
+      variance,
+      amount_delta: bill ? amountDelta : null,
+      vendor_match: bill ? namesMatch(bill.vendor, txn.vendor_name) : false,
+      day_delta: bill ? daysApart(bill.invoiceDate, txn.txn_date) : null,
+    };
+  });
+  scored.sort((a, b) => {
+    if (a.vendor_match !== b.vendor_match) return a.vendor_match ? -1 : 1;
+    if (a.amount_delta !== b.amount_delta) return (a.amount_delta ?? 0) - (b.amount_delta ?? 0);
+    return (a.day_delta ?? 0) - (b.day_delta ?? 0);
+  });
+  return scored.map((txn, index) => ({ ...txn, suggested: index === 0 && bill != null && txn.id != null }));
 }

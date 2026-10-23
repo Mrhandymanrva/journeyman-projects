@@ -1519,9 +1519,9 @@ async function billsDrawer(poId) {
                      : "warn"
                }"></span>
         <div class="row-b"><div class="row-t">${esc(b.vendor_invoice_number)}</div>
-          <div class="row-m">${esc(b.status)} · received ${esc(String(b.received_at).slice(0, 10))}</div>
+          <div class="row-m">${b.po_kind === "material" && b.status === "received" && !b.qbo_id ? "Awaiting card charge" : esc(b.status)} · received ${esc(String(b.received_at).slice(0, 10))}</div>
           ${
-            b.status === "received" && can("approve_vendor_bill")
+            b.status === "received" && b.po_kind !== "material" && can("approve_vendor_bill")
               ? `<div class="po-actions">
                    <button class="btn sm" data-approve="${b.id}">Approve for payment</button>
                    <button class="btn sm danger" data-reject="${b.id}">Reject</button>
