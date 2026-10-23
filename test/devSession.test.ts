@@ -15,7 +15,8 @@ let h: Harness;
 
 beforeAll(async () => {
   h = await startHarness(SCHEMA_FILES);
-  await createTenant(h, { slug: 'devlogin', displayName: 'Dev Login Co' });
+  const t=await createTenant(h, { slug: 'devlogin', displayName: 'Dev Login Co' });
+  await h.db.withTenant(t.id,db=>db.query('UPDATE projects.staff SET login_bootstrap=true'));
 });
 
 afterAll(async () => {

@@ -1,0 +1,12 @@
+SET search_path=projects,public;
+ALTER TABLE projects ALTER COLUMN contract_value DROP NOT NULL;
+ALTER TABLE projects ALTER COLUMN target_margin DROP NOT NULL;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_customer_name text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_location_name text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_project_status text;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS source_project_summary text;
+ALTER TABLE project_job_links ADD COLUMN IF NOT EXISTS source_managed boolean NOT NULL DEFAULT false;
+ALTER TABLE project_job_links ADD COLUMN IF NOT EXISTS source_active boolean NOT NULL DEFAULT true;
+ALTER TABLE project_job_links ADD COLUMN IF NOT EXISTS source_job_number text;
+ALTER TABLE project_job_links ADD COLUMN IF NOT EXISTS source_job_status text;
+ALTER TABLE project_job_links ADD COLUMN IF NOT EXISTS source_summary text;

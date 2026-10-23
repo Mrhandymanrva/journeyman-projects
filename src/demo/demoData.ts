@@ -106,8 +106,8 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       ['bookkeeper', 'R. Alvarez', 'books@demo.test', 'bookkeeper'],
     ] as const) {
       const { rows } = await c.query<{ id: string }>(
-        `INSERT INTO projects.staff (tenant_id, email, full_name, role)
-         VALUES ($1,$2,$3,$4::projects.staff_role) RETURNING id`,
+        `INSERT INTO projects.staff (tenant_id, email, full_name, role, login_bootstrap)
+         VALUES ($1,$2,$3,$4::projects.staff_role,true) RETURNING id`,
         [TENANT_ID, email, name, role],
       );
       staff[key] = rows[0]!.id;

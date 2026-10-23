@@ -1,0 +1,11 @@
+SET search_path=projects,public;
+ALTER TABLE scheduling_resources ADD COLUMN IF NOT EXISTS source_system_id uuid;
+ALTER TABLE scheduling_resources ADD COLUMN IF NOT EXISTS source_technician_id text;
+ALTER TABLE scheduling_resources ADD COLUMN IF NOT EXISTS source_connection_key text;
+ALTER TABLE scheduling_resources ADD COLUMN IF NOT EXISTS source_observed_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS scheduling_resource_source_uq ON scheduling_resources(tenant_id,source_system_id,source_technician_id);
+ALTER TABLE scheduling_resources ADD CONSTRAINT resource_source_tenant_fk FOREIGN KEY(tenant_id,source_system_id) REFERENCES external_systems(tenant_id,id);
+ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS trade text;
+ALTER TABLE schedule_items ADD COLUMN IF NOT EXISTS activity_type text;
+ALTER TABLE projects.schedule_items ADD COLUMN IF NOT EXISTS baseline_window_start date;
+ALTER TABLE projects.schedule_items ADD COLUMN IF NOT EXISTS baseline_window_end date;

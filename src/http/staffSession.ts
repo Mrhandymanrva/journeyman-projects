@@ -1,7 +1,7 @@
-import type { Request, Response, NextFunction, RequestHandler } from 'express';
-import type { Database, SqlClient } from '../db/database.js';
-import { ApiError } from './errors.js';
-import type { StaffRole } from './capabilities.js';
+import type { Request, Response, NextFunction, RequestHandler } from "express";
+import type { Database, SqlClient } from "../db/database.js";
+import { ApiError } from "./errors.js";
+import type { StaffRole } from "./capabilities.js";
 
 /**
  * Staff identity. This file must not import from portalSession.ts and
@@ -17,6 +17,7 @@ export interface StaffSessionRecord {
 }
 
 export interface StaffSessionStore {
+  revokeStaff?(tenantId: string, staffId: string): void;
   /** Resolve a staff session, or null. Never throws for a bad token. */
   resolve(req: Request): Promise<StaffSessionRecord | null>;
 }
@@ -55,7 +56,7 @@ export interface StaffRouterDeps {
  * ones the portal tree will serve — which is precisely the confusion §1.1
  * forbids. Nothing outside this file can read or set it.
  */
-const STAFF_SESSION = Symbol('staffSession');
+const STAFF_SESSION = Symbol("staffSession");
 
 type WithStaffSession = Request & { [STAFF_SESSION]?: StaffSessionRecord };
 
@@ -72,13 +73,15 @@ function getStaffSession(req: Request): StaffSessionRecord | undefined {
  * staffRoute() so that its lifetime is exactly the handler's — a transaction
  * held open across the rest of an Express chain outlives the work it protects.
  */
-export function staffAuthentication(sessions: StaffSessionStore): RequestHandler {
+export function staffAuthentication(
+  sessions: StaffSessionStore,
+): RequestHandler {
   return (req: Request, _res: Response, next: NextFunction) => {
     sessions
       .resolve(req)
       .then((session) => {
         if (!session) {
-          next(new ApiError('unauthenticated', 'A staff session is required.'));
+          next(new ApiError("unauthenticated", "A staff session is required."));
           return;
         }
         setStaffSession(req, session);
@@ -95,7 +98,7 @@ export function staffRoute(
   return (req, res, next) => {
     const session = getStaffSession(req);
     if (!session) {
-      next(new ApiError('unauthenticated', 'A staff session is required.'));
+      next(new ApiError("unauthenticated", "A staff session is required."));
       return;
     }
 
@@ -116,26 +119,36 @@ export function staffRoute(
   };
 }
 
-async function assertModulesLive(db: SqlClient, tenantId: string): Promise<void> {
+async function assertModulesLive(
+  db: SqlClient,
+  tenantId: string,
+): Promise<void> {
   const { rows } = await db.query<{ module_key: string; state: string }>(
     `SELECT module_key, state FROM projects.entitlements WHERE tenant_id = $1`,
     [tenantId],
   );
   const live = new Set(
-    rows.filter((r) => ['trial', 'active', 'past_due'].includes(r.state)).map((r) => r.module_key),
+    rows
+      .filter((r) => ["trial", "active", "past_due"].includes(r.state))
+      .map((r) => r.module_key),
   );
-  const missing = ['estimating', 'projects'].filter((m) => !live.has(m));
+  const missing = ["estimating", "projects"].filter((m) => !live.has(m));
   if (missing.length > 0) {
-    const states = rows.map((r) => `${r.module_key}=${r.state}`).join(', ') || 'no entitlements';
+    const states =
+      rows.map((r) => `${r.module_key}=${r.state}`).join(", ") ||
+      "no entitlements";
     throw new ApiError(
-      'module_not_entitled',
+      "module_not_entitled",
       `Journeyman Projects is not active for this account (${states}).`,
       { missing, states: rows },
     );
   }
 }
 
-async function loadStaff(db: SqlClient, staffId: string): Promise<StaffPrincipal> {
+async function loadStaff(
+  db: SqlClient,
+  staffId: string,
+): Promise<StaffPrincipal> {
   const { rows } = await db.query<{
     id: string;
     tenant_id: string;
@@ -155,7 +168,7 @@ async function loadStaff(db: SqlClient, staffId: string): Promise<StaffPrincipal
   // does not resolve to a usable identity, and distinguishing the two would
   // confirm the id is real.
   if (!row || !row.active) {
-    throw new ApiError('unauthenticated', 'This staff account is not active.');
+    throw new ApiError("unauthenticated", "This staff account is not active.");
   }
   return {
     tenantId: row.tenant_id,
@@ -167,7 +180,10 @@ async function loadStaff(db: SqlClient, staffId: string): Promise<StaffPrincipal
   };
 }
 
-async function loadSettings(db: SqlClient, tenantId: string): Promise<TenantSettings> {
+async function loadSettings(
+  db: SqlClient,
+  tenantId: string,
+): Promise<TenantSettings> {
   const { rows } = await db.query<{
     enforce_business_unit_scoping: boolean;
     portal_user_soft_alert_at: number | null;
@@ -180,5 +196,51 @@ async function loadSettings(db: SqlClient, tenantId: string): Promise<TenantSett
   return {
     enforceBusinessUnitScoping: row?.enforce_business_unit_scoping ?? false,
     portalUserSoftAlertAt: row?.portal_user_soft_alert_at ?? null,
+  };
+}
+
+/** Authorize before a network read, release the database transaction, then
+ * reauthorize before saving. External latency never holds a tenant connection. */
+export function staffExternalRoute<P, R>(
+  deps: StaffRouterDeps,
+  prepare: (ctx: StaffContext) => Promise<P>,
+  read: (prepared: P) => Promise<R>,
+  apply: (ctx: StaffContext, prepared: P, result: R) => Promise<void>,
+): RequestHandler {
+  return (req, res, next) => {
+    const run = async () => {
+      const session = getStaffSession(req);
+      if (!session)
+        throw new ApiError("unauthenticated", "A staff session is required.");
+      const within = <T>(fn: (ctx: StaffContext) => Promise<T>) =>
+        deps.database.withTenant(session.tenantId, async (db) => {
+          await assertModulesLive(db, session.tenantId);
+          const staff = await loadStaff(db, session.staffId);
+          const settings = await loadSettings(db, session.tenantId);
+          return fn({ db, staff, settings, req, res });
+        });
+      const prepared = await within(prepare);
+      let result: R;
+      try {
+        result = await read(prepared);
+      } catch {
+        throw new ApiError(
+          "source_unavailable",
+          "Source refresh failed. The previous snapshot is unchanged.",
+        );
+      }
+      const current = await deps.sessions.resolve(req);
+      if (
+        !current ||
+        current.tenantId !== session.tenantId ||
+        current.staffId !== session.staffId
+      )
+        throw new ApiError(
+          "unauthenticated",
+          "Your staff session has expired.",
+        );
+      await within((ctx) => apply(ctx, prepared, result));
+    };
+    run().catch(next);
   };
 }

@@ -1,21 +1,26 @@
-import { Router } from 'express';
-import { z } from 'zod';
-import { sendData } from '../http/envelope.js';
-import { ApiError, notFound } from '../http/errors.js';
-import { requireCapability } from '../http/capabilities.js';
-import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
-import { num, parseBody, parsePagination, parseUuidParam } from './shared.js';
+import {queueVendor} from "../adapters/quickbooks.js";
+import { Router } from "express";
+import { z } from "zod";
+import { sendData } from "../http/envelope.js";
+import { ApiError, notFound } from "../http/errors.js";
+import { requireCapability } from "../http/capabilities.js";
+import {
+  staffRoute,
+  type StaffContext,
+  type StaffRouterDeps,
+} from "../http/staffSession.js";
+import { num, parseBody, parsePagination, parseUuidParam } from "./shared.js";
 
 const DOC_KINDS = [
-  'master_agreement',
-  'tax_form',
-  'license',
-  'gl_insurance',
-  'wc_insurance',
-  'auto_insurance',
-  'lien_waiver_conditional',
-  'lien_waiver_unconditional',
-  'other',
+  "master_agreement",
+  "tax_form",
+  "license",
+  "gl_insurance",
+  "wc_insurance",
+  "auto_insurance",
+  "lien_waiver_conditional",
+  "lien_waiver_unconditional",
+  "other",
 ] as const;
 
 const createVendorSchema = z.object({
@@ -32,10 +37,19 @@ const createVendorSchema = z.object({
   // concept the schema knows about.
   license_authority: z.string().nullish(),
   service_area: z.string().nullish(),
-  notes: z.string().nullish(),
+  notes: z.string().max(20000).nullish(),
+  specialties: z.array(z.string().min(1).max(120)).max(50).default([]),
+  availability_status: z
+    .enum(["unknown", "available", "limited", "booked", "unavailable"])
+    .default("unknown"),
+  available_from: z.string().date().nullish(),
+  availability_notes: z.string().max(5000).nullish(),
+  license_expires_on: z.string().date().nullish(),
 });
 
-const patchVendorSchema = createVendorSchema.partial();
+const patchVendorSchema = createVendorSchema
+  .partial()
+  .extend({ archived: z.boolean().optional() });
 
 const createDocumentSchema = z.object({
   kind: z.enum(DOC_KINDS),
@@ -61,17 +75,27 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   const router = Router();
 
   router.get(
-    '/vendors',
+    "/vendors",
     staffRoute(deps, async (ctx) => {
-      const { page, perPage, offset } = parsePagination(ctx.req.query as Record<string, unknown>);
-      const q = typeof ctx.req.query.q === 'string' ? ctx.req.query.q.trim() : '';
-      const trade = typeof ctx.req.query.trade === 'string' ? ctx.req.query.trade.trim() : '';
+      const { page, perPage, offset } = parsePagination(
+        ctx.req.query as Record<string, unknown>,
+      );
+      const q =
+        typeof ctx.req.query.q === "string" ? ctx.req.query.q.trim() : "";
+      const trade =
+        typeof ctx.req.query.trade === "string"
+          ? ctx.req.query.trade.trim()
+          : "";
 
       const where = `
-        WHERE ($1::text IS NULL OR v.legal_name ILIKE '%'||$1||'%' OR v.dba_name ILIKE '%'||$1||'%')
-          AND ($2::text IS NULL OR $2 = ANY(v.trades))
-          AND ($3::bool IS NULL OR v.active = $3::bool)`;
-      const params = [q || null, trade || null, boolOrNull(ctx.req.query.active)];
+        WHERE ($1::text IS NULL OR v.legal_name ILIKE '%'||$1||'%' OR v.primary_contact ILIKE '%'||$1||'%' OR v.email ILIKE '%'||$1||'%' OR array_to_string(v.specialties, ', ') ILIKE '%'||$1||'%' OR v.dba_name ILIKE '%'||$1||'%')
+          AND ($2::text IS NULL OR EXISTS(SELECT 1 FROM unnest(v.trades) AS trade_name WHERE lower(trade_name)=lower($2)))
+          AND ($3::bool IS NULL OR v.active = $3::bool) AND (${ctx.req.query.include_archived === "true" ? "true" : "NOT v.archived"})`;
+      const params = [
+        q || null,
+        trade || null,
+        boolOrNull(ctx.req.query.active),
+      ];
 
       const total = await ctx.db.query<{ n: string }>(
         `SELECT count(*)::text AS n FROM projects.vendors v ${where}`,
@@ -80,7 +104,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT v.id, v.legal_name, v.dba_name, v.email, v.phone, v.trades,
                 v.license_number, v.license_class, v.license_authority,
-                v.service_area, v.active, v.onboarded_at,
+                v.service_area, v.archived, v.active, v.onboarded_at,v.primary_contact,v.address,v.specialties,v.availability_status,v.available_from,v.availability_notes,
                 COALESCE(e.schedulable, false) AS schedulable,
                 COALESCE(e.expired_count, 0)   AS expired_count,
                 COALESCE(e.missing_count, 0)   AS missing_count,
@@ -89,7 +113,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
            FROM projects.vendors v
            LEFT JOIN projects.v_vendor_eligibility e ON e.vendor_id = v.id
            ${where}
-          ORDER BY v.legal_name
+          ORDER BY ${ctx.req.query.sort === "trade" ? "array_to_string(v.trades, ', ')," : ""} v.legal_name, v.id
           LIMIT $4 OFFSET $5`,
         [...params, perPage, offset],
       );
@@ -103,16 +127,16 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/vendors',
+    "/vendors",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
+      requireCapability(ctx.staff.role, "manage_vendors");
       const body = parseBody(createVendorSchema, ctx.req.body);
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.vendors
            (tenant_id, legal_name, dba_name, primary_contact, email, phone, address,
-            trades, license_number, license_class, license_authority, service_area, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-         RETURNING id, legal_name, email, trades, active`,
+            trades, license_number, license_class, license_authority, service_area, notes,specialties,availability_status,available_from,availability_notes,license_expires_on)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+         RETURNING id, legal_name, email, phone, address, trades, active`,
         [
           ctx.staff.tenantId,
           body.legal_name,
@@ -127,8 +151,14 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
           body.license_authority ?? null,
           body.service_area ?? null,
           body.notes ?? null,
+          body.specialties,
+          body.availability_status,
+          body.available_from ?? null,
+          body.availability_notes ?? null,
+          body.license_expires_on ?? null,
         ],
       );
+      await queueVendor(ctx.db,ctx.staff.tenantId,rows[0]!);
       // active defaults false in the schema and is not settable here. A vendor
       // becomes active through POST /vendors/:id/activate, which checks the
       // documents — otherwise "active" means "somebody typed a name".
@@ -137,7 +167,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.get(
-    '/vendors/expiring',
+    "/vendors/expiring",
     staffRoute(deps, async (ctx) => {
       // Declared before /vendors/:id so that "expiring" is not read as a uuid.
       // Drives the weekly exception report; warn_days is per tenant per kind.
@@ -154,14 +184,14 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.get(
-    '/vendors/:id',
+    "/vendors/:id",
     staffRoute(deps, async (ctx) => {
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       const vendor = await loadVendor(ctx, vendorId);
 
       const documents = await ctx.db.query<Record<string, unknown>>(
-        `SELECT d.id, d.kind::text AS kind, d.issued_on, d.expires_on, d.file_key,
-                d.verified_by, d.verified_at, d.verify_method, d.created_at
+        `SELECT d.id, d.kind::text AS kind, d.coverage_kinds::text[] AS coverage_kinds, d.issued_on, d.expires_on, d.file_key,
+                d.verified_by, d.verified_at, d.verify_method, d.created_at,d.file_name,d.media_type,d.file_size,(d.file_data IS NOT NULL) AS has_file
            FROM projects.vendor_documents d
           WHERE d.vendor_id = $1
           ORDER BY d.kind, d.expires_on DESC NULLS LAST`,
@@ -194,10 +224,10 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.patch(
-    '/vendors/:id',
+    "/vendors/:id",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       await loadVendor(ctx, vendorId);
       const body = parseBody(patchVendorSchema, ctx.req.body);
 
@@ -206,21 +236,32 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
         sendData(ctx.res, await loadVendor(ctx, vendorId));
         return;
       }
-      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(', ');
+      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(", ");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.vendors SET ${sets} WHERE id = $1 RETURNING *`,
         [vendorId, ...entries.map(([, v]) => v)],
       );
+      if (body.archived === true) {
+        await ctx.db.query(
+          "UPDATE projects.vendors SET active=false WHERE id=$1",
+          [vendorId],
+        );
+        await ctx.db.query(
+          "UPDATE projects.scheduling_resources SET active=false WHERE vendor_id=$1",
+          [vendorId],
+        );
+        rows[0]!.active = false;
+      }
       sendData(ctx.res, rows[0]);
     }),
   );
 
   // ----------------------------------------------------------- documents ---
   router.post(
-    '/vendors/:id/documents',
+    "/vendors/:id/documents",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       await loadVendor(ctx, vendorId);
       const body = parseBody(createDocumentSchema, ctx.req.body);
 
@@ -249,11 +290,11 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.patch(
-    '/vendors/:id/documents/:docId',
+    "/vendors/:id/documents/:docId",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
-      const docId = parseUuidParam(ctx.req.params.docId, 'Document');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
+      const docId = parseUuidParam(ctx.req.params.docId, "Document");
       await loadVendor(ctx, vendorId);
       const body = parseBody(verifyDocumentSchema, ctx.req.body);
 
@@ -266,17 +307,22 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
           RETURNING id, kind::text AS kind, verified_by, verified_at, verify_method`,
         [docId, vendorId, ctx.staff.staffId, body.verify_method],
       );
-      if (!rows[0]) throw notFound('Document not found');
+      if (!rows[0]) throw notFound("Document not found");
       sendData(ctx.res, rows[0]);
     }),
   );
 
   router.post(
-    '/vendors/:id/activate',
+    "/vendors/:id/activate",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       const vendor = await loadVendor(ctx, vendorId);
+      if (vendor.archived)
+        throw new ApiError(
+          "conflict",
+          "Restore this company before activating it.",
+        );
 
       const outstanding = await ctx.db.query<{ kind: string; state: string }>(
         `SELECT kind::text AS kind, state FROM projects.v_vendor_compliance
@@ -285,10 +331,10 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
       );
       if (outstanding.rows.length > 0) {
         throw new ApiError(
-          'compliance_blocked',
+          "compliance_blocked",
           `${vendor.legal_name} cannot be activated: ` +
-            outstanding.rows.map((d) => `${d.kind} ${d.state}`).join(', ') +
-            '.',
+            outstanding.rows.map((d) => `${d.kind} ${d.state}`).join(", ") +
+            ".",
           { vendor_id: vendorId, documents: outstanding.rows },
         );
       }
@@ -303,10 +349,10 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/vendors/:id/deactivate',
+    "/vendors/:id/deactivate",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       await loadVendor(ctx, vendorId);
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.vendors SET active = false WHERE id = $1
@@ -318,10 +364,10 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/vendors/:id/scores',
+    "/vendors/:id/scores",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
-      const vendorId = parseUuidParam(ctx.req.params.id, 'Vendor');
+      requireCapability(ctx.staff.role, "manage_vendors");
+      const vendorId = parseUuidParam(ctx.req.params.id, "Vendor");
       await loadVendor(ctx, vendorId);
       const body = parseBody(scoreSchema, ctx.req.body);
 
@@ -358,7 +404,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
 
   // ---------------------------------------------------- tenant compliance ---
   router.get(
-    '/compliance-requirements',
+    "/compliance-requirements",
     staffRoute(deps, async (ctx) => {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT kind::text AS kind, required, warn_days, blocks_scheduling
@@ -369,12 +415,12 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.patch(
-    '/compliance-requirements/:kind',
+    "/compliance-requirements/:kind",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
+      requireCapability(ctx.staff.role, "manage_vendors");
       const kind = ctx.req.params.kind;
       if (!kind || !(DOC_KINDS as readonly string[]).includes(kind)) {
-        throw notFound('Requirement not found');
+        throw notFound("Requirement not found");
       }
       const body = parseBody(
         z.object({
@@ -385,16 +431,17 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
         ctx.req.body,
       );
       const entries = Object.entries(body).filter(([, v]) => v !== undefined);
-      if (entries.length === 0) throw new ApiError('validation_failed', 'Nothing to change.');
+      if (entries.length === 0)
+        throw new ApiError("validation_failed", "Nothing to change.");
 
-      const sets = entries.map(([k], i) => `${k} = $${i + 3}`).join(', ');
+      const sets = entries.map(([k], i) => `${k} = $${i + 3}`).join(", ");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.compliance_requirements SET ${sets}
           WHERE tenant_id = $1 AND kind = $2::projects.doc_kind
           RETURNING kind::text AS kind, required, warn_days, blocks_scheduling`,
         [ctx.staff.tenantId, kind, ...entries.map(([, v]) => v)],
       );
-      if (!rows[0]) throw notFound('Requirement not found');
+      if (!rows[0]) throw notFound("Requirement not found");
       sendData(ctx.res, rows[0]);
     }),
   );
@@ -409,11 +456,14 @@ interface VendorRow extends Record<string, unknown> {
   legal_name: string;
 }
 
-async function loadVendor(ctx: StaffContext, vendorId: string): Promise<VendorRow> {
+async function loadVendor(
+  ctx: StaffContext,
+  vendorId: string,
+): Promise<VendorRow> {
   const { rows } = await ctx.db.query<VendorRow>(
-    `SELECT id, legal_name, dba_name, primary_contact, email, phone, address, trades,
+    `SELECT id, qbo_id, legal_name, dba_name, primary_contact, email, phone, address, trades,
             license_number, license_class, license_authority, service_area,
-            active, onboarded_at, notes, created_at
+            archived, active, onboarded_at, notes, created_at,specialties,availability_status,available_from,availability_notes,license_expires_on
        FROM projects.vendors WHERE id = $1`,
     [vendorId],
   );
@@ -421,13 +471,13 @@ async function loadVendor(ctx: StaffContext, vendorId: string): Promise<VendorRo
   // Vendors are tenant-wide, not project-scoped, so RLS is the whole check
   // here. Nothing to add — and adding a tenant_id predicate would be testing
   // the handler's idea of the tenant instead of the session's.
-  if (!vendor) throw notFound('Vendor not found');
+  if (!vendor) throw notFound("Vendor not found");
   return vendor;
 }
 
 function boolOrNull(v: unknown): boolean | null {
-  if (v === 'true') return true;
-  if (v === 'false') return false;
+  if (v === "true") return true;
+  if (v === "false") return false;
   return null;
 }
 

@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import type { Request } from 'express';
-import type { StaffSessionRecord, StaffSessionStore } from './staffSession.js';
+import { randomUUID } from "node:crypto";
+import type { Request } from "express";
+import type { StaffSessionRecord, StaffSessionStore } from "./staffSession.js";
 
 /**
  * Staff sessions held in process. This is the development and test store.
@@ -19,12 +19,18 @@ export class MemoryStaffSessions implements StaffSessionStore {
     return token;
   }
 
+  revokeStaff(tenantId: string, staffId: string): void {
+    for (const [token, record] of this.tokens)
+      if (record.tenantId === tenantId && record.staffId === staffId)
+        this.tokens.delete(token);
+  }
+
   revoke(token: string): void {
     this.tokens.delete(token);
   }
 
   async resolve(req: Request): Promise<StaffSessionRecord | null> {
-    const header = req.header('authorization');
+    const header = req.header("authorization");
     if (!header) return null;
     const match = /^Bearer\s+(.+)$/i.exec(header.trim());
     if (!match) return null;

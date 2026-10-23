@@ -6,6 +6,8 @@ export interface Env {
   devLogin: boolean;
   /** Shared secret every dev sign-in must present. Required when devLogin is on. */
   devLoginToken: string;
+  /** Sign in with Command Center; absent when CC_SSO_* is not set. */
+  sso?: { url: string; clientId: string; clientSecret: string; tenantId: string };
 }
 
 /**
@@ -61,6 +63,15 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const nodeEnv = source.NODE_ENV ?? 'development';
   const devLogin = source.DEV_LOGIN === 'true' && nodeEnv !== 'production';
   const devLoginToken = source.DEV_LOGIN_TOKEN ?? '';
+  // Sign in with Command Center: this deployment is a registered client there (Settings → Connected apps gives the three values);
+  // the people it signs in belong to the portfolio tenant unless SSO_TENANT_ID says otherwise.
+  const ccUrl = (source.CC_SSO_URL ?? '').trim().replace(/\/$/, '');
+  const ccClientId = (source.CC_SSO_CLIENT_ID ?? '').trim();
+  const ccClientSecret = (source.CC_SSO_CLIENT_SECRET ?? '').trim();
+  const ssoTenantId = (source.SSO_TENANT_ID ?? source.PM_PORTFOLIO_TENANT_ID ?? '').trim();
+  const ssoOn = Boolean(ccUrl || ccClientId || ccClientSecret);
+  if (ssoOn && !(ccUrl && ccClientId && ccClientSecret)) throw new MissingConfigError('Sign in with Command Center needs all three of CC_SSO_URL, CC_SSO_CLIENT_ID and CC_SSO_CLIENT_SECRET.', 'Register this deployment in Command Center under Settings → Connected apps and copy the three values here.');
+  if (ssoOn && !ssoTenantId) throw new MissingConfigError('CC_SSO_* is set but no tenant is named.', 'Set SSO_TENANT_ID (or PM_PORTFOLIO_TENANT_ID) to the tenant Command Center users belong to.');
 
   if (devLogin && !devLoginToken) {
     throw new MissingConfigError(
@@ -85,5 +96,6 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     nodeEnv,
     devLogin,
     devLoginToken,
+    sso: ssoOn ? { url: ccUrl, clientId: ccClientId, clientSecret: ccClientSecret, tenantId: ssoTenantId } : undefined,
   };
 }

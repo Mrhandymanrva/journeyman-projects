@@ -18,6 +18,11 @@ export type StaffRole =
  * so it is resolved against the row at approval time. Owner is always allowed.
  */
 export const CAPABILITIES = {
+  delete_project: ['owner'],
+  manage_project_controls: ['owner','manager','project_manager'],
+  manage_project_documents: ['owner','manager','project_manager','office'],
+  manage_project_reserves: ['owner','manager'],
+  manage_users: ['owner'],
   create_project: ['owner', 'manager', 'office'],
   edit_budget_before_freeze: ['owner', 'manager', 'project_manager'],
   issue_purchase_order: ['owner', 'manager', 'project_manager'],

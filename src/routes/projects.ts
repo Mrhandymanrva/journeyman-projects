@@ -1,9 +1,14 @@
-import { Router } from 'express';
-import { z } from 'zod';
-import { sendData } from '../http/envelope.js';
-import { ApiError, notFound } from '../http/errors.js';
-import { requireCapability, unitFilter } from '../http/capabilities.js';
-import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
+import { deleteLocalProject } from '../domain/deleteProject.js';
+import { Router } from "express";
+import { z } from "zod";
+import { sendData } from "../http/envelope.js";
+import { ApiError, notFound } from "../http/errors.js";
+import { requireCapability, unitFilter } from "../http/capabilities.js";
+import {
+  staffRoute,
+  type StaffContext,
+  type StaffRouterDeps,
+} from "../http/staffSession.js";
 import {
   assertUnitWritable,
   loadVisibleProject,
@@ -13,15 +18,18 @@ import {
   parseUuidParam,
   requireOwnedRow,
   requireStaffOfTenant,
-} from './shared.js';
-import { deriveBudgetLines, parseEstimatePayload } from '../domain/estimateContract.js';
-import { seedDrawSchedule } from '../domain/drawSchedule.js';
+} from "./shared.js";
+import {
+  deriveBudgetLines,
+  parseEstimatePayload,
+} from "../domain/estimateContract.js";
+import { seedDrawSchedule } from "../domain/drawSchedule.js";
 import {
   assertStageAdvanceAllowed,
   nextStage,
   type GateState,
   type ProjectStage,
-} from '../domain/stages.js';
+} from "../domain/stages.js";
 
 const createProjectSchema = z
   .object({
@@ -29,7 +37,9 @@ const createProjectSchema = z
     name: z.string().min(1),
     business_unit_id: z.string().uuid().nullish(),
     estimate_import_id: z.string().uuid().nullish(),
-    source_kind: z.enum(['journeyman_estimate', 'external', 'manual']).nullish(),
+    source_kind: z
+      .enum(["journeyman_estimate", "external", "manual"])
+      .nullish(),
     external_system_id: z.string().uuid().nullish(),
     external_job_id: z.string().nullish(),
     external_customer_id: z.string().nullish(),
@@ -41,7 +51,7 @@ const createProjectSchema = z
     pm_id: z.string().uuid().nullish(),
     estimator_id: z.string().uuid().nullish(),
     contract_value: z.number().positive(),
-    currency: z.string().length(3).default('USD'),
+    currency: z.string().length(3).default("USD"),
     target_margin: z.number().min(0).max(1),
     // A handoff arrives with a target window, and these were accepted only on
     // PATCH. zod strips unknown keys silently, so sending them at create
@@ -50,9 +60,10 @@ const createProjectSchema = z
     scheduled_end: z.string().date().nullish(),
     license_scope_note: z.string().nullish(),
   })
-  .refine((v) => Boolean(v.estimate_import_id) || v.source_kind === 'manual', {
-    message: 'Provide estimate_import_id, or source_kind "manual" to build the budget by hand',
-    path: ['estimate_import_id'],
+  .refine((v) => Boolean(v.estimate_import_id) || v.source_kind === "manual", {
+    message:
+      'Provide estimate_import_id, or source_kind "manual" to build the budget by hand',
+    path: ["estimate_import_id"],
   });
 
 const patchProjectSchema = z.object({
@@ -76,13 +87,13 @@ const patchProjectSchema = z.object({
 
 const advanceStageSchema = z.object({
   stage: z.enum([
-    'handoff',
-    'precon',
-    'mobilization',
-    'execution',
-    'closeout',
-    'complete',
-    'cancelled',
+    "handoff",
+    "precon",
+    "mobilization",
+    "execution",
+    "closeout",
+    "complete",
+    "cancelled",
   ]),
 });
 
@@ -91,14 +102,17 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
   // ---------------------------------------------------------------- list ---
   router.get(
-    '/projects',
+    "/projects",
     staffRoute(deps, async (ctx) => {
-      const { page, perPage, offset } = parsePagination(ctx.req.query as Record<string, unknown>);
+      const { page, perPage, offset } = parsePagination(
+        ctx.req.query as Record<string, unknown>,
+      );
       const scope = unitFilter(
         ctx.staff.businessUnitId,
         ctx.settings.enforceBusinessUnitScoping,
       );
-      const q = typeof ctx.req.query.q === 'string' ? ctx.req.query.q.trim() : '';
+      const q =
+        typeof ctx.req.query.q === "string" ? ctx.req.query.q.trim() : "";
 
       const where = `
         WHERE ($1::text  IS NULL OR p.stage = $1::projects.project_stage)
@@ -137,20 +151,36 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
     }),
   );
 
+  router.delete('/projects/:id', staffRoute(deps, async (ctx) => {
+    requireCapability(ctx.staff.role, 'delete_project');
+    const id = parseUuidParam(ctx.req.params.id, 'Project');
+    const project = await loadVisibleProject<{project_number:string}>(ctx, id, 'project_number');
+    const body = parseBody(z.object({confirm_project_number:z.string()}), ctx.req.body);
+    if (body.confirm_project_number !== project.project_number)
+      throw new ApiError('validation_failed', 'Type the exact project number to confirm deletion.');
+    await deleteLocalProject(ctx.db, id);
+    sendData(ctx.res, {id, deleted:true});
+  }));
+
   // -------------------------------------------------------------- create ---
   router.post(
-    '/projects',
+    "/projects",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'create_project');
+      requireCapability(ctx.staff.role, "create_project");
       const body = parseBody(createProjectSchema, ctx.req.body);
 
       // §2.2: enforce non-null business unit at creation once scoping is on,
       // because a null unit is visible to everyone regardless of the setting.
       if (ctx.settings.enforceBusinessUnitScoping && !body.business_unit_id) {
         throw new ApiError(
-          'validation_failed',
-          'This account scopes projects by business unit, so business_unit_id is required.',
-          [{ field: 'business_unit_id', message: 'Required while unit scoping is enabled' }],
+          "validation_failed",
+          "This account scopes projects by business unit, so business_unit_id is required.",
+          [
+            {
+              field: "business_unit_id",
+              message: "Required while unit scoping is enabled",
+            },
+          ],
         );
       }
       assertUnitWritable(ctx, body.business_unit_id ?? null);
@@ -163,10 +193,13 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
   // -------------------------------------------------------------- detail ---
   router.get(
-    '/projects/:id',
+    "/projects/:id",
     staffRoute(deps, async (ctx) => {
-      const id = parseUuidParam(ctx.req.params.id, 'Project');
-      const project = await loadVisibleProject<Record<string, unknown>>(ctx, id);
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      const project = await loadVisibleProject<Record<string, unknown>>(
+        ctx,
+        id,
+      );
 
       // Names for the ids the detail view shows. Two small lookups rather than
       // a join in loadVisibleProject, which every other route also calls and
@@ -227,6 +260,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
       sendData(ctx.res, {
         ...serialiseProject(project),
+
         pm_name: nameOf(project.pm_id),
         estimator_name: nameOf(project.estimator_id),
         gates: gates.rows,
@@ -250,25 +284,57 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
   // --------------------------------------------------------------- patch ---
   router.patch(
-    '/projects/:id',
+    "/projects/:id",
     staffRoute(deps, async (ctx) => {
-      const id = parseUuidParam(ctx.req.params.id, 'Project');
+      const id = parseUuidParam(ctx.req.params.id, "Project");
       const body = parseBody(patchProjectSchema, ctx.req.body);
       const current = await loadVisibleProject<{
         id: string;
         business_unit_id: string | null;
         target_margin: string;
-      }>(ctx, id, 'id, business_unit_id, target_margin');
+      }>(ctx, id, "id, business_unit_id, target_margin");
 
-      requireCapability(ctx.staff.role, 'edit_budget_before_freeze');
-
+      requireCapability(ctx.staff.role, "edit_budget_before_freeze");
+      const connected = await ctx.db.query(
+        "SELECT project_id FROM projects.st_project_connections WHERE project_id=$1",
+        [id],
+      );
+      if (
+        connected.rows.length &&
+        [
+          "project_number",
+          "name",
+          "address_line1",
+          "city",
+          "region",
+          "postal_code",
+          "scheduled_start",
+          "scheduled_end",
+          "actual_end",
+          "external_system_id",
+          "external_customer_id",
+          "external_job_id",
+        ].some((k) => Object.hasOwn(ctx.req.body, k))
+      )
+        throw new ApiError(
+          "conflict",
+          "Edit project identity, address and source dates in ServiceTitan, then refresh this project.",
+        );
       if (body.business_unit_id !== undefined) {
         assertUnitWritable(ctx, body.business_unit_id ?? null);
-        if (ctx.settings.enforceBusinessUnitScoping && body.business_unit_id === null) {
+        if (
+          ctx.settings.enforceBusinessUnitScoping &&
+          body.business_unit_id === null
+        ) {
           throw new ApiError(
-            'validation_failed',
-            'business_unit_id cannot be cleared while unit scoping is enabled.',
-            [{ field: 'business_unit_id', message: 'Required while unit scoping is enabled' }],
+            "validation_failed",
+            "business_unit_id cannot be cleared while unit scoping is enabled.",
+            [
+              {
+                field: "business_unit_id",
+                message: "Required while unit scoping is enabled",
+              },
+            ],
           );
         }
       }
@@ -277,16 +343,19 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       // target_margin is immutable after gate 0 approval (§3.1). The number the
       // job was accepted against stops being editable once someone signed off
       // on the handoff, otherwise a project retroactively "hits" its margin.
-      if (body.target_margin !== undefined && body.target_margin !== num(current.target_margin)) {
+      if (
+        body.target_margin !== undefined &&
+        body.target_margin !== num(current.target_margin)
+      ) {
         const gate0 = await ctx.db.query<{ status: string }>(
           `SELECT status::text AS status FROM projects.stage_gates
             WHERE project_id = $1 AND gate_number = 0`,
           [id],
         );
-        if (gate0.rows[0]?.status === 'approved') {
+        if (gate0.rows[0]?.status === "approved") {
           throw new ApiError(
-            'conflict',
-            'target_margin cannot change after gate 0 has been approved.',
+            "conflict",
+            "target_margin cannot change after gate 0 has been approved.",
             { gate_number: 0 },
           );
         }
@@ -310,29 +379,34 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         actual_end: body.actual_end,
         license_scope_note: body.license_scope_note,
       };
-      const entries = Object.entries(assignable).filter(([, v]) => v !== undefined);
+      const entries = Object.entries(assignable).filter(
+        ([, v]) => v !== undefined,
+      );
       if (entries.length === 0) {
-        const unchanged = await loadVisibleProject<Record<string, unknown>>(ctx, id);
+        const unchanged = await loadVisibleProject<Record<string, unknown>>(
+          ctx,
+          id,
+        );
         sendData(ctx.res, serialiseProject(unchanged));
         return;
       }
 
-      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(', ');
+      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(", ");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.projects SET ${sets} WHERE id = $1 RETURNING *`,
         [id, ...entries.map(([, v]) => v)],
       );
-      if (!rows[0]) throw notFound('Project not found');
+      if (!rows[0]) throw notFound("Project not found");
       sendData(ctx.res, serialiseProject(rows[0]));
     }),
   );
 
   // ------------------------------------------------------- cost position ---
   router.get(
-    '/projects/:id/cost-position',
+    "/projects/:id/cost-position",
     staffRoute(deps, async (ctx) => {
-      const id = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, id, 'id');
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
       // Ordered by the cost code list's own sort_order, not by the code
       // string. Codes are text, so ordering by them puts 1030 and 1110 ahead
       // of 110 and 210 — the divisions interleave and the sheet stops reading
@@ -365,11 +439,11 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
   // -------------------------------------------------------------- margin ---
   router.get(
-    '/projects/:id/margin',
+    "/projects/:id/margin",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'view_margin');
-      const id = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, id, 'id');
+      requireCapability(ctx.staff.role, "view_margin");
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT project_number, name, currency, revised_contract, target_margin,
                 committed_cost, unspent_baseline, projected_cost
@@ -383,7 +457,8 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         sendData(ctx.res, {
           project_id: id,
           has_budget: false,
-          message: 'This project has no budget lines yet, so margin cannot be projected.',
+          message:
+            "This project has no budget lines yet, so margin cannot be projected.",
         });
         return;
       }
@@ -400,23 +475,23 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         committed_cost: num(row.committed_cost),
         unspent_baseline: num(row.unspent_baseline),
         projected_cost: projected,
-        projected_margin: revised > 0 ? round4((revised - projected) / revised) : null,
+        projected_margin:
+          revised > 0 ? round4((revised - projected) / revised) : null,
       });
     }),
   );
 
   // --------------------------------------------------------------- stage ---
   router.post(
-    '/projects/:id/stage',
+    "/projects/:id/stage",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const id = parseUuidParam(ctx.req.params.id, 'Project');
+      requireCapability(ctx.staff.role, "advance_stage");
+      const id = parseUuidParam(ctx.req.params.id, "Project");
       const { stage } = parseBody(advanceStageSchema, ctx.req.body);
-      const project = await loadVisibleProject<{ id: string; stage: ProjectStage }>(
-        ctx,
-        id,
-        'id, stage',
-      );
+      const project = await loadVisibleProject<{
+        id: string;
+        stage: ProjectStage;
+      }>(ctx, id, "id, stage");
 
       const gates = await ctx.db.query<GateState>(
         `SELECT gate_number, title, status::text AS status
@@ -461,11 +536,26 @@ async function assertReferencesBelongHere(
     external_system_id?: string | null;
   },
 ): Promise<void> {
-  await requireStaffOfTenant(ctx.db, body.pm_id, 'pm_id');
-  await requireStaffOfTenant(ctx.db, body.estimator_id, 'estimator_id');
-  await requireOwnedRow(ctx.db, 'business_units', body.business_unit_id, 'business_unit_id');
-  await requireOwnedRow(ctx.db, 'jurisdictions', body.jurisdiction_id, 'jurisdiction_id');
-  await requireOwnedRow(ctx.db, 'external_systems', body.external_system_id, 'external_system_id');
+  await requireStaffOfTenant(ctx.db, body.pm_id, "pm_id");
+  await requireStaffOfTenant(ctx.db, body.estimator_id, "estimator_id");
+  await requireOwnedRow(
+    ctx.db,
+    "business_units",
+    body.business_unit_id,
+    "business_unit_id",
+  );
+  await requireOwnedRow(
+    ctx.db,
+    "jurisdictions",
+    body.jurisdiction_id,
+    "jurisdiction_id",
+  );
+  await requireOwnedRow(
+    ctx.db,
+    "external_systems",
+    body.external_system_id,
+    "external_system_id",
+  );
 }
 
 type CreateBody = z.infer<typeof createProjectSchema>;
@@ -475,7 +565,13 @@ type CreateBody = z.infer<typeof createProjectSchema>;
  * its gates is worse than no project (§3.1), so nothing here is deferred to a
  * follow-up call or a background job.
  */
-async function createProject(ctx: StaffContext, body: CreateBody) {
+export async function createProject(
+  ctx: StaffContext,
+  body: Omit<CreateBody, "contract_value" | "target_margin"> & {
+    contract_value: number | null;
+    target_margin: number | null;
+  },
+) {
   const { rows } = await ctx.db.query<Record<string, unknown>>(
     `INSERT INTO projects.projects
        (tenant_id, project_number, business_unit_id, external_system_id, external_job_id,
@@ -525,14 +621,17 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
 
   let budgetLineCount = 0;
   if (body.estimate_import_id) {
-    const imported = await ctx.db.query<{ contract_version: string; payload: unknown }>(
+    const imported = await ctx.db.query<{
+      contract_version: string;
+      payload: unknown;
+    }>(
       `SELECT contract_version, payload FROM projects.estimate_imports WHERE id = $1`,
       [body.estimate_import_id],
     );
     const row = imported.rows[0];
     // RLS already scoped this to the tenant, so a missing row is either a bad
     // id or another tenant's import. Both are not_found.
-    if (!row) throw notFound('Estimate import not found');
+    if (!row) throw notFound("Estimate import not found");
 
     const payload = parseEstimatePayload(row.contract_version, row.payload);
     const lines = await deriveBudgetLines(ctx.db, payload);
@@ -541,7 +640,14 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
         `INSERT INTO projects.budget_lines
            (tenant_id, project_id, cost_code_id, cost_type, budget_amount, note)
          VALUES ($1,$2,$3,$4,$5,$6)`,
-        [ctx.staff.tenantId, projectId, line.costCodeId, line.costType, line.amount, line.note],
+        [
+          ctx.staff.tenantId,
+          projectId,
+          line.costCodeId,
+          line.costType,
+          line.amount,
+          line.note,
+        ],
       );
     }
     budgetLineCount = lines.length;
@@ -551,15 +657,19 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
   // draw_templates carries it — 30/30/30/10 with the last as retainage on the
   // shipped default, per tenant and editable. Seeds nothing if the account has
   // no template, rather than inventing a schedule.
-  const drawsCreated = await seedDrawSchedule(
-    ctx.db,
-    ctx.staff.tenantId,
-    projectId,
-    body.contract_value,
-  );
+  const drawsCreated =
+    body.contract_value === null
+      ? 0
+      : await seedDrawSchedule(
+          ctx.db,
+          ctx.staff.tenantId,
+          projectId,
+          body.contract_value,
+        );
 
   return {
     ...serialiseProject(project),
+    id: projectId,
     gates_created: gates.rowCount || gates.rows.length,
     budget_lines_created: budgetLineCount,
     draws_created: drawsCreated,
@@ -567,7 +677,7 @@ async function createProject(ctx: StaffContext, body: CreateBody) {
 }
 
 function strOrNull(v: unknown): string | null {
-  return typeof v === 'string' && v.trim() !== '' ? v.trim() : null;
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
 }
 
 function round4(n: number): number {

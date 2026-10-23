@@ -342,6 +342,8 @@ async function issue(
     note: string | null;
   },
 ): Promise<Record<string, unknown>> {
+  const owner=await ctx.db.query("SELECT id FROM projects.external_systems WHERE active AND adapter_key='servicetitan' AND is_revenue_system_of_record");
+  if(owner.rows.length)throw new ApiError('conflict','Customer invoices are issued in ServiceTitan. Record the ST invoice reference on the project draw.');
   const project = await ctx.db.query<{ project_number: string }>(
     `SELECT project_number FROM projects.projects WHERE id = $1`,
     [input.projectId],

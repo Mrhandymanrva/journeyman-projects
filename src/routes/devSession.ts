@@ -67,7 +67,7 @@ export function devSessionRoutes(
         const staff = await database.withTenant(tenantId, async (c) => {
           const rows = await c.query<{ id: string; full_name: string; role: string }>(
             `SELECT id, full_name, role::text AS role
-               FROM projects.staff WHERE email = $1 AND active`,
+               FROM projects.staff WHERE email = $1 AND active AND login_bootstrap AND password_hash IS NULL`,
             [body.email],
           );
           return rows.rows[0] ?? null;

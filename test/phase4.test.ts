@@ -324,3 +324,13 @@ describe('schedule and daily logs', () => {
     expect(res.status).toBe(403);
   });
 });
+it('keeps customer invoice issuance in ServiceTitan when it owns billing', async()=>{
+  const [deposit]=await schedule();
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
+  await h.db.withTenant(t.id,db=>db.query("INSERT INTO projects.external_systems(tenant_id,adapter_key,display_name,is_revenue_system_of_record) VALUES($1,'servicetitan','ST',true)",[t.id]));
+  const r=await owner().post(`/api/v1/projects/draws/${deposit!.id}/invoice`).send({});
+  expect(r.status).toBe(409);
+  expect(r.body.error.message).toContain('issued in ServiceTitan');
+  expect((await owner().get(`/api/v1/projects/projects/${projectId}/invoices`)).body.data).toHaveLength(0);
+});

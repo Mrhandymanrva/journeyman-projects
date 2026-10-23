@@ -1,0 +1,362 @@
+import { describe, it, expect, vi } from "vitest";
+import { ServiceTitanReadAdapter } from "../src/adapters/serviceTitan.js";
+const config = {
+  environment: "integration" as const,
+  tenantId: "10",
+  clientId: "client",
+  clientSecret: "secret",
+  appKey: "app",
+};
+const job = {
+  id: 1,
+  jobNumber: "100",
+  customerId: 2,
+  locationId: 3,
+  jobStatus: "Scheduled",
+  modifiedOn: "2026-09-15T12:00:00Z",
+};
+const appointment = {
+  id: 4,
+  jobId: 1,
+  appointmentNumber: "100-1",
+  start: "2026-09-15T12:00:00Z",
+  end: "2026-09-15T15:00:00Z",
+  status: "Scheduled",
+  active: true,
+  isConfirmed: true,
+  modifiedOn: "2026-09-15T12:00:00Z",
+};
+const assignment = {
+  id: 5,
+  jobId: 1,
+  appointmentId: 4,
+  technicianId: 6,
+  technicianName: "Alex",
+  active: true,
+  status: "Scheduled",
+  modifiedOn: "2026-09-15T12:00:00Z",
+};
+const json = (v: unknown, status = 200) =>
+  new Response(JSON.stringify(v), { status });
+function setup(pages: unknown[]) {
+  const f = vi.fn<typeof fetch>();
+  f.mockResolvedValueOnce(
+    json({ access_token: "test-token", expires_in: 900 }),
+  );
+  for (const p of pages)
+    f.mockResolvedValueOnce(p instanceof Response ? p : json(p));
+  return { client: new ServiceTitanReadAdapter(config, f), fetcher: f };
+}
+describe("read-only ServiceTitan client", () => {
+  it("excludes Enterprise Hub role sources across employee and technician pages", async () => {
+    const person = (id: number, roles: number[], active = true) => ({
+      id,
+      name: "Person " + id,
+      active,
+      email: "person@test.test",
+      phoneNumber: "555",
+      roleIds: roles,
+      permissions: { secret: true },
+      hourlyRate: 100,
+    });
+    const { client } = setup([
+      { data: [{ id: 1, roleSource: "ServiceTitan" }], hasMore: true },
+      {
+        data: [
+          { id: 2, roleSource: "EnterpriseHub" },
+          { id: 3, roleSource: "Enterprise Hub" },
+        ],
+        hasMore: false,
+      },
+      {
+        data: [person(11, [1]), person(12, [2]), person(13, [1, 2])],
+        hasMore: true,
+      },
+      { data: [person(14, [3]), person(15, [1], false)], hasMore: false },
+      { data: [person(21, [1]), person(22, [3])], hasMore: false },
+    ]);
+    const rows = await client.readEmployees();
+    expect(rows.map((p) => p.id)).toEqual(["11", "21"]);
+    expect(rows[0]).not.toHaveProperty("permissions");
+    expect(rows[0]).not.toHaveProperty("hourlyRate");
+  });
+  it("does not offer employee imports when role sources cannot be verified", async () => {
+    const { client } = setup([{ data: [{ id: 1 }], hasMore: false }]);
+    await expect(client.readEmployees()).rejects.toThrow(/role sources/);
+  });
+  it("reads a job with several appointments and all technician assignments without sensitive technician fields", async () => {
+    const { client, fetcher } = setup([
+      job,
+      { data: [appointment], hasMore: true },
+      { data: [{ ...appointment, id: 7 }], hasMore: false },
+      {
+        data: [
+          { ...assignment, email: "private@example.test", hourlyRate: 100 },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const result = await client.readJob("1");
+    expect(result.appointments).toHaveLength(2);
+    expect(result.assignments[0]?.technicianId).toBe("6");
+    expect(result.assignments[0]).not.toHaveProperty("hourlyRate");
+    expect(result.assignments[0]).not.toHaveProperty("email");
+    const calls = fetcher.mock.calls;
+    expect(calls.filter((c) => c[1]?.method === "POST")).toHaveLength(1);
+    expect(String(calls[0]?.[0])).toBe(
+      "https://auth-integration.servicetitan.io/connect/token",
+    );
+    expect(
+      calls
+        .slice(1)
+        .every((c) => c[1]?.method === "GET" && c[1]?.redirect === "error"),
+    ).toBe(true);
+    expect(String(calls[3]?.[0])).toContain("page=2");
+  });
+  it("fails closed if the upstream ignores the job filter", async () => {
+    const { client } = setup([
+      job,
+      { data: [{ ...appointment, jobId: 99 }], hasMore: false },
+      { data: [], hasMore: false },
+    ]);
+    await expect(client.readJob("1")).rejects.toThrow(
+      "outside the requested job",
+    );
+  });
+  it("does not expose vendor response bodies on authorization failure", async () => {
+    const { client } = setup([json({ secret: "must not escape" }, 403)]);
+    await expect(client.readJob("1")).rejects.toThrow("HTTP 403");
+  });
+  it("rejects duplicate pages and incomplete pagination", async () => {
+    const { client } = setup([
+      job,
+      { data: [appointment, appointment], hasMore: false },
+      { data: [], hasMore: false },
+    ]);
+    await expect(client.readJob("1")).rejects.toThrow("duplicate");
+    const missing = setup([job, { data: [appointment] }]);
+    await expect(missing.client.readJob("1")).rejects.toThrow("Unexpected");
+  });
+  it("refuses malformed IDs and invalid tenant configurations before network access", async () => {
+    const { client, fetcher } = setup([]);
+    await expect(client.readJob("../other")).rejects.toThrow("numeric");
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(
+      () => new ServiceTitanReadAdapter({ ...config, tenantId: "../other" }),
+    ).toThrow("settings");
+  });
+  it("refuses an inverted appointment window", async () => {
+    const { client } = setup([
+      job,
+      {
+        data: [{ ...appointment, end: "2026-09-15T11:00:00Z" }],
+        hasMore: false,
+      },
+      { data: [], hasMore: false },
+    ]);
+    await expect(client.readJob("1")).rejects.toThrow(
+      "invalid appointment dates",
+    );
+  });
+});
+
+it("reads the technician directory without importing payroll/contact fields", async () => {
+  const { client } = setup([
+    {
+      data: [
+        { id: 6, name: "Alex", active: true, hourlyRate: 55, email: "private" },
+      ],
+      hasMore: false,
+    },
+  ]);
+  expect(await client.readTechnicians()).toEqual([
+    { id: "6", name: "Alex", active: true },
+  ]);
+});
+it("rejects changed appointments without a business write", async () => {
+  const { client, fetcher } = setup([
+    job,
+    { data: [appointment], hasMore: false },
+    { data: [assignment], hasMore: false },
+  ]);
+  await expect(
+    client.rescheduleAppointment("1", "4", "stale", {
+      start: "2026-09-16T12:00:00Z",
+      end: "2026-09-16T15:00:00Z",
+      arrivalWindowStart: null,
+      arrivalWindowEnd: null,
+    }),
+  ).rejects.toThrow("changed");
+  expect(fetcher.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+});
+it("reschedules only after conflict checks and verifies the persisted appointment", async () => {
+  const change = {
+    start: "2026-09-16T12:00:00Z",
+    end: "2026-09-16T15:00:00Z",
+    arrivalWindowStart: null,
+    arrivalWindowEnd: null,
+  };
+  const { client, fetcher } = setup([
+    job,
+    { data: [appointment], hasMore: false },
+    { data: [assignment], hasMore: false },
+    { data: [appointment], hasMore: false },
+    { ...appointment, ...change },
+    job,
+    { data: [{ ...appointment, ...change }], hasMore: false },
+    { data: [assignment], hasMore: false },
+  ]);
+  const saved = await client.rescheduleAppointment(
+    "1",
+    "4",
+    appointment.modifiedOn,
+    change,
+  );
+  expect(saved.appointments[0]!.start).toBe(change.start);
+  expect(
+    fetcher.mock.calls.filter((c) => c[1]?.method === "PATCH"),
+  ).toHaveLength(1);
+  expect(
+    JSON.parse(
+      String(
+        fetcher.mock.calls.find((c) => c[1]?.method === "PATCH")![1]!.body,
+      ),
+    ),
+  ).toEqual(change);
+});
+it("publishes technician changes using ST assignment endpoints and verifies the crew", async () => {
+  const change = {
+    start: "2026-09-16T12:00:00Z",
+    end: "2026-09-16T15:00:00Z",
+    arrivalWindowStart: null,
+    arrivalWindowEnd: null,
+    technicianIds: ["7"],
+  };
+  const { client, fetcher } = setup([
+    job,
+    { data: [appointment], hasMore: false },
+    { data: [assignment], hasMore: false },
+    { data: [{ id: 7, name: "Blair", active: true }], hasMore: false },
+    { data: [], hasMore: false },
+    {},
+    {},
+    {},
+    job,
+    { data: [{ ...appointment, ...change }], hasMore: false },
+    { data: [{ ...assignment, technicianId: 7 }], hasMore: false },
+  ]);
+  await client.rescheduleAppointment("1", "4", appointment.modifiedOn, change);
+  const assignments = fetcher.mock.calls.filter(
+    (c) => String(c[0]).includes("technicians") && c[1]?.method === "POST",
+  );
+  expect(assignments).toHaveLength(2);
+  expect(JSON.parse(String(assignments[0]![1]!.body))).toEqual({
+    jobAppointmentId: 4,
+    technicianIds: [7],
+  });
+  expect(JSON.parse(String(assignments[1]![1]!.body))).toEqual({
+    jobAppointmentId: 4,
+    technicianIds: [6],
+  });
+});
+it("treats failed assignment after rescheduling as uncertain, preventing blind retry", async () => {
+  const { client } = setup([
+    job,
+    { data: [appointment], hasMore: false },
+    { data: [assignment], hasMore: false },
+    { data: [], hasMore: false },
+    {},
+    json({}, 403),
+  ]);
+  await expect(
+    client.rescheduleAppointment("1", "4", appointment.modifiedOn, {
+      start: "2026-09-16T12:00:00Z",
+      end: "2026-09-16T15:00:00Z",
+      arrivalWindowStart: null,
+      arrivalWindowEnd: null,
+      technicianIds: [],
+    }),
+  ).rejects.toThrow("technician updates were not confirmed");
+});
+it("reads ST project identities and related jobs, filtering unrelated source fields", async () => {
+  const p = {
+    id: 20,
+    number: "P20",
+    name: "Bath",
+    customerId: 30,
+    locationId: 40,
+    jobIds: [50, 51],
+    internalCost: 9000,
+  };
+  const { client } = setup([{ data: [p], hasMore: false }, p]);
+  const rows = await client.listProjects(1, "P20");
+  expect(rows.data[0]).not.toHaveProperty("internalCost");
+  expect(rows.data[0]!.jobIds).toEqual(["50", "51"]);
+  expect((await client.readProject("20")).project.id).toBe("20");
+});
+it("rejects incorrect ST project identity and duplicate membership", async () => {
+  const p = {
+    id: 20,
+    number: "P20",
+    customerId: 30,
+    locationId: 40,
+    jobIds: [50, 50],
+  };
+  const { client } = setup([p, p]);
+  await expect(client.readProject("21")).rejects.toThrow("Unexpected");
+  await expect(client.readProject("20")).rejects.toThrow("Duplicate");
+});
+
+it("reads project service address, customer and real job details atomically", async () => {
+  const p = {
+    id: 20,
+    number: "P20",
+    name: "Renovation",
+    customerId: 2,
+    locationId: 3,
+    jobIds: [1],
+    modifiedOn: "2026-09-15",
+  };
+  const customer = { id: 2, name: "Customer", balance: 999 };
+  const location = {
+    id: 3,
+    customerId: 2,
+    name: "Service location",
+    address: {
+      street: "100 Main",
+      city: "Richmond",
+      state: "VA",
+      zip: "23220",
+    },
+  };
+  const { client, fetcher } = setup([
+    p,
+    customer,
+    location,
+    { ...job, projectId: 20 },
+    p,
+  ]);
+  const result = await client.readProjectDetails("20");
+  expect(result.jobs[0]?.jobNumber).toBe("100");
+  expect(result.customer).not.toHaveProperty("balance");
+  expect(result.location.address.street).toBe("100 Main");
+  expect(
+    fetcher.mock.calls.some((c) =>
+      String(c[0]).includes("/crm/v2/tenant/10/locations/3"),
+    ),
+  ).toBe(true);
+  const drift = setup([
+    p,
+    customer,
+    location,
+    { ...job, projectId: 20 },
+    { ...p, jobIds: [] },
+  ]);
+  await expect(drift.client.readProjectDetails("20")).rejects.toThrow(
+    "changed",
+  );
+  const wrong = setup([p, customer, { ...location, customerId: 9 }]);
+  await expect(wrong.client.readProjectDetails("20")).rejects.toThrow(
+    "did not match",
+  );
+});

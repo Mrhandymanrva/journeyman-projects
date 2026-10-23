@@ -1,3 +1,5 @@
+import {prepareBillAccounting} from "./accounting.js";
+import type {AccountingGateway} from "../adapters/quickbooks.js";
 import { Router } from 'express';
 import { z } from 'zod';
 import { sendData } from '../http/envelope.js';
@@ -41,13 +43,16 @@ const patchPoSchema = z.object({
 });
 
 const createBillSchema = z.object({
-  vendor_invoice_number: z.string().min(1),
+  vendor_invoice_number: z.string().min(1).max(21),
+  invoice_date:z.string().date().optional(),
+  due_date:z.string().date().optional(),
+  description:z.string().max(4000).default(''),
   amount: z.number().min(0),
   retention_held: z.number().min(0).default(0),
   file_key: z.string().nullish(),
 });
 
-export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
+export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: AccountingGateway): Router {
   const router = Router();
 
   router.get(
@@ -249,7 +254,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
       await loadVisiblePo(ctx, poId);
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, vendor_invoice_number, amount, retention_held, status::text AS status,
-                received_at, approved_by, approved_at, paid_at, file_key, exported_at
+                received_at, approved_by, approved_at, paid_at, file_key, exported_at,invoice_date,due_date,description,qbo_id,qbo_balance
            FROM projects.vendor_bills WHERE po_id = $1 ORDER BY received_at`,
         [poId],
       );
@@ -273,6 +278,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
       const po = await loadVisiblePo(ctx, poId);
       const body = parseBody(createBillSchema, ctx.req.body);
+      if(body.retention_held>body.amount || (body.invoice_date && body.due_date && body.due_date<body.invoice_date))throw new ApiError('validation_failed','Check invoice dates and retention: retention cannot exceed the bill.');
 
       if (po.status === 'void') {
         throw new ApiError('conflict', 'Cannot bill against a void purchase order.');
@@ -280,8 +286,8 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
 
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.vendor_bills
-           (tenant_id, po_id, vendor_invoice_number, amount, retention_held, file_key)
-         VALUES ($1,$2,$3,$4,$5,$6)
+           (tenant_id, po_id, vendor_invoice_number, amount, retention_held, file_key,invoice_date,due_date,description)
+         VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7::date,CURRENT_DATE),COALESCE($8::date,$7::date,CURRENT_DATE),$9)
          RETURNING id, vendor_invoice_number, amount, retention_held,
                    status::text AS status, received_at`,
         [
@@ -291,6 +297,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
           body.amount,
           body.retention_held,
           body.file_key ?? null,
+          body.invoice_date??null,body.due_date??null,body.description,
         ],
       );
 
@@ -338,6 +345,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
       requireCapability(ctx.staff.role, 'approve_vendor_bill');
       const billId = parseUuidParam(ctx.req.params.id, 'Vendor bill');
 
+      await prepareBillAccounting(ctx,billId,accounting);
       const existing = await ctx.db.query<{ status: string }>(
         `SELECT status::text AS status FROM projects.vendor_bills WHERE id = $1`,
         [billId],
@@ -364,6 +372,10 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps): Router {
     staffRoute(deps, async (ctx) => {
       requireCapability(ctx.staff.role, 'approve_vendor_bill');
       const billId = parseUuidParam(ctx.req.params.id, 'Vendor bill');
+      const existing=await ctx.db.query<{po_id:string}>(`SELECT po_id FROM projects.vendor_bills WHERE id=$1 FOR UPDATE`,[billId]);
+      if(!existing.rows[0])throw notFound('Vendor bill not found');
+      await loadVisiblePo(ctx,existing.rows[0].po_id);
+      if((await ctx.db.query(`SELECT id FROM projects.accounting_queue WHERE kind='bill' AND record_id=$1`,[billId])).rows.length)throw new ApiError('conflict','This bill has been approved for QuickBooks. Resolve a cancellation in QuickBooks before changing the PM record.');
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.vendor_bills
             SET status = 'rejected', approved_by = NULL, approved_at = NULL

@@ -1,16 +1,26 @@
-import { Router } from 'express';
-import { z } from 'zod';
-import { sendData } from '../http/envelope.js';
-import { ApiError, notFound } from '../http/errors.js';
-import { requireCapability } from '../http/capabilities.js';
-import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
+import {
+  planningFields,
+  validatePlanning,
+  savePlanning,
+  enrichSchedule,
+} from "../domain/planning.js";
+import { Router } from "express";
+import { z } from "zod";
+import { sendData } from "../http/envelope.js";
+import { ApiError, notFound } from "../http/errors.js";
+import { requireCapability } from "../http/capabilities.js";
+import {
+  staffRoute,
+  type StaffContext,
+  type StaffRouterDeps,
+} from "../http/staffSession.js";
 import {
   loadVisibleProject,
   parseBody,
   parseUuidParam,
   requireOwnedRow,
   requireStaffOfTenant,
-} from './shared.js';
+} from "./shared.js";
 
 /**
  * Permits, schedule and daily logs — §3.7. Grouped because the console reads
@@ -29,26 +39,33 @@ const createPermitSchema = z
     not_required_reason: z.string().nullish(),
   })
   .refine((v) => !v.not_required || Boolean(v.not_required_reason), {
-    message: 'A permit marked not required needs a reason',
-    path: ['not_required_reason'],
+    message: "A permit marked not required needs a reason",
+    path: ["not_required_reason"],
   });
 
 const milestoneSchema = z.object({
-  status: z.enum(['pending', 'in_progress', 'complete', 'not_applicable', 'failed']),
+  status: z.enum([
+    "pending",
+    "in_progress",
+    "complete",
+    "not_applicable",
+    "failed",
+  ]),
   due_on: z.string().date().nullish(),
   note: z.string().nullish(),
 });
 
 const scheduleItemSchema = z.object({
+  ...planningFields,
   title: z.string().min(1),
   cost_code_id: z.string().uuid().nullish(),
   vendor_id: z.string().uuid().nullish(),
   staff_id: z.string().uuid().nullish(),
   window_start: z.string().date(),
   window_end: z.string().date(),
-  status: z.enum(['proposed', 'confirmed', 'in_progress', 'complete', 'cancelled']).default(
-    'proposed',
-  ),
+  status: z
+    .enum(["proposed", "confirmed", "in_progress", "complete", "cancelled"])
+    .default("proposed"),
   depends_on: z.string().uuid().nullish(),
 });
 
@@ -71,10 +88,10 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
 
   // ------------------------------------------------------------ permits ----
   router.get(
-    '/projects/:id/permits',
+    "/projects/:id/permits",
     staffRoute(deps, async (ctx) => {
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT p.id, p.permit_type, p.permit_number, p.applied_on, p.issued_on,
                 p.fee_amount, p.not_required, p.not_required_reason,
@@ -109,14 +126,24 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/projects/:id/permits',
+    "/projects/:id/permits",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      requireCapability(ctx.staff.role, "advance_stage");
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const body = parseBody(createPermitSchema, ctx.req.body);
-      await requireOwnedRow(ctx.db, 'jurisdictions', body.jurisdiction_id, 'jurisdiction_id');
-      await requireOwnedRow(ctx.db, 'vendors', body.pulled_by_vendor_id, 'pulled_by_vendor_id');
+      await requireOwnedRow(
+        ctx.db,
+        "jurisdictions",
+        body.jurisdiction_id,
+        "jurisdiction_id",
+      );
+      await requireOwnedRow(
+        ctx.db,
+        "vendors",
+        body.pulled_by_vendor_id,
+        "pulled_by_vendor_id",
+      );
 
       const { rows } = await ctx.db.query<{ id: string }>(
         `INSERT INTO projects.permits
@@ -155,7 +182,10 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
 
       sendData(
         ctx.res,
-        { id: permitId, milestones_created: seeded.rowCount || seeded.rows.length },
+        {
+          id: permitId,
+          milestones_created: seeded.rowCount || seeded.rows.length,
+        },
         undefined,
         201,
       );
@@ -163,10 +193,10 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.patch(
-    '/permits/:id',
+    "/permits/:id",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const permitId = parseUuidParam(ctx.req.params.id, 'Permit');
+      requireCapability(ctx.staff.role, "advance_stage");
+      const permitId = parseUuidParam(ctx.req.params.id, "Permit");
       const permit = await loadVisiblePermit(ctx, permitId);
       const body = parseBody(
         z.object({
@@ -181,7 +211,7 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
         sendData(ctx.res, permit);
         return;
       }
-      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(', ');
+      const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(", ");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.permits SET ${sets} WHERE id = $1
          RETURNING id, permit_type, permit_number, applied_on, issued_on, fee_amount`,
@@ -192,23 +222,23 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.patch(
-    '/permit-milestones/:id',
+    "/permit-milestones/:id",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const milestoneId = parseUuidParam(ctx.req.params.id, 'Milestone');
+      requireCapability(ctx.staff.role, "advance_stage");
+      const milestoneId = parseUuidParam(ctx.req.params.id, "Milestone");
       const body = parseBody(milestoneSchema, ctx.req.body);
 
       const existing = await ctx.db.query<{ permit_id: string }>(
         `SELECT permit_id FROM projects.permit_milestones WHERE id = $1`,
         [milestoneId],
       );
-      if (!existing.rows[0]) throw notFound('Milestone not found');
+      if (!existing.rows[0]) throw notFound("Milestone not found");
       await loadVisiblePermit(ctx, existing.rows[0].permit_id);
 
       // A failed inspection is a status, not a delete. The re-inspection is
       // the same milestone changing state, and the failure stays on the record
       // because that is the part anyone will later need to explain.
-      const completing = body.status === 'complete';
+      const completing = body.status === "complete";
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.permit_milestones
             SET status = $2::projects.milestone_status,
@@ -233,7 +263,7 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.get(
-    '/exceptions/permits',
+    "/exceptions/permits",
     staffRoute(deps, async (ctx) => {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, project_id, project_number, jurisdiction, milestone, due_on, days_overdue
@@ -245,13 +275,13 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
 
   // ----------------------------------------------------------- schedule ----
   router.get(
-    '/projects/:id/schedule',
+    "/projects/:id/schedule",
     staffRoute(deps, async (ctx) => {
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT s.id, s.title, s.window_start, s.window_end, s.status::text AS status,
-                s.confirmed_at, s.confirmed_by_portal, s.depends_on,
+                s.confirmed_at, s.confirmed_by_portal, s.depends_on, s.phase, s.trade, s.activity_type, s.job_link_id,
                 s.vendor_id, v.legal_name AS vendor_name,
                 s.staff_id, st.full_name AS staff_name,
                 s.cost_code_id, cc.code AS cost_code,
@@ -266,25 +296,33 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
           ORDER BY s.window_start, s.title`,
         [projectId],
       );
-      sendData(ctx.res, rows);
+      sendData(ctx.res, await enrichSchedule(ctx, rows));
     }),
   );
 
   router.post(
-    '/projects/:id/schedule',
+    "/projects/:id/schedule",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      requireCapability(ctx.staff.role, "advance_stage");
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const body = parseBody(scheduleItemSchema, ctx.req.body);
-      await requireOwnedRow(ctx.db, 'vendors', body.vendor_id, 'vendor_id');
-      await requireOwnedRow(ctx.db, 'cost_codes', body.cost_code_id, 'cost_code_id');
-      await requireStaffOfTenant(ctx.db, body.staff_id, 'staff_id');
+      const dependencies = await validatePlanning(ctx, projectId, body);
+      await requireOwnedRow(ctx.db, "vendors", body.vendor_id, "vendor_id");
+      await requireOwnedRow(
+        ctx.db,
+        "cost_codes",
+        body.cost_code_id,
+        "cost_code_id",
+      );
+      await requireStaffOfTenant(ctx.db, body.staff_id, "staff_id");
 
       if (body.window_end < body.window_start) {
-        throw new ApiError('validation_failed', 'The window ends before it starts.', [
-          { field: 'window_end', message: 'Must not be before window_start' },
-        ]);
+        throw new ApiError(
+          "validation_failed",
+          "The window ends before it starts.",
+          [{ field: "window_end", message: "Must not be before window_start" }],
+        );
       }
 
       // The database trigger blocks confirming an ineligible vendor and the
@@ -294,8 +332,8 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.schedule_items
            (tenant_id, project_id, title, cost_code_id, vendor_id, staff_id,
-            window_start, window_end, status, depends_on)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::projects.sched_status,$10)
+            window_start, window_end, status, depends_on, phase, job_link_id, trade, activity_type)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::projects.sched_status,$10,$11,$12,$13,$14)
          RETURNING id, title, window_start, window_end, status::text AS status`,
         [
           ctx.staff.tenantId,
@@ -307,50 +345,119 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
           body.window_start,
           body.window_end,
           body.status,
-          body.depends_on ?? null,
+          null,
+          body.phase ?? null,
+          body.job_link_id ?? null,
+          body.trade ?? null,
+          body.activity_type ?? null,
         ],
+      );
+      await savePlanning(
+        ctx,
+        projectId,
+        String(rows[0]!.id),
+        body.resource_ids,
+        dependencies,
       );
       sendData(ctx.res, rows[0], undefined, 201);
     }),
   );
 
   router.patch(
-    '/schedule/:id',
+    "/schedule/:id",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'advance_stage');
-      const itemId = parseUuidParam(ctx.req.params.id, 'Schedule item');
-      const existing = await ctx.db.query<{ project_id: string }>(
-        `SELECT project_id FROM projects.schedule_items WHERE id = $1`,
+      requireCapability(ctx.staff.role, "advance_stage");
+      const itemId = parseUuidParam(ctx.req.params.id, "Schedule item");
+      const existing = await ctx.db.query<{
+        project_id: string;
+        window_start: string;
+        window_end: string;
+      }>(
+        `SELECT project_id, window_start, window_end FROM projects.schedule_items WHERE id = $1`,
         [itemId],
       );
-      if (!existing.rows[0]) throw notFound('Schedule item not found');
-      await loadVisibleProject(ctx, existing.rows[0].project_id, 'id');
+      if (!existing.rows[0]) throw notFound("Schedule item not found");
+      await loadVisibleProject(ctx, existing.rows[0].project_id, "id");
 
       const body = parseBody(
         z.object({
+          ...planningFields,
+          depends_on: z.string().uuid().nullish(),
           title: z.string().min(1).optional(),
           window_start: z.string().date().optional(),
           window_end: z.string().date().optional(),
           status: z
-            .enum(['proposed', 'confirmed', 'in_progress', 'complete', 'cancelled'])
+            .enum([
+              "proposed",
+              "confirmed",
+              "in_progress",
+              "complete",
+              "cancelled",
+            ])
             .optional(),
           vendor_id: z.string().uuid().nullish(),
         }),
         ctx.req.body,
       );
-      await requireOwnedRow(ctx.db, 'vendors', body.vendor_id, 'vendor_id');
+      await requireOwnedRow(ctx.db, "vendors", body.vendor_id, "vendor_id");
 
-      const entries = Object.entries(body).filter(([, v]) => v !== undefined);
-      if (entries.length === 0) throw new ApiError('validation_failed', 'Nothing to change.');
+      const dependencies = await validatePlanning(
+        ctx,
+        existing.rows[0].project_id,
+        body,
+        itemId,
+      );
+      if (
+        (body.window_start ?? existing.rows[0].window_start) >
+        (body.window_end ?? existing.rows[0].window_end)
+      ) {
+        throw new ApiError(
+          "validation_failed",
+          "The window ends before it starts.",
+        );
+      }
+      const {
+        resource_ids,
+        dependencies: ignored,
+        depends_on,
+        ...columns
+      } = body;
+      const entries = Object.entries(columns).filter(
+        ([, v]) => v !== undefined,
+      );
+      if (
+        entries.length === 0 &&
+        resource_ids === undefined &&
+        dependencies === undefined
+      )
+        throw new ApiError("validation_failed", "Nothing to change.");
+      // Lock the schedule row before replacing assignments, serializing changes
+      // with confirmation and keeping compliance checks in the same transaction.
+      await ctx.db.query(
+        "SELECT id FROM projects.schedule_items WHERE id = $1 FOR UPDATE",
+        [itemId],
+      );
+      if (!entries.length) {
+        await savePlanning(
+          ctx,
+          existing.rows[0].project_id,
+          itemId,
+          resource_ids,
+          dependencies,
+        );
+        sendData(ctx.res, { id: itemId });
+        return;
+      }
 
       const sets = entries
         .map(([k], i) =>
-          k === 'status'
+          k === "status"
             ? `status = $${i + 2}::projects.sched_status`
             : `${k} = $${i + 2}`,
         )
-        .join(', ');
-      const confirming = body.status === 'confirmed' ? ', confirmed_at = now()' : '';
+        .join(", ");
+      const confirming =
+        body.status === "confirmed" ? ", confirmed_at = now()" : "";
 
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.schedule_items SET ${sets}${confirming} WHERE id = $1
@@ -358,16 +465,23 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
                    confirmed_at, vendor_id`,
         [itemId, ...entries.map(([, v]) => v)],
       );
+      await savePlanning(
+        ctx,
+        existing.rows[0].project_id,
+        itemId,
+        resource_ids,
+        dependencies,
+      );
       sendData(ctx.res, rows[0]);
     }),
   );
 
   // --------------------------------------------------------- daily logs ----
   router.get(
-    '/projects/:id/daily-logs',
+    "/projects/:id/daily-logs",
     staffRoute(deps, async (ctx) => {
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT l.id, l.log_date, l.crew_on_site, l.vendors_on_site, l.work_completed,
                 l.delays, l.delay_cause, l.deliveries, l.inspections,
@@ -385,11 +499,11 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/projects/:id/daily-logs',
+    "/projects/:id/daily-logs",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'write_daily_log');
-      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
-      await loadVisibleProject(ctx, projectId, 'id');
+      requireCapability(ctx.staff.role, "write_daily_log");
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
       const body = parseBody(dailyLogSchema, ctx.req.body);
 
       // One per project per date; the unique constraint produces the 409.
@@ -422,7 +536,7 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.get(
-    '/exceptions/daily-logs',
+    "/exceptions/daily-logs",
     staffRoute(deps, async (ctx) => {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT project_id, project_number, name, pm_id
@@ -434,7 +548,7 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
 
   // -------------------------------------------------------- jurisdictions --
   router.get(
-    '/jurisdictions',
+    "/jurisdictions",
     staffRoute(deps, async (ctx) => {
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT id, name, portal_url, contact_phone, typical_review_days,
@@ -446,9 +560,9 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   );
 
   router.post(
-    '/jurisdictions',
+    "/jurisdictions",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, 'manage_vendors');
+      requireCapability(ctx.staff.role, "manage_vendors");
       const body = parseBody(
         z.object({
           name: z.string().min(1),
@@ -485,13 +599,15 @@ async function loadVisiblePermit(
   ctx: StaffContext,
   permitId: string,
 ): Promise<Record<string, unknown>> {
-  const { rows } = await ctx.db.query<{ project_id: string } & Record<string, unknown>>(
+  const { rows } = await ctx.db.query<
+    { project_id: string } & Record<string, unknown>
+  >(
     `SELECT id, project_id, permit_type, permit_number, applied_on, issued_on, fee_amount
        FROM projects.permits WHERE id = $1`,
     [permitId],
   );
   const permit = rows[0];
-  if (!permit) throw notFound('Permit not found');
-  await loadVisibleProject(ctx, permit.project_id, 'id');
+  if (!permit) throw notFound("Permit not found");
+  await loadVisibleProject(ctx, permit.project_id, "id");
   return permit;
 }

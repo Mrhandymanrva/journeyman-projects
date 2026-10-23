@@ -5,34 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project Console — Journeyman Projects</title>
 <link rel="stylesheet" href="/console.css">
+<link rel="stylesheet" href="/workspace.css">
+<link rel="stylesheet" href="/projectControls.css">
 </head>
 <body>
 
-<!--
-  The markup below is the reference mock's, unchanged: same elements, same
-  class names, same order. Only the data source moved — the mock carried a
-  hardcoded PROJECTS array, this reads the API.
 
-  Three deviations from the mock, all deliberate, all forced by product rules
-  in the Module Addendum rather than by taste:
-
-  1. The mock says "ServiceTitan" in the draw exception and the footer. No
-     field service platform may be named anywhere in this module, because the
-     next three customers may run Jobber, Housecall Pro, or nothing. The name
-     comes from external_systems.display_name instead — so a ServiceTitan
-     tenant reads exactly the mock's wording, and a manual tenant reads the
-     truth about their own setup.
-
-  2. The mock's masthead says "Mr. Handyman · Tier 3 Project Console".
-     Mr. Handyman is tenant one, not a special case in the product, and
-     "Tier 3" is their internal jargon. The masthead reads the tenant's own
-     display name.
-
-  3. The mock's draw "Record" button writes to a local object. Here it calls
-     POST /draws/:id/external-invoice, which is gated on the
-     record_external_invoice capability — so the control is hidden for a role
-     that does not hold it rather than failing after the click.
--->
 
 <div class="rail">
   <div class="rail-in">
@@ -50,6 +28,7 @@
         <span class="lbl" id="pcode"></span>
         <h1 id="pname"></h1>
         <div class="addr" id="paddr"></div>
+        <button class="btn sm" id="st-project-open" type="button">ServiceTitan project</button>
       </div>
       <div class="stats" id="pstats"></div>
     </div>
@@ -60,6 +39,17 @@
 
     <div class="gates" id="gates"></div>
 
+
+    <section class="card pm-workspace" aria-label="Project work plan">
+      <div class="card-h"><div><span class="lbl">PROJECT WORKSPACE</span><h2>Project Gantt &amp; scheduled work</h2></div><div class="planning-toolbar"><button class="btn primary" id="planning-new" type="button">Add activity</button><button class="btn" id="planning-resource" type="button">Add trade crew</button><button class="btn" id="planning-vendors" type="button">Subcontractors</button><button class="btn" id="planning-job" type="button">Linked jobs</button></div></div>
+      <div class="card-b">
+        <div id="planning-summary" class="pm-summary"></div>
+        <div class="planning-toolbar"><label>View <select id="planning-view"><option value="timeline">Gantt timeline</option><option value="board">Activity board</option><option value="crew">Crew assignments</option></select></label><label>Phase <select id="planning-phase"><option value="">All phases</option></select></label><label>Show <select id="planning-filter"><option value="all">All work</option><option value="attention">Needs attention</option><option value="unassigned">Unassigned</option></select></label><label><input type="checkbox" id="planning-all"> All projects</label></div>
+        <div class="planning-toolbar"><button class="btn sm" id="planning-prev" aria-label="Previous two weeks">←</button><button class="btn sm" id="planning-today">Today</button><button class="btn sm" id="planning-next" aria-label="Next two weeks">→</button><label>Starting <input type="date" id="planning-from"></label><span class="row-m" id="planning-range"></span></div>
+        <p class="hint">Scheduled PM activities and ServiceTitan technician appointments feed this plan automatically. Plan by phase and crew; open an ST appointment for dispatch review. Dates include both the start and finish day.</p>
+        <div id="planning-rows" aria-live="polite"></div>
+      </div>
+    </section>
     <div class="grid">
       <div>
         <div class="card">
@@ -97,7 +87,7 @@
 
         <div class="card">
           <div class="card-h">
-            <span class="lbl">Trade partners this week</span><span class="tag" id="stag"></span>
+            <span class="lbl">All project activities</span><span class="tag" id="stag"></span>
             <button class="btn sm" id="sched-new" type="button">Schedule work</button>
           </div>
           <div class="card-b" id="subs"></div>
@@ -135,47 +125,18 @@
 
   <div class="foot" id="foot">
     Journeyman Projects · a licensed module of the Journeyman Systems platform<br>
-    <span id="footnote">Daily invoicing lives in the revenue system of record. Consolidated project invoices originate here.</span>
+    <span id="footnote">ServiceTitan is the official project record repository. Publish PM document revisions to ST; saved drafts stay in this workspace.</span>
   </div>
 </div>
 
-<div class="veil" id="signin" hidden>
-  <form class="panel" id="signin-form">
-    <h2>Sign in</h2>
-    <p>
-      Development sign-in. The platform owns the real staff session; this
-      exchanges an email for one against the module's own session store, and
-      only runs when <code>DEV_LOGIN</code> is switched on. The access token is
-      a shared secret so that finding this URL is not by itself enough to get
-      in — it is a holding position, not authentication.
-    </p>
-    <p class="err" id="signin-error"></p>
-    <label>
-      <span class="lbl">Email</span>
-      <!-- Filled in, not hinted. These were placeholders naming a tenant that
-           did not exist on this instance, which reads as "here are your
-           credentials" right up until it does not work. -->
-      <input id="signin-email" type="email" autocomplete="username" required
-             value="owner@demo.test">
-    </label>
-    <label>
-      <span class="lbl">Tenant slug</span>
-      <input id="signin-tenant" required value="demo">
-    </label>
-    <label>
-      <span class="lbl">Access token</span>
-      <input id="signin-token" type="password" autocomplete="off" required
-             placeholder="DEV_LOGIN_TOKEN">
-    </label>
-    <button type="submit">Sign in</button>
-    <p class="hint">
-      The token is the <code>DEV_LOGIN_TOKEN</code> variable on this service.
-      Other roles on the demo account, which each see a different console:
-      <code>pm@demo.test</code>, <code>office@demo.test</code>,
-      <code>books@demo.test</code>.
-    </p>
-  </form>
-</div>
+<div class="veil" id="signin" hidden><form class="panel" id="signin-form"><a class="button primary" id="signin-sso" href="/sso/start" hidden style="display:block;text-align:center;margin-bottom:12px">Sign in with Command Center</a>
+<h2 id="signin-title">Sign in</h2><p id="signin-help">Use your company account, email and password.</p><p class="err" id="signin-error" role="alert"></p>
+<div id="signin-identity"><label>Email<input id="signin-email" type="email" autocomplete="username" required></label><label>Company account<input id="signin-tenant" required value="richmond" autocomplete="organization"></label></div>
+<label><span id="signin-secret-label">Password</span><input id="signin-token" type="password" autocomplete="current-password" required maxlength="256"></label>
+<label id="signin-confirm-label" hidden>Confirm password<input id="signin-confirm" type="password" autocomplete="new-password" maxlength="256"></label>
+<button type="submit" id="signin-submit">Sign in</button><p id="signin-reset-help">Need an account or password reset? Ask your company owner for a setup link.</p>
+<label id="signin-dev-label"><input type="checkbox" id="signin-dev"> Existing administrator access token</label>
+</form></div>
 
 <div class="drawer-veil" id="drawer" hidden>
   <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">

@@ -1,22 +1,40 @@
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
-import supertest from 'supertest';
-import type { Express } from 'express';
-import { createApp } from '../../src/app.js';
-import { MemoryStaffSessions } from '../../src/http/memoryStaffSessions.js';
-import type { StaffRole } from '../../src/http/capabilities.js';
-import { PgliteDatabase } from './pgliteDatabase.js';
+import type {AccountingGateway} from "../../src/adapters/quickbooks.js";
+import type {BidMailConfig} from "../../src/adapters/bidMail.js";
+import type { SourceConnections } from "../../src/adapters/sourceConnections.js";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import supertest from "supertest";
+import type { Express } from "express";
+import { createApp } from "../../src/app.js";
+import { MemoryStaffSessions } from "../../src/http/memoryStaffSessions.js";
+import type { StaffRole } from "../../src/http/capabilities.js";
+import { PgliteDatabase } from "./pgliteDatabase.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(here, '../..');
+const repoRoot = path.resolve(here, "../..");
 
 export const SCHEMA_FILES = [
-  path.join(repoRoot, 'db/001_schema.sql'),
-  path.join(repoRoot, 'db/002_seed.sql'),
-  path.join(repoRoot, 'db/004_change_orders.sql'),
-  path.join(repoRoot, 'db/005_draw_schedule.sql'),
-  path.join(repoRoot, 'db/006_external_invoices.sql'),
-  path.join(repoRoot, 'db/007_project_invoices.sql'),
+  path.join(repoRoot, "db/001_schema.sql"),
+  path.join(repoRoot, "db/002_seed.sql"),
+  path.join(repoRoot, "db/004_change_orders.sql"),
+  path.join(repoRoot, "db/005_draw_schedule.sql"),
+  path.join(repoRoot, "db/006_external_invoices.sql"),
+  path.join(repoRoot, "db/007_project_invoices.sql"),
+  path.join(repoRoot, "db/008_project_planning.sql"),
+  path.join(repoRoot, "db/009_source_snapshots.sql"),
+  path.join(repoRoot, "db/010_pm_directories.sql"),
+  path.join(repoRoot, "db/011_dispatch_changes.sql"),
+  path.join(repoRoot, "db/012_subcontractor_intake.sql"),
+  path.join(repoRoot, "db/013_st_projects.sql"),
+  path.join(repoRoot, "db/014_st_project_authority.sql"),
+  path.join(repoRoot, "db/015_staff_login.sql"),
+  path.join(repoRoot, "db/016_project_controls.sql"),
+  path.join(repoRoot, "db/017_record_publications.sql"),
+  path.join(repoRoot, "db/018_document_links.sql"),
+  path.join(repoRoot, "db/019_vendor_archive.sql"),
+  path.join(repoRoot, "db/020_qbo_payables.sql"),
+  path.join(repoRoot, "db/021_coi_coverage.sql"),
+  path.join(repoRoot, "db/022_vendor_sync.sql"),
 ];
 
 export interface TenantFixture {
@@ -42,13 +60,25 @@ export interface TokenScopedRequest {
   del(url: string): supertest.Test;
 }
 
-export async function startHarness(sqlFiles: string[] = SCHEMA_FILES): Promise<Harness> {
+export async function startHarness(
+  sqlFiles: string[] = SCHEMA_FILES,
+  sources?: SourceConnections,
+  bidMail?:BidMailConfig,
+  accounting?:AccountingGateway,
+): Promise<Harness> {
   const db = await PgliteDatabase.create(sqlFiles);
   const sessions = new MemoryStaffSessions();
   // serveConsole off: the static handler would answer an unmatched non-API
   // path with index.html, which turns a routing mistake in a test into a
   // passing 200.
-  const app = createApp({ database: db, staffSessions: sessions, serveConsole: false });
+  const app = createApp({
+    database: db,
+    staffSessions: sessions,
+    serveConsole: false,
+    sources,
+    bidMail,
+    accounting,
+  });
   const request = supertest(app);
 
   return {
@@ -57,7 +87,8 @@ export async function startHarness(sqlFiles: string[] = SCHEMA_FILES): Promise<H
     sessions,
     request,
     as(token: string) {
-      const auth = (t: supertest.Test) => t.set('Authorization', `Bearer ${token}`);
+      const auth = (t: supertest.Test) =>
+        t.set("Authorization", `Bearer ${token}`);
       return {
         get: (url) => auth(request.get(url)),
         post: (url) => auth(request.post(url)),
@@ -74,18 +105,23 @@ export interface CreateTenantOptions {
   displayName?: string;
   unitName?: string;
   /** Defaults to both modules active. */
-  entitlements?: Array<{ module: 'estimating' | 'projects'; state: string }>;
+  entitlements?: Array<{ module: "estimating" | "projects"; state: string }>;
   enforceBusinessUnitScoping?: boolean;
-  staff?: Array<{ key: string; email: string; role: StaffRole; unit?: string | null }>;
+  staff?: Array<{
+    key: string;
+    email: string;
+    role: StaffRole;
+    unit?: string | null;
+  }>;
 }
 
-const DEFAULT_STAFF: NonNullable<CreateTenantOptions['staff']> = [
-  { key: 'owner', email: 'owner@example.test', role: 'owner' },
-  { key: 'manager', email: 'manager@example.test', role: 'manager' },
-  { key: 'pm', email: 'pm@example.test', role: 'project_manager' },
-  { key: 'office', email: 'office@example.test', role: 'office' },
-  { key: 'estimator', email: 'estimator@example.test', role: 'estimator' },
-  { key: 'bookkeeper', email: 'bookkeeper@example.test', role: 'bookkeeper' },
+const DEFAULT_STAFF: NonNullable<CreateTenantOptions["staff"]> = [
+  { key: "owner", email: "owner@example.test", role: "owner" },
+  { key: "manager", email: "manager@example.test", role: "manager" },
+  { key: "pm", email: "pm@example.test", role: "project_manager" },
+  { key: "office", email: "office@example.test", role: "office" },
+  { key: "estimator", email: "estimator@example.test", role: "estimator" },
+  { key: "bookkeeper", email: "bookkeeper@example.test", role: "bookkeeper" },
 ];
 
 /**
@@ -100,8 +136,8 @@ export async function createTenant(
   opts: CreateTenantOptions,
 ): Promise<TenantFixture> {
   const entitlements = opts.entitlements ?? [
-    { module: 'estimating', state: 'active' },
-    { module: 'projects', state: 'active' },
+    { module: "estimating", state: "active" },
+    { module: "projects", state: "active" },
   ];
 
   const tenantId = await h.db.asOwner(async (c) => {
@@ -131,14 +167,16 @@ export async function createTenant(
   // Activation writes through RLS, so it only works when BOTH modules are
   // live. `.every()` on an empty list is true, which is exactly wrong here.
   const live = new Set(
-    entitlements.filter((e) => ['trial', 'active', 'past_due'].includes(e.state)).map((e) => e.module),
+    entitlements
+      .filter((e) => ["trial", "active", "past_due"].includes(e.state))
+      .map((e) => e.module),
   );
-  if (!live.has('estimating') || !live.has('projects')) return fixture;
+  if (!live.has("estimating") || !live.has("projects")) return fixture;
 
   await h.db.withTenant(tenantId, async (c) => {
     await c.query(`SELECT projects.activate_tenant_full($1, $2)`, [
       tenantId,
-      opts.unitName ?? 'Main',
+      opts.unitName ?? "Main",
     ]);
     if (opts.enforceBusinessUnitScoping) {
       await c.query(
@@ -187,37 +225,39 @@ export async function addBusinessUnit(
   return id;
 }
 
-export function estimatePayload(overrides: Partial<Record<string, unknown>> = {}) {
+export function estimatePayload(
+  overrides: Partial<Record<string, unknown>> = {},
+) {
   return {
-    contract_version: 'estimate.v1',
-    source_kind: 'journeyman_estimate',
+    contract_version: "estimate.v1",
+    source_kind: "journeyman_estimate",
     source_key: `est-${Math.random().toString(36).slice(2, 10)}`,
     payload: {
       sold_price: 41800,
-      currency: 'USD',
+      currency: "USD",
       lines: [
         {
-          code: '1120',
-          description: 'Tile setting subcontract',
+          code: "1120",
+          description: "Tile setting subcontract",
           quantity: 1,
-          unit: 'ls',
-          cost_type: 'S',
+          unit: "ls",
+          cost_type: "S",
           amount: 5200,
         },
         {
-          code: '1110',
-          description: 'Tile — material',
+          code: "1110",
+          description: "Tile â€” material",
           quantity: 220,
-          unit: 'sf',
-          cost_type: 'M',
+          unit: "sf",
+          cost_type: "M",
           amount: 1980,
         },
         {
-          code: '930',
-          description: 'Carpentry labor',
+          code: "930",
+          description: "Carpentry labor",
           quantity: 40,
-          unit: 'hr',
-          cost_type: 'L',
+          unit: "hr",
+          cost_type: "L",
           amount: 3200,
         },
       ],
@@ -229,15 +269,15 @@ export function estimatePayload(overrides: Partial<Record<string, unknown>> = {}
 export function projectBody(overrides: Record<string, unknown> = {}) {
   return {
     project_number: `MHR-2026-${Math.floor(Math.random() * 9000 + 1000)}`,
-    name: 'Whitfield — Primary Bath',
-    address_line1: '4412 Grove Avenue',
-    city: 'Richmond',
-    region: 'VA',
-    postal_code: '23221',
+    name: "Whitfield â€” Primary Bath",
+    address_line1: "4412 Grove Avenue",
+    city: "Richmond",
+    region: "VA",
+    postal_code: "23221",
     contract_value: 41800,
-    currency: 'USD',
+    currency: "USD",
     target_margin: 0.38,
-    source_kind: 'manual',
+    source_kind: "manual",
     ...overrides,
   };
 }
