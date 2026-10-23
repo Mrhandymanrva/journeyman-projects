@@ -6,6 +6,8 @@ This replaces the August 2026 answer that Journeyman generates project invoices 
 
 Customer invoices are created in ServiceTitan only, and ServiceTitan exports them to QuickBooks. Journeyman reads ServiceTitan invoices to track draws and billing status, and it never creates or writes customer invoices to ServiceTitan or QuickBooks. Vendor bills still go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge.
 
+While ServiceTitan is the revenue system of record, `POST /draws/:id/invoice`, `POST /change-orders/:id/invoice`, and `POST /draws/:id/external-invoice` return 409 and do not insert a `project_invoices` row. The console hides the draw invoice recorder and says why. Those three actions still create a local invoice row only when ServiceTitan is not the revenue system. They still do not write to ServiceTitan or QuickBooks. Recording a ServiceTitan invoice number on the draw, without also creating a local invoice row, is not a separate action.
+
 The August record below stays so the earlier double-bill hazard is visible. Where it says this app originates or writes the project invoice, the 2026-10-23 decision wins. Customer-draw retainage (`draws.is_retainage`, the 30/30/30/10 schedule) is a different concept and is unchanged.
 
 ---
@@ -71,6 +73,8 @@ Recommendation: 1 and 3. Treat 2 as a bonus.
 ## The resolved topology
 
 **Current as of 2026-10-23.** Customer invoices are created in ServiceTitan only, and ServiceTitan exports them to QuickBooks. Journeyman reads ServiceTitan invoices to track draws and billing status, and it never creates or writes customer invoices to ServiceTitan or QuickBooks. Vendor bills still go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge.
+
+While ServiceTitan is the revenue system of record, `POST /draws/:id/invoice`, `POST /change-orders/:id/invoice`, and `POST /draws/:id/external-invoice` return 409 and do not insert a `project_invoices` row. The console hides the draw invoice recorder and says why. Those three actions still create a local invoice row only when ServiceTitan is not the revenue system. They still do not write to ServiceTitan or QuickBooks. Recording a ServiceTitan invoice number on the draw, without also creating a local invoice row, is not a separate action.
 
 ```
   Estimating ──snapshot──▶  JOURNEYMAN  ◀──invoices and appointments read── ServiceTitan

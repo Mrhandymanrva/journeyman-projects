@@ -328,9 +328,59 @@ it('keeps customer invoice issuance in ServiceTitan when it owns billing', async
   const [deposit]=await schedule();
   await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
   await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
+  const open = await owner().get(`/api/v1/projects/projects/${projectId}/draws`);
+  expect(open.body.data.local_invoices_allowed).toBe(true);
   await h.db.withTenant(t.id,db=>db.query("INSERT INTO projects.external_systems(tenant_id,adapter_key,display_name,is_revenue_system_of_record) VALUES($1,'servicetitan','ST',true)",[t.id]));
+  const hidden = await owner().get(`/api/v1/projects/projects/${projectId}/draws`);
+  expect(hidden.body.data.local_invoices_allowed).toBe(false);
+  const orders = await owner().get(`/api/v1/projects/projects/${projectId}/change-orders`);
+  expect(orders.body.data.local_invoices_allowed).toBe(false);
+
   const r=await owner().post(`/api/v1/projects/draws/${deposit!.id}/invoice`).send({});
   expect(r.status).toBe(409);
   expect(r.body.error.message).toContain('issued in ServiceTitan');
+  expect(r.body.error.message).toMatch(/will not create a local invoice/i);
+
+  const recorded = await owner().post(`/api/v1/projects/draws/${deposit!.id}/external-invoice`).send({
+    external_invoice_number: 'ST-100',
+  });
+  expect(recorded.status).toBe(409);
+  expect(recorded.body.error.message).toMatch(/will not create a local invoice/i);
+  const drawAfter = await owner().get(`/api/v1/projects/projects/${projectId}/draws`);
+  expect(drawAfter.body.data.draws[0].external_invoice_number).toBeNull();
+
+  const co = await owner().post(`/api/v1/projects/projects/${projectId}/change-orders`).send({
+    description: 'Added tile',
+    customer_amount: 500,
+    lines: [],
+  });
+  expect(co.status, JSON.stringify(co.body)).toBe(201);
+  expect((await owner().post(`/api/v1/projects/change-orders/${co.body.data.id}/send`)).status).toBe(200);
+  expect((await owner().post(`/api/v1/projects/change-orders/${co.body.data.id}/approve`).send({})).status).toBe(200);
+  const coInvoice = await owner().post(`/api/v1/projects/change-orders/${co.body.data.id}/invoice`).send({});
+  expect(coInvoice.status).toBe(409);
+  expect(coInvoice.body.error.message).toMatch(/will not create a local invoice/i);
+
   expect((await owner().get(`/api/v1/projects/projects/${projectId}/invoices`)).body.data).toHaveLength(0);
+  const rows = await h.db.withTenant(t.id, db => db.query(
+    `SELECT id FROM projects.project_invoices WHERE project_id = $1`,
+    [projectId],
+  ));
+  expect(rows.rows).toEqual([]);
+});
+
+it('still creates a local invoice when ServiceTitan is not the revenue system', async () => {
+  const [deposit] = await schedule();
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
+  await h.db.withTenant(t.id, (db) => db.query(
+    `INSERT INTO projects.external_systems
+       (tenant_id, adapter_key, display_name, is_revenue_system_of_record, active)
+     VALUES ($1, 'servicetitan', 'ST', false, true)`,
+    [t.id],
+  ));
+  const list = await owner().get(`/api/v1/projects/projects/${projectId}/draws`);
+  expect(list.body.data.local_invoices_allowed).toBe(true);
+  const issued = await owner().post(`/api/v1/projects/draws/${deposit!.id}/invoice`).send({});
+  expect(issued.status, JSON.stringify(issued.body)).toBe(201);
 });

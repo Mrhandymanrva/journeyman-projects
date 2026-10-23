@@ -760,7 +760,11 @@ function renderDraws(drawData) {
         // The signature interaction. In the mock this wrote to a local object;
         // here it is a real write, and it is only offered to a role that holds
         // record_external_invoice — a button that 403s is worse than no button.
-        ref = canRecord
+        // While ServiceTitan is the revenue system the control is absent: the
+        // API would refuse the local invoice row.
+        ref = drawData.local_invoices_allowed === false
+          ? `<div class="stref"><span class="w">Customer invoices are created in ServiceTitan. Journeyman will not record a local invoice.</span></div>`
+          : canRecord
           ? `<div class="stref">
         <span class="w">No invoice recorded in ${esc(drawData.revenue_system)}</span>
         <input id="in-${dr.id}" placeholder="Invoice #" aria-label="Invoice number in the revenue system">
@@ -1718,12 +1722,12 @@ function renderChangeOrders(data) {
   document.querySelectorAll("#cos [data-co]").forEach((node) =>
     node.addEventListener("click", () => {
       const co = cos.find((c) => c.id === node.dataset.co);
-      if (co) changeOrderDrawer(co, data.approval_threshold);
+      if (co) changeOrderDrawer(co, data.approval_threshold, data.local_invoices_allowed);
     }),
   );
 }
 
-function changeOrderDrawer(co, threshold) {
+function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   const overThreshold = co.customer_amount > threshold;
   const mayApproveThis = overThreshold
     ? can("approve_change_order_over_threshold")
@@ -1736,6 +1740,11 @@ function changeOrderDrawer(co, threshold) {
        <b>${signed(co.customer_amount)}</b> to the customer, <b>${money(co.cost_amount)}</b> of
        cost${co.schedule_impact_days ? `, ${co.schedule_impact_days} days of schedule` : ""}.
        Currently <b>${esc(co.status)}</b>.
+       ${
+         localInvoicesAllowed === false
+           ? " Customer invoices are created in ServiceTitan, so this change order is not invoiced from Journeyman."
+           : ""
+       }
        ${
          overThreshold
            ? ` Above this account's ${money(threshold)} threshold, so owner or manager only.`
