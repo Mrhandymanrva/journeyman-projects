@@ -92,6 +92,10 @@ describe('purchase order lines', () => {
     const before = await owner().get(`/api/v1/projects/projects/${projectId}/cost-position`);
     expect((before.body.data as Array<{ cost_code: string; committed_open: number }>).find((r) => r.cost_code === '1120')!.committed_open).toBe(0);
 
+    const vendorRow = await owner().get(`/api/v1/projects/vendors/${vendor.body.data.id}`);
+    const agreement = (vendorRow.body.data.documents as Array<{ id: string; kind: string }>).find(
+      (d) => d.kind === 'master_agreement',
+    );
     const issued = await owner().post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
       po_number: 'PO-ISSUED-COST',
       vendor_id: vendor.body.data.id,
@@ -100,6 +104,8 @@ describe('purchase order lines', () => {
       amount: 1250.5,
       scope_text: 'Set tile',
       issue: true,
+      agreement_document_id: agreement!.id,
+      agreement_signed_at: '2026-10-01T00:00:00.000Z',
     });
     expect(issued.status, JSON.stringify(issued.body)).toBe(201);
     const lines = await h.db.withTenant(t.id, (c) =>

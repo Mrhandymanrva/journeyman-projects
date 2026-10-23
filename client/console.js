@@ -1172,14 +1172,14 @@ function renderPurchaseOrders(pos) {
       }"></span>
       <div class="row-b">
         <div class="row-t">${esc(po.po_number)} · ${esc(po.vendor ?? "counter purchase")}</div>
-        <div class="row-m">${esc(po.cost_code)} ${esc(po.cost_code_description)} · ${esc(po.status)}</div>
+        <div class="row-m">${esc(po.kind || "subcontract")} · ${esc(po.cost_code)} ${esc(po.cost_code_description)} · ${esc(po.status)}</div>
         ${
           po.status !== "void"
             ? `<div class="po-actions">
                  ${
                    can("issue_purchase_order")
-                     ? `<button class="btn sm" data-bill="${po.id}">Record bill</button>`
-                     : ""
+                     ? `<button class="btn sm" data-bill="${po.id}">Record bill</button><button class="btn sm" data-lines="${po.id}">Lines</button>`
+                     : `<button class="btn sm" data-lines="${po.id}">Lines</button>`
                  }
                  <button class="btn sm" data-bills="${po.id}">Bills</button>
                </div>`
@@ -1202,20 +1202,31 @@ function renderPurchaseOrders(pos) {
     .forEach((b) =>
       b.addEventListener("click", () => billsDrawer(b.dataset.bills)),
     );
+  document
+    .querySelectorAll("#pos [data-lines]")
+    .forEach((b) =>
+      b.addEventListener("click", () => linesDrawer(b.dataset.lines)),
+    );
 }
 
 async function issuePoDrawer() {
-  const [codes, vendors] = await Promise.all([
+  const [codes, vendors, accountSettings] = await Promise.all([
     api("/cost-codes"),
     api("/vendors?per_page=200"),
+    api("/accounting/cost-type-accounts"),
   ]);
+  const graceDays = Number(accountSettings?.agreement_grace_days ?? 14);
   openDrawer(
     "Issue a purchase order",
     `${messageSlot}
      <p class="note">A vendor must be compliant to be issued a purchase order.
      Committing money to someone who cannot legally be put on site is the
      expensive half of that mistake, and it happens days before anyone tries to
-     schedule them.</p>
+     schedule them. A signed vendor master agreement satisfies the agreement
+     gate. A per-PO subcontract is optional. With neither, a subcontract can
+     still be issued for ${graceDays} days after it is created, and the screen
+     shows a warning. After that, issue is blocked and the message says why.
+     Certificates of insurance and the W-9 check are unchanged.</p>
      ${field("PO number", '<input id="po-number" placeholder="PO-0001">')}
      ${field(
        "Vendor",
@@ -1240,6 +1251,10 @@ async function issuePoDrawer() {
      </div>
      ${field("Scope of work", '<textarea id="po-scope"></textarea>')}
      ${field("Exclusions", '<textarea id="po-excl"></textarea>')}
+     ${field("Agreement signed", '<input id="po-signed" type="date">')}
+     ${field("Signed agreement", `<select id="po-agreement"><option value="">— none; a warning applies for ${graceDays} days —</option></select>`)}
+     ${field("ServiceTitan job", '<select id="po-st-job"><option value="">— none —</option></select>')}
+     <p class="note" id="po-st-project"></p>
      <label style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
        <input type="checkbox" id="po-issue" checked style="width:15px;height:15px">
        <span class="lbl" style="margin:0">Issue now rather than saving a draft</span>
@@ -1257,6 +1272,34 @@ async function issuePoDrawer() {
       };
       el("po-code").addEventListener("change", followCode);
       followCode();
+      const loadAgreement = async () => {
+        const id = el("po-vendor").value;
+        el("po-agreement").innerHTML = `<option value="">— none; a warning applies for ${graceDays} days —</option>`;
+        if (!id) return;
+        const vendor = await api(`/vendors/${id}`);
+        for (const doc of vendor.documents || []) {
+          if (doc.kind !== "master_agreement" && doc.kind !== "other") continue;
+          el("po-agreement").insertAdjacentHTML(
+            "beforeend",
+            `<option value="${doc.id}">${esc(doc.kind.replaceAll("_", " "))}</option>`,
+          );
+        }
+      };
+      el("po-vendor").addEventListener("change", () => loadAgreement().catch((e) => window.alert(e.message)));
+      api(`/projects/${current.id}/jobs`).then((jobs) => {
+        for (const job of jobs || []) {
+          el("po-st-job").insertAdjacentHTML(
+            "beforeend",
+            `<option value="${esc(job.external_job_id)}">${esc(job.title)} · ${esc(job.external_job_id)}</option>`,
+          );
+        }
+      }).catch(() => {});
+      api(`/projects/${current.id}/servicetitan`).then((link) => {
+        if (link?.external_project_id) {
+          el("po-st-project").textContent = `Connected ServiceTitan project ${link.external_project_id}. Leave the job blank unless this order belongs to one job on that project.`;
+          el("po-st-project").dataset.projectId = link.external_project_id;
+        }
+      }).catch(() => {});
 
       el("po-save").addEventListener("click", (e) =>
         submit(e.target, () =>
@@ -1271,10 +1314,15 @@ async function issuePoDrawer() {
               amount: Number(el("po-amount").value),
               scope_text: el("po-scope").value.trim(),
               exclusions: el("po-excl").value.trim() || null,
+              agreement_document_id: el("po-agreement").value || null,
+              agreement_signed_at: el("po-signed").value ? new Date(el("po-signed").value + "T12:00:00Z").toISOString() : null,
+              st_job_id: el("po-st-job").value ? Number(el("po-st-job").value) : null,
+              st_project_id: el("po-st-project").dataset.projectId ? Number(el("po-st-project").dataset.projectId) : null,
               issue: el("po-issue").checked,
             }),
           }).then((created) => {
             if (created.warning) window.alert(created.warning.message);
+            if (created.agreement_warning) window.alert(created.agreement_warning.message);
           }),
         ),
       );
@@ -1282,32 +1330,71 @@ async function issuePoDrawer() {
   );
 }
 
-function recordBillDrawer(poId) {
+async function linesDrawer(poId) {
+  const lines = await api(`/purchase-orders/${poId}/lines`);
+  openDrawer(
+    "Purchase order lines",
+    `${messageSlot}
+     ${
+       lines.length
+         ? `<div class="sub-table"><table><thead><tr><th>Cost</th><th>Original</th><th>Changes</th><th>Current</th><th>Billed</th></tr></thead><tbody>${lines
+             .map(
+               (line) => `<tr><td>${esc(line.cost_code)} ${esc(line.cost_type)}<small>${esc(line.description || "")}</small></td><td>${money(line.original_amount)}</td><td>${money(line.change_amount)}</td><td>${money(line.current_amount)}</td><td>${money(line.billed_gross)}</td></tr>`,
+             )
+             .join("")}</tbody></table></div>`
+         : '<p class="note">No lines yet.</p>'
+     }
+     ${
+       can("issue_purchase_order")
+         ? `<p class="note">Lines can be added while the order is a draft. After it is issued, amounts change through an approved change order.</p>`
+         : ""
+     }`,
+  );
+}
+
+async function recordBillDrawer(poId) {
+  const lines = await api(`/purchase-orders/${poId}/lines`);
+  const many = lines.length > 1;
   openDrawer(
     "Record a vendor bill",
     `${messageSlot}
-     <p class="note">Recording is not approving. A bill that exceeds the purchase
-     order is still recorded, with a warning — an overrun the software refuses to
-     accept is an overrun that lives in somebody's inbox instead of the cost
-     position.</p>
+     <p class="note">A subcontract bill past the remaining line amount is refused.
+     A material overrun is recorded with a warning. Approved bills are sent to
+     QuickBooks for the full amount.</p>
      ${field("Vendor invoice number", '<input id="bill-number">')}
-     <div class="two">
-       ${field("Amount", '<input id="bill-amount" type="number" step="0.01" min="0" value="0">')}
-       ${field("Retention held", '<input id="bill-retention" type="number" step="0.01" min="0" value="0">')}
-     </div>
+     ${
+       many
+         ? lines
+             .map(
+               (line) =>
+                 field(
+                   `${line.cost_code} ${line.cost_type} · ${money(line.current_amount)} current, ${money(line.billed_gross)} billed`,
+                   `<input class="bill-line" data-line="${line.id}" type="number" step="0.01" value="0">`,
+                 ),
+             )
+             .join("")
+         : field("Amount this period", '<input id="bill-amount" type="number" step="0.01" min="0" value="0">')
+     }
      <div class="actions right">
        <button class="btn primary" id="bill-save" type="button">Record</button>
      </div>`,
     () => {
       el("bill-save").addEventListener("click", (e) =>
         submit(e.target, async () => {
+          const body = { vendor_invoice_number: el("bill-number").value.trim() };
+          if (many) {
+            body.lines = [...document.querySelectorAll(".bill-line")]
+              .map((input) => ({
+                po_line_id: input.dataset.line,
+                gross_amount: Number(input.value),
+              }))
+              .filter((line) => line.gross_amount !== 0);
+          } else {
+            body.amount = Number(el("bill-amount").value);
+          }
           const result = await api(`/purchase-orders/${poId}/bills`, {
             method: "POST",
-            body: JSON.stringify({
-              vendor_invoice_number: el("bill-number").value.trim(),
-              amount: Number(el("bill-amount").value),
-              retention_held: Number(el("bill-retention").value),
-            }),
+            body: JSON.stringify(body),
           });
           if (result.warning) window.alert(result.warning.message);
         }),

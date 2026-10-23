@@ -13,18 +13,33 @@ import { ApiError, notFound } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseUuidParam, parseBody } from "./shared.js";
 import { queueVendor, type AccountingGateway } from "../adapters/quickbooks.js";
+import { buildVendorBillPayload, type BillCostGroup } from "../domain/vendorBillPayload.js";
+import {
+  COST_TYPES,
+  loadCostTypeAccounts,
+  suggestAccountMapping,
+  type AccountMapping,
+  type CostType,
+} from "../domain/accountMapping.js";
+import { assertSubcontractCompliance } from "../domain/vendorCompliance.js";
 export async function prepareBillAccounting(
   ctx: StaffContext,
   billId: string,
   gateway?: AccountingGateway,
 ) {
   const result = await ctx.db.query<any>(
-    `SELECT b.*,po.project_id,po.vendor_id,po.po_number,po.status AS po_status,p.name AS project_name,p.project_number,p.qbo_customer_id,v.qbo_id AS vendor_qbo_id,v.qbo_w9_id,v.qbo_tax_reviewed_at,v.archived FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id JOIN projects.projects p ON p.id=po.project_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id WHERE b.id=$1 FOR UPDATE OF b`,
+    `SELECT b.*,po.project_id,po.vendor_id,po.po_number,po.status AS po_status,po.kind::text AS kind,po.cost_type::text AS po_cost_type,p.name AS project_name,p.project_number,p.qbo_customer_id,v.qbo_id AS vendor_qbo_id,v.qbo_w9_id,v.qbo_tax_reviewed_at,v.archived FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id JOIN projects.projects p ON p.id=po.project_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id WHERE b.id=$1 FOR UPDATE OF b`,
     [billId],
   );
   const b = result.rows[0];
   if (!b) throw notFound("Vendor bill not found");
   await loadVisibleProject(ctx, b.project_id, "id");
+  if (b.source === "qbo_link") {
+    throw new ApiError(
+      "conflict",
+      "This bill is linked to an existing QuickBooks transaction and will not be sent again.",
+    );
+  }
   if (
     b.status !== "received" &&
     !(
@@ -42,11 +57,17 @@ export async function prepareBillAccounting(
       "conflict",
       "Only a bill awaiting approval can be approved.",
     );
-  if (b.po_status !== "issued")
+  if (b.po_status !== "issued" && b.po_status !== "partially_billed")
     throw new ApiError(
       "conflict",
       "Issue the purchase order before approving its bill.",
     );
+  await assertSubcontractCompliance(
+    ctx.db,
+    { kind: b.kind, vendor_id: b.vendor_id },
+    "bill_approval",
+    b.invoice_date ? String(b.invoice_date) : null,
+  );
   if (!gateway) return; // Standalone installs retain the existing approval workflow.
   if (gateway.tenantId !== ctx.staff.tenantId)
     throw new ApiError(
@@ -114,27 +135,48 @@ export async function prepareBillAccounting(
       "validation_failed",
       "QuickBooks bills require a positive amount and an invoice number no longer than 21 characters.",
     );
-  const bill = {
-    DocNumber: b.vendor_invoice_number,
-    TxnDate: String(b.invoice_date).slice(0, 10),
-    DueDate: String(b.due_date).slice(0, 10),
-    PrivateNote: `Journeyman PM bill ${b.id} | Project ${b.project_number}: ${b.project_name} | PO ${b.po_number}`,
-    Line: [
-      {
-        Amount: Number(b.amount),
-        Description: (
-          b.description || `Project ${b.project_number} / PO ${b.po_number}`
-        ).slice(0, 4000),
-        DetailType: "AccountBasedExpenseLineDetail",
-        AccountBasedExpenseLineDetail: {
-          AccountRef: { value: body.qbo_account_id },
-          ...(b.qbo_customer_id
-            ? { CustomerRef: { value: b.qbo_customer_id }, BillableStatus: "NotBillable" }
-            : {}),
-        },
-      },
-    ],
+  const grouped = await ctx.db.query<{ cost_type: string; gross: string }>(
+    `SELECT l.cost_type::text AS cost_type, SUM(bl.gross_amount)::text AS gross
+       FROM projects.bill_lines bl
+       JOIN projects.po_lines l ON l.id = bl.po_line_id
+      WHERE bl.bill_id = $1
+      GROUP BY l.cost_type`,
+    [billId],
+  );
+  const groups: BillCostGroup[] = grouped.rows.length
+    ? grouped.rows.map((row) => ({ costType: row.cost_type, amount: Number(row.gross) }))
+    : [{ costType: b.po_cost_type ?? "S", amount: Number(b.amount) }];
+  const mapping = await loadCostTypeAccounts(ctx.db);
+  const labels: Record<CostType, string> = {
+    L: "labor",
+    M: "material",
+    S: "subcontract",
+    O: "other",
   };
+  for (const type of COST_TYPES) {
+    const mapped = mapping.accounts[type];
+    if (mapped && !config.accounts.some((account: { id: string }) => account.id === mapped)) {
+      throw new ApiError(
+        "validation_failed",
+        `The ${labels[type]} cost type is mapped to QuickBooks account ${mapped}, which is not in the current chart of accounts. Refresh the lists or clear that mapping before approving.`,
+      );
+    }
+  }
+  const bill = buildVendorBillPayload({
+    id: b.id,
+    invoiceNumber: b.vendor_invoice_number,
+    invoiceDate: String(b.invoice_date),
+    dueDate: String(b.due_date),
+    projectNumber: b.project_number,
+    projectName: b.project_name,
+    poNumber: b.po_number,
+    amount: Number(b.amount),
+    description: b.description ?? "",
+    accountId: body.qbo_account_id,
+    customerId: b.qbo_customer_id,
+    groups,
+    accounts: mapping.accounts,
+  });
   await ctx.db.query(
     `UPDATE projects.vendor_bills SET qbo_account_id=$2 WHERE id=$1`,
     [billId, body.qbo_account_id],
@@ -209,12 +251,72 @@ export function accountingRoutes(
     ),
   );
   router.get(
+    "/accounting/cost-type-accounts",
+    staffRoute(deps, async (ctx) => {
+      sendData(ctx.res, await presentCostTypeAccounts(ctx));
+    }),
+  );
+  router.patch(
+    "/accounting/cost-type-accounts",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_company_settings");
+      const body = parseBody(
+        z.object({
+          agreement_grace_days: z.number().int().min(0).max(365).optional(),
+          accounts: z
+            .object({
+              L: z.string().regex(/^[0-9]+$/).nullable(),
+              M: z.string().regex(/^[0-9]+$/).nullable(),
+              S: z.string().regex(/^[0-9]+$/).nullable(),
+              O: z.string().regex(/^[0-9]+$/).nullable(),
+            })
+            .optional(),
+        }),
+        ctx.req.body,
+      );
+      if (body.accounts) {
+        const config = (
+          await ctx.db.query<{ accounts: Array<{ id: string }> }>(
+            "SELECT accounts FROM projects.accounting_config",
+          )
+        ).rows[0];
+        const known = new Set((config?.accounts ?? []).map((account) => String(account.id)));
+        for (const id of Object.values(body.accounts)) {
+          if (id && !known.has(id)) {
+            throw new ApiError(
+              "validation_failed",
+              "Refresh QuickBooks lists and choose an expense account from the chart. Nothing was saved.",
+            );
+          }
+        }
+      }
+      const current = await loadCostTypeAccounts(ctx.db);
+      const accounts: AccountMapping = body.accounts ?? current.accounts;
+      const grace = body.agreement_grace_days ?? current.graceDays;
+      const updated = await ctx.db.query(
+        `UPDATE projects.tenant_settings
+            SET agreement_grace_days = $2,
+                qbo_account_labor = $3,
+                qbo_account_material = $4,
+                qbo_account_subcontract = $5,
+                qbo_account_other = $6,
+                updated_at = now()
+          WHERE tenant_id = $1`,
+        [ctx.staff.tenantId, grace, accounts.L, accounts.M, accounts.S, accounts.O],
+      );
+      if (updated.rowCount === 0) {
+        throw new ApiError("conflict", "Company settings are not initialized.");
+      }
+      sendData(ctx.res, await presentCostTypeAccounts(ctx));
+    }),
+  );
+  router.get(
     "/projects/:id/vendor-bills",
     staffRoute(deps, async (ctx) => {
       const id = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, id, "id");
       const rows = await ctx.db.query(
-        `SELECT b.id,b.po_id,b.vendor_invoice_number,b.amount,b.retention_held,b.status::text,b.invoice_date,b.due_date,b.description,b.qbo_id,b.qbo_balance,b.qbo_checked_at,b.qbo_message,b.qbo_account_id,b.approved_at,po.po_number,po.amount AS contracted,COALESCE(v.legal_name,po.supplier_name) AS vendor,q.state AS sync_state,q.message AS sync_message,(SELECT COALESCE(sum(other.amount),0) FROM projects.vendor_bills other WHERE other.po_id=po.id AND other.status<>'rejected') AS billed_to_date FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id LEFT JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE po.project_id=$1 ORDER BY b.received_at DESC`,
+        `SELECT b.id,b.po_id,b.vendor_invoice_number,b.amount,b.retention_held,b.source,b.qbo_txn_type,b.status::text,b.invoice_date,b.due_date,b.description,b.qbo_id,b.qbo_balance,b.qbo_checked_at,b.qbo_message,b.qbo_account_id,b.approved_at,po.po_number,po.kind::text AS po_kind,po.amount AS contracted,COALESCE(v.legal_name,po.supplier_name) AS vendor,q.state AS sync_state,q.message AS sync_message,(SELECT COALESCE(sum(other.amount),0) FROM projects.vendor_bills other WHERE other.po_id=po.id AND other.status<>'rejected') AS billed_to_date FROM projects.vendor_bills b JOIN projects.purchase_orders po ON po.id=b.po_id LEFT JOIN projects.vendors v ON v.id=po.vendor_id LEFT JOIN projects.accounting_queue q ON q.record_id=b.id AND q.kind='bill' WHERE po.project_id=$1 ORDER BY b.received_at DESC`,
         [id],
       );
       const p = (
@@ -429,4 +531,23 @@ export function accountingRoutes(
     ),
   );
   return router;
+}
+
+async function presentCostTypeAccounts(ctx: StaffContext) {
+  const saved = await loadCostTypeAccounts(ctx.db);
+  const config = (
+    await ctx.db.query<{ accounts: Array<{ id: string; name: string }> | null }>(
+      "SELECT accounts FROM projects.accounting_config",
+    )
+  ).rows[0];
+  const catalog = (config?.accounts ?? []).map((account) => ({
+    id: String(account.id),
+    name: String(account.name ?? ""),
+  }));
+  return {
+    agreement_grace_days: saved.graceDays,
+    accounts: saved.accounts,
+    suggestions: suggestAccountMapping(catalog),
+    catalog,
+  };
 }
