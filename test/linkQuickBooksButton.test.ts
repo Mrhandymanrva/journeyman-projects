@@ -145,7 +145,7 @@ describe('Link QuickBooks transaction', () => {
       if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
       if (path.includes('/vendor-bills')) return { bills: [material, subcontract], qbo_customer_id: null };
       if (path.includes('/purchase-orders') && !path.includes('qbo-candidates')) return [];
-      if (path.endsWith('/qbo-candidates')) {
+      if (path.includes('/qbo-candidates')) {
         throw new Error(
           'QuickBooks connector is not configured, so the lookup did not run. Nothing was linked or queued.',
         );
@@ -172,6 +172,7 @@ describe('Link QuickBooks transaction', () => {
     expect(nodes.get('drawer-title')!.textContent).toBe('Link QuickBooks transaction');
     expect(nodes.get('drawer-msg')!.textContent).toMatch(/not configured/i);
     expect(nodes.get('drawer-msg')!.textContent).toMatch(/nothing was linked/i);
+    expect(calls.some((path) => path.includes('/qbo-candidates?bill_id=bill-cabinets'))).toBe(true);
     expect(calls.some((path) => path.includes('/approve') || path.includes('link-qbo'))).toBe(false);
   });
 
@@ -181,7 +182,7 @@ describe('Link QuickBooks transaction', () => {
       calls.push({ path, body: options?.body ? String(options.body) : undefined });
       if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
       if (path.includes('/vendor-bills')) return { bills: [material], qbo_customer_id: null };
-      if (path.endsWith('/qbo-candidates')) {
+      if (path.includes('/qbo-candidates')) {
         return {
           transactions: [
             { id: '9001', txn_type: 'Purchase', doc_number: '9001', total: 26080.88, txn_date: '2026-09-18' },
@@ -214,8 +215,9 @@ describe('Link QuickBooks transaction', () => {
           qbo_customer_id: null,
         };
       }
-      if (path.endsWith('/qbo-candidates')) {
+      if (path.includes('/qbo-candidates')) {
         return {
+          truncated: true,
           transactions: [
             { id: 'far', txn_type: 'Purchase', doc_number: 'FAR', total: 500, txn_date: '2026-01-01', vendor_name: 'Other Store', variance: 400 },
             { id: 'card', txn_type: 'Purchase', doc_number: 'CARD', total: 102.5, txn_date: '2026-10-02', vendor_name: 'Home Depot', variance: 2.5 },
@@ -234,5 +236,7 @@ describe('Link QuickBooks transaction', () => {
     expect(options.indexOf('CARD')).toBeLessThan(options.indexOf('FAR'));
     expect(options).toContain('Suggested');
     expect(options).toMatch(/variance/i);
+    expect(options).toContain('id="ap-link-truncated"');
+    expect(options).toMatch(/truncated/i);
   });
 });
