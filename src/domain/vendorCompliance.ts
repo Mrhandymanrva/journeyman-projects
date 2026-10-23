@@ -1,3 +1,4 @@
+import { loadCostTypeAccounts } from './accountMapping.js';
 import type { SqlClient } from '../db/database.js';
 import { ApiError } from '../http/errors.js';
 
@@ -9,8 +10,9 @@ export type ComplianceStage = 'award' | 'issue' | 'bill_approval' | 'payment';
  * Award, issue, and bill approval use the same document rule as scheduling:
  * every requirement that blocks scheduling must be valid or expiring. Bill
  * approval also requires that document to have been unexpired on the invoice
- * date. Payment (the QuickBooks push, at queue time and again in the worker)
- * adds the reviewed W-9: vendor qbo id, attached W-9, and tax review.
+ * date, even when the certificate is valid today. Payment (the QuickBooks
+ * push, at queue time and again in the worker) adds the reviewed W-9: vendor
+ * qbo id, attached W-9, and tax review.
  *
  * qbo_tax_reviewed_at is not required at award or issue. Nothing can set it
  * until a QuickBooks connector has synced the vendor, and a company without
@@ -111,35 +113,69 @@ export interface IssueCheck {
   agreementDocumentId: string | null;
   agreementSignedAt: string | null;
   lineCount: number;
+  /** When the purchase order was created. Create-and-issue passes now, so a new order is inside the grace window. */
+  createdAt?: string | Date | null;
 }
 
-/** Lines, a signed agreement, and compliance. Material purchases skip this. */
-export async function assertReadyToIssue(db: SqlClient, check: IssueCheck): Promise<void> {
-  if (check.kind !== 'subcontract') return;
+export interface IssueWarning {
+  message: string;
+}
+
+/**
+ * Lines, compliance, and the agreement grace. Material purchases skip this.
+ *
+ * A signed vendor master agreement, or another vendor document used as a
+ * per-PO subcontract, satisfies the gate with no warning. With neither, issue
+ * is allowed during agreement_grace_days (default 14, from created_at) and
+ * returns a warning. After that window, issue is blocked. COI and W-9 are
+ * checked first and are not relaxed by the grace window.
+ */
+export async function assertReadyToIssue(db: SqlClient, check: IssueCheck): Promise<IssueWarning | null> {
+  if (check.kind !== 'subcontract') return null;
   if (check.vendorId) await assertVendorCompliant(db, check.vendorId, 'issue');
   if (check.lineCount < 1) {
     throw new ApiError('conflict', 'Add at least one line before issuing this subcontract.');
   }
-  if (!check.agreementDocumentId || !check.agreementSignedAt) {
+  if (check.agreementDocumentId && check.agreementSignedAt) {
+    const doc = await db.query<{ id: string; vendor_id: string; kind: string }>(
+      `SELECT id, vendor_id, kind::text AS kind FROM projects.vendor_documents WHERE id = $1`,
+      [check.agreementDocumentId],
+    );
+    const row = doc.rows[0];
+    if (!row || (row.kind !== 'master_agreement' && row.kind !== 'other')) {
+      throw new ApiError(
+        'conflict',
+        'The agreement must be a master agreement or other document on the vendor. A per-PO subcontract is optional.',
+      );
+    }
+    if (check.vendorId && row.vendor_id !== check.vendorId) {
+      throw new ApiError('conflict', 'That agreement belongs to a different vendor.');
+    }
+    return null;
+  }
+  if (check.agreementDocumentId || check.agreementSignedAt) {
     throw new ApiError(
       'conflict',
-      'A subcontract needs a signed agreement before it can be issued. Attach a master agreement or other vendor document and the date it was signed.',
+      'Attach both the agreement and the date it was signed. A signed vendor master agreement is enough; a per-PO subcontract is optional.',
     );
   }
-  const doc = await db.query<{ id: string; vendor_id: string; kind: string }>(
-    `SELECT id, vendor_id, kind::text AS kind FROM projects.vendor_documents WHERE id = $1`,
-    [check.agreementDocumentId],
+  const { graceDays } = await loadCostTypeAccounts(db);
+  const created = check.createdAt ? new Date(check.createdAt) : new Date();
+  const ageDays = Math.max(0, Math.floor((Date.now() - created.getTime()) / 86_400_000));
+  if (graceDays > 0 && ageDays <= graceDays) {
+    const left = graceDays - ageDays;
+    return {
+      message:
+        `Issued without a signed agreement. This purchase order is ${ageDays} day(s) old and the agreement grace is ${graceDays} days, so issue is allowed with this warning (${left} day(s) left). ` +
+        `After that, issue is blocked until a signed vendor master agreement is attached. A per-PO subcontract is optional.`,
+    };
+  }
+  throw new ApiError(
+    'conflict',
+    graceDays === 0
+      ? 'Issue is blocked: agreement grace is 0 days, so a subcontract cannot be issued without a signed vendor master agreement. A per-PO subcontract is optional and is not required.'
+      : `Issue is blocked: this subcontract is ${ageDays} day(s) old and the ${graceDays}-day agreement grace has ended. Attach a signed vendor master agreement and the date it was signed. A per-PO subcontract is optional and is not required.`,
   );
-  const row = doc.rows[0];
-  if (!row || (row.kind !== 'master_agreement' && row.kind !== 'other')) {
-    throw new ApiError(
-      'conflict',
-      'The agreement must be a master agreement or other document on the vendor.',
-    );
-  }
-  if (check.vendorId && row.vendor_id !== check.vendorId) {
-    throw new ApiError('conflict', 'That agreement belongs to a different vendor.');
-  }
 }
 
 async function blockingDocuments(db: SqlClient, vendorId: string) {

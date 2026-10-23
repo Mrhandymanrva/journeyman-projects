@@ -64,6 +64,23 @@ describe('QuickBooks payables',()=>{
  expect((await owner().get(base+'/accounting/vendors')).body.data[0].qbo_id).toBe('31');
  }finally{t=prior;gateway.tenantId=t.id;receipt=false;}
  });
+ it('suggests cost-type accounts and saves them only when an owner confirms',async()=>{
+ await h.db.withTenant(t.id,s=>s.query(`UPDATE projects.accounting_config SET accounts=$1::jsonb`,[JSON.stringify([{id:'11',name:'Field Labor'},{id:'22',name:'Cost of Goods Sold'},{id:'71',name:'Subcontractors'},{id:'44',name:'Overhead'}])]));
+ const before=await owner().get(base+'/accounting/cost-type-accounts');
+ expect(before.status).toBe(200);
+ expect(before.body.data.suggestions).toEqual({L:'11',M:'22',S:'71',O:'44'});
+ expect(before.body.data.accounts).toEqual({L:null,M:null,S:null,O:null});
+ expect(before.body.data.agreement_grace_days).toBe(14);
+ const refused=await h.as(t.staff.bookkeeper!.token).patch(base+'/accounting/cost-type-accounts').send({agreement_grace_days:3,accounts:{L:'11',M:'22',S:'71',O:'44'}});
+ expect(refused.status).toBe(403);
+ const still=await owner().get(base+'/accounting/cost-type-accounts');
+ expect(still.body.data.accounts.L).toBeNull();
+ const saved=await owner().patch(base+'/accounting/cost-type-accounts').send({agreement_grace_days:21,accounts:{L:'11',M:null,S:'71',O:null}});
+ expect(saved.status,JSON.stringify(saved.body)).toBe(200);
+ expect(saved.body.data.accounts).toMatchObject({L:'11',M:null,S:'71',O:null});
+ expect(saved.body.data.agreement_grace_days).toBe(21);
+ expect(saved.body.data.suggestions.M).toBe('22');
+ });
  it('blocks conflicting vendor matches rather than creating duplicates',async()=>{
  const prior=t;try{t=await createTenant(h,{slug:'conflicting-qbo-vendor'});gateway.tenantId=t.id;receipt=true;calls=[];
  const response=await owner().post(base+'/vendors').send({legal_name:'Existing plumber',email:'different@example.com',primary_contact:'Pat',phone:'8045550100',address:'1 Main Street'});const id=response.body.data.id;

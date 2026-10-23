@@ -1210,17 +1210,23 @@ function renderPurchaseOrders(pos) {
 }
 
 async function issuePoDrawer() {
-  const [codes, vendors] = await Promise.all([
+  const [codes, vendors, accountSettings] = await Promise.all([
     api("/cost-codes"),
     api("/vendors?per_page=200"),
+    api("/accounting/cost-type-accounts"),
   ]);
+  const graceDays = Number(accountSettings?.agreement_grace_days ?? 14);
   openDrawer(
     "Issue a purchase order",
     `${messageSlot}
      <p class="note">A vendor must be compliant to be issued a purchase order.
      Committing money to someone who cannot legally be put on site is the
      expensive half of that mistake, and it happens days before anyone tries to
-     schedule them.</p>
+     schedule them. A signed vendor master agreement satisfies the agreement
+     gate. A per-PO subcontract is optional. With neither, a subcontract can
+     still be issued for ${graceDays} days after it is created, and the screen
+     shows a warning. After that, issue is blocked and the message says why.
+     Certificates of insurance and the W-9 check are unchanged.</p>
      ${field("PO number", '<input id="po-number" placeholder="PO-0001">')}
      ${field(
        "Vendor",
@@ -1246,7 +1252,7 @@ async function issuePoDrawer() {
      ${field("Scope of work", '<textarea id="po-scope"></textarea>')}
      ${field("Exclusions", '<textarea id="po-excl"></textarea>')}
      ${field("Agreement signed", '<input id="po-signed" type="date">')}
-     ${field("Signed agreement", '<select id="po-agreement"><option value="">— required to issue a subcontract —</option></select>')}
+     ${field("Signed agreement", `<select id="po-agreement"><option value="">— none; a warning applies for ${graceDays} days —</option></select>`)}
      ${field("ServiceTitan job", '<select id="po-st-job"><option value="">— none —</option></select>')}
      <p class="note" id="po-st-project"></p>
      <label style="display:flex;gap:8px;align-items:center;margin-bottom:16px">
@@ -1268,7 +1274,7 @@ async function issuePoDrawer() {
       followCode();
       const loadAgreement = async () => {
         const id = el("po-vendor").value;
-        el("po-agreement").innerHTML = '<option value="">— required to issue a subcontract —</option>';
+        el("po-agreement").innerHTML = `<option value="">— none; a warning applies for ${graceDays} days —</option>`;
         if (!id) return;
         const vendor = await api(`/vendors/${id}`);
         for (const doc of vendor.documents || []) {
@@ -1316,6 +1322,7 @@ async function issuePoDrawer() {
             }),
           }).then((created) => {
             if (created.warning) window.alert(created.warning.message);
+            if (created.agreement_warning) window.alert(created.agreement_warning.message);
           }),
         ),
       );
