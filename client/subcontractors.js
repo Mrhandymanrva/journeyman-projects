@@ -540,7 +540,7 @@ export function createSubcontractors({
     const b = await api("/bid-requests/" + id);
     open(
       b.subject,
-      `<p class="sub-pre">${esc(b.scope)}</p><p>Quote due: ${date(b.due_on)} · Work: ${date(b.window_start)} → ${date(b.window_end)}</p><div class="sub-selection">${button("bid-back", "All bid requests")}${!b.closed_at && can("send_change_order") ? button("bid-outlook", "Prepare Outlook emails", true) + button("bid-close", "Close bidding") : ""}${button("bid-refresh", "Refresh responses")}</div><p>Outlook sends from the default mailbox on this machine. Mark each request sent after using Outlook. Responses submitted through the private link appear here; ordinary email replies can be recorded manually. Awarding a bid does not create a contract or purchase order.</p><div class="sub-table"><table><thead><tr><th>Subcontractor</th><th>Delivery</th><th>Response</th><th>Quote</th><th>Available</th><th></th></tr></thead><tbody>${b.recipients.map((r) => `<tr><td>${esc(r.legal_name)}<small>${esc(r.email)}</small></td><td>${esc(r.delivery_status)}<small>${date(r.sent_at)}</small></td><td>${esc(r.response_status)}<small>${date(r.responded_at)}</small><small>${esc(r.response_notes ?? "")}</small></td><td>${r.quote_amount == null ? "—" : money(r.quote_amount, b.currency)}</td><td>${date(r.available_from)}</td><td>${can("send_change_order") ? `<button class="btn sm" data-response="${r.id}">Record / update</button>` : ""}</td></tr>`).join("")}</tbody></table></div>`,
+      `<p class="sub-pre">${esc(b.scope)}</p><p>Quote due: ${date(b.due_on)} · Work: ${date(b.window_start)} → ${date(b.window_end)}</p><div class="sub-selection">${button("bid-back", "All bid requests")}${!b.closed_at && can("send_change_order") ? button("bid-outlook", "Prepare Outlook emails", true) + button("bid-close", "Close bidding") : ""}${button("bid-refresh", "Refresh responses")}</div><p>Outlook sends from the default mailbox on this machine. Mark each request sent after using Outlook. Responses submitted through the private link appear here; ordinary email replies can be recorded manually. Award creates a draft subcontract purchase order from the quote. It does not issue the purchase order.</p><div class="sub-table"><table><thead><tr><th>Subcontractor</th><th>Delivery</th><th>Response</th><th>Quote</th><th>Available</th><th></th></tr></thead><tbody>${b.recipients.map((r) => `<tr><td>${esc(r.legal_name)}<small>${esc(r.email)}</small></td><td>${esc(r.delivery_status)}<small>${date(r.sent_at)}</small></td><td>${esc(r.response_status)}<small>${date(r.responded_at)}</small><small>${esc(r.response_notes ?? "")}</small></td><td>${r.quote_amount == null ? "—" : money(r.quote_amount, b.currency)}</td><td>${date(r.available_from)}</td><td>${can("send_change_order") ? `<button class="btn sm" data-response="${r.id}">Record / update</button>` : ""}${can("issue_purchase_order") && !b.closed_at && r.response_status !== "awarded" ? `<button class="btn sm" data-award="${r.id}">Award</button>` : ""}${r.awarded_po_id ? `<small>Draft PO recorded</small>` : ""}</td></tr>`).join("")}</tbody></table></div>`,
       () => {
         action("bid-back", bidList);
         action("bid-refresh", () => bidDetail(id));
@@ -557,6 +557,14 @@ export function createSubcontractors({
             ),
           ),
         );
+        document.querySelectorAll("[data-award]").forEach((btn) =>
+          btn.addEventListener("click", () =>
+            awardRecipient(
+              id,
+              b.recipients.find((r) => r.id === btn.dataset.award),
+            ),
+          ),
+        );
       },
     );
   }
@@ -565,7 +573,7 @@ export function createSubcontractors({
       "Response — " + r.legal_name,
       field(
         "Response status",
-        `<select id="reply-status">${["awaiting", "interested", "declined", "quoted", "awarded", "not_selected"].map((s) => `<option ${s === r.response_status ? "selected" : ""}>${s}</option>`).join("")}</select>`,
+        `<select id="reply-status">${["awaiting", "interested", "declined", "quoted", "not_selected"].map((s) => `<option ${s === r.response_status ? "selected" : ""}>${s}</option>`).join("")}</select>`,
       ) +
         field(
           "Quoted amount",
@@ -598,6 +606,37 @@ export function createSubcontractors({
               response_notes: el("reply-notes").value,
             }),
           });
+          await bidDetail(id);
+        }),
+    );
+  }
+  async function awardRecipient(id, r) {
+    const codes = await api("/cost-codes");
+    open(
+      "Award " + r.legal_name,
+      `<p class="note">This creates a draft subcontract purchase order. It does not issue it. Pick a cost code only when the bid has no lines.</p>` +
+        field("PO number", input("award-po", "", "text")) +
+        field(
+          "Cost code",
+          `<select id="award-code"><option value="">— bid lines, if any —</option>${codes
+            .map((c) => `<option value="${c.id}">${esc(c.code)} ${esc(c.description)}</option>`)
+            .join("")}</select>`,
+        ) +
+        button("award-save", "Create draft purchase order", true),
+      () =>
+        action("award-save", async () => {
+          const result = await api(
+            "/bid-requests/" + id + "/recipients/" + r.id + "/award",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                po_number: el("award-po").value.trim(),
+                cost_code_id: el("award-code").value || undefined,
+                cost_type: "S",
+              }),
+            },
+          );
+          window.alert("Draft purchase order " + (result.po_number || result.id));
           await bidDetail(id);
         }),
     );

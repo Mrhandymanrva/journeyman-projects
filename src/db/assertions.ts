@@ -80,6 +80,8 @@ export const TENANT_SCOPED_TABLES = [
   'dispatch_changes',
   'st_project_connections',
   'bid_requests',
+  'bid_request_lines',
+  'bid_quote_lines',
   'bid_recipients',
   'dispatch_snapshots',
   'reconciliation_snapshots',

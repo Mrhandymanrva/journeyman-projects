@@ -9,7 +9,10 @@ import {
 import { requireCapability, unitFilter } from "../http/capabilities.js";
 import { ApiError, notFound } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
-import { parseBody, parseUuidParam, loadVisibleProject } from "./shared.js";
+import { parseBody, parseUuidParam, loadVisibleProject, requireOwnedRow, num } from "./shared.js";
+import { assertVendorCompliant } from "../domain/vendorCompliance.js";
+import { roundMoney } from "../domain/poMath.js";
+import type { SqlClient } from "../db/database.js";
 import {
   bidToken,
   tokenHash,
@@ -138,7 +141,7 @@ export function bidRequestRoutes(
       const id = parseUuidParam(ctx.req.params.id, "Bid request"),
         b = await request(ctx, id);
       const r = await ctx.db.query(
-        `SELECT r.id,r.vendor_id,r.email,r.delivery_status,r.response_status,r.quote_amount::text,r.response_notes,r.available_from,r.sent_at,r.responded_at,r.last_error,r.history,v.legal_name,v.trades FROM projects.bid_recipients r JOIN projects.vendors v ON v.id=r.vendor_id WHERE r.request_id=$1 ORDER BY v.legal_name`,
+        `SELECT r.id,r.vendor_id,r.email,r.delivery_status,r.response_status,r.quote_amount::text,r.response_notes,r.available_from,r.sent_at,r.responded_at,r.last_error,r.history,r.awarded_po_id,v.legal_name,v.trades FROM projects.bid_recipients r JOIN projects.vendors v ON v.id=r.vendor_id WHERE r.request_id=$1 ORDER BY v.legal_name`,
         [id],
       );
       sendData(ctx.res, {
@@ -158,6 +161,12 @@ export function bidRequestRoutes(
         recipient = parseUuidParam(ctx.req.params.recipientId, "Recipient");
       await request(ctx, id);
       const b = parseBody(response, ctx.req.body);
+      if (b.response_status === "awarded") {
+        throw new ApiError(
+          "conflict",
+          "Award the recipient with POST /bid-requests/:id/recipients/:recipientId/award. That creates the draft purchase order.",
+        );
+      }
       const r = await ctx.db.query(
         `UPDATE projects.bid_recipients SET response_status=$3,quote_amount=$4,response_notes=$5,available_from=$6,responded_at=now(),history=history||$7::jsonb WHERE id=$1 AND request_id=$2 RETURNING id`,
         [
@@ -187,6 +196,371 @@ export function bidRequestRoutes(
         [id],
       );
       sendData(ctx.res, { closed: true });
+    }),
+  );
+  router.get(
+    "/bid-requests/:id/lines",
+    staffRoute(deps, async (ctx) => {
+      const id = parseUuidParam(ctx.req.params.id, "Bid request");
+      const bid = await request(ctx, id);
+      if (ctx.req.query.seed === "budget") {
+        const seed = await ctx.db.query(
+          `SELECT b.id AS budget_line_id, b.cost_code_id, b.cost_type::text AS cost_type,
+                  cc.code AS cost_code, cc.description
+             FROM projects.budget_lines b
+             JOIN projects.cost_codes cc ON cc.id = b.cost_code_id
+            WHERE b.project_id = $1
+            ORDER BY cc.sort_order, b.cost_type`,
+          [bid.project_id],
+        );
+        sendData(ctx.res, { lines: await listBidLines(ctx, id), seed: seed.rows });
+        return;
+      }
+      sendData(ctx.res, { lines: await listBidLines(ctx, id) });
+    }),
+  );
+  router.put(
+    "/bid-requests/:id/lines",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "issue_purchase_order");
+      const id = parseUuidParam(ctx.req.params.id, "Bid request");
+      const bid = await request(ctx, id);
+      if (bid.closed_at) throw new ApiError("conflict", "This bid request is closed.");
+      const body = parseBody(
+        z.object({
+          lines: z
+            .array(
+              z.object({
+                cost_code_id: z.string().uuid(),
+                cost_type: z.enum(["L", "M", "S", "O"]).default("S"),
+                description: z.string().max(2000).optional(),
+                budget_line_id: z.string().uuid().nullish(),
+              }),
+            )
+            .max(200),
+        }),
+        ctx.req.body,
+      );
+      let lines = body.lines;
+      if (ctx.req.query.seed === "budget") {
+        const seed = await ctx.db.query<{
+          budget_line_id: string;
+          cost_code_id: string;
+          cost_type: "L" | "M" | "S" | "O";
+          description: string;
+        }>(
+          `SELECT b.id AS budget_line_id, b.cost_code_id, b.cost_type::text AS cost_type, cc.description
+             FROM projects.budget_lines b
+             JOIN projects.cost_codes cc ON cc.id = b.cost_code_id
+            WHERE b.project_id = $1
+            ORDER BY cc.sort_order, b.cost_type`,
+          [bid.project_id],
+        );
+        lines = seed.rows;
+      }
+      await ctx.db.query(`DELETE FROM projects.bid_request_lines WHERE bid_request_id = $1`, [id]);
+      let n = 0;
+      for (const line of lines) {
+        await requireOwnedRow(ctx.db, "cost_codes", line.cost_code_id, "cost_code_id", "AND active");
+        n += 1;
+        await ctx.db.query(
+          `INSERT INTO projects.bid_request_lines
+             (tenant_id, bid_request_id, line_no, cost_code_id, cost_type, budget_line_id, description)
+           VALUES ($1,$2,$3,$4,$5::projects.cost_type,$6,$7)`,
+          [
+            ctx.staff.tenantId,
+            id,
+            n,
+            line.cost_code_id,
+            line.cost_type,
+            line.budget_line_id ?? null,
+            line.description ?? "",
+          ],
+        );
+      }
+      sendData(ctx.res, { lines: await listBidLines(ctx, id) });
+    }),
+  );
+  router.put(
+    "/bid-requests/:id/recipients/:recipientId/quote-lines",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "issue_purchase_order");
+      const id = parseUuidParam(ctx.req.params.id, "Bid request");
+      const recipientId = parseUuidParam(ctx.req.params.recipientId, "Recipient");
+      await request(ctx, id);
+      const body = parseBody(
+        z.object({
+          lines: z.array(
+            z.object({
+              bid_request_line_id: z.string().uuid(),
+              amount: z.number().min(0),
+              note: z.string().max(2000).nullish(),
+            }),
+          ),
+        }),
+        ctx.req.body,
+      );
+      await replaceQuoteLines(ctx.db, ctx.staff.tenantId, id, recipientId, body.lines);
+      sendData(ctx.res, { saved: true });
+    }),
+  );
+  router.get(
+    "/bid-requests/:id/leveling",
+    staffRoute(deps, async (ctx) => {
+      const id = parseUuidParam(ctx.req.params.id, "Bid request");
+      await request(ctx, id);
+      const lines = await ctx.db.query<{
+        id: string;
+        line_no: number;
+        cost_code_id: string;
+        cost_code: string;
+        description: string;
+        cost_type: string;
+        budget_amount: string | null;
+      }>(
+        `SELECT l.id, l.line_no, l.cost_code_id, cc.code AS cost_code, l.description,
+                l.cost_type::text AS cost_type, bl.budget_amount::text AS budget_amount
+           FROM projects.bid_request_lines l
+           JOIN projects.cost_codes cc ON cc.id = l.cost_code_id
+           LEFT JOIN projects.budget_lines bl ON bl.id = l.budget_line_id
+          WHERE l.bid_request_id = $1
+          ORDER BY l.line_no`,
+        [id],
+      );
+      const recipients = await ctx.db.query<{
+        id: string;
+        vendor_id: string;
+        legal_name: string;
+        quote_amount: string | null;
+        response_status: string;
+        schedulable: boolean | null;
+        missing_count: string | null;
+        expired_count: string | null;
+      }>(
+        `SELECT r.id, r.vendor_id, v.legal_name, r.quote_amount::text AS quote_amount,
+                r.response_status, e.schedulable, e.missing_count::text AS missing_count,
+                e.expired_count::text AS expired_count
+           FROM projects.bid_recipients r
+           JOIN projects.vendors v ON v.id = r.vendor_id
+           LEFT JOIN projects.v_vendor_eligibility e ON e.vendor_id = r.vendor_id
+          WHERE r.request_id = $1
+          ORDER BY v.legal_name`,
+        [id],
+      );
+      const quotes = await ctx.db.query<{
+        bid_recipient_id: string;
+        bid_request_line_id: string;
+        amount: string;
+      }>(
+        `SELECT q.bid_recipient_id, q.bid_request_line_id, q.amount::text AS amount
+           FROM projects.bid_quote_lines q
+           JOIN projects.bid_recipients r ON r.id = q.bid_recipient_id
+          WHERE r.request_id = $1`,
+        [id],
+      );
+      const byLine = new Map<string, Map<string, number>>();
+      for (const quote of quotes.rows) {
+        const row = byLine.get(quote.bid_request_line_id) ?? new Map<string, number>();
+        row.set(quote.bid_recipient_id, Number(quote.amount));
+        byLine.set(quote.bid_request_line_id, row);
+      }
+      sendData(ctx.res, {
+        lines: lines.rows.map((line) => {
+          const amounts = byLine.get(line.id) ?? new Map<string, number>();
+          const quoted = [...amounts.values()];
+          const budget = line.budget_amount == null ? null : Number(line.budget_amount);
+          const low = quoted.length ? Math.min(...quoted) : null;
+          return {
+            id: line.id,
+            line_no: line.line_no,
+            cost_code_id: line.cost_code_id,
+            cost_code: line.cost_code,
+            cost_type: line.cost_type,
+            description: line.description,
+            budget_amount: budget,
+            low_amount: low,
+            variance_vs_budget: budget == null || low == null ? null : roundMoney(low - budget),
+            quotes: recipients.rows.map((recipient) => ({
+              recipient_id: recipient.id,
+              amount: amounts.has(recipient.id) ? amounts.get(recipient.id) : null,
+              missing: !amounts.has(recipient.id),
+            })),
+          };
+        }),
+        recipients: recipients.rows.map((recipient) => {
+          const quotedLines = lines.rows.filter((line) => byLine.get(line.id)?.has(recipient.id));
+          const total = lines.rows.reduce(
+            (sum, line) => sum + (byLine.get(line.id)?.get(recipient.id) ?? 0),
+            0,
+          );
+          return {
+            id: recipient.id,
+            vendor_id: recipient.vendor_id,
+            legal_name: recipient.legal_name,
+            response_status: recipient.response_status,
+            quote_amount: recipient.quote_amount == null ? null : Number(recipient.quote_amount),
+            total: lines.rows.length ? roundMoney(total) : recipient.quote_amount == null ? null : Number(recipient.quote_amount),
+            missing_lines: lines.rows.length - quotedLines.length,
+            schedulable: recipient.schedulable === true,
+            missing_count: Number(recipient.missing_count ?? 0),
+            expired_count: Number(recipient.expired_count ?? 0),
+          };
+        }),
+      });
+    }),
+  );
+  router.post(
+    "/bid-requests/:id/recipients/:recipientId/award",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "issue_purchase_order");
+      const id = parseUuidParam(ctx.req.params.id, "Bid request");
+      const recipientId = parseUuidParam(ctx.req.params.recipientId, "Recipient");
+      const bid = await request(ctx, id);
+      const recipient = await ctx.db.query<{
+        id: string;
+        vendor_id: string;
+        quote_amount: string | null;
+        awarded_po_id: string | null;
+        response_status: string;
+      }>(
+        `SELECT id, vendor_id, quote_amount::text AS quote_amount, awarded_po_id, response_status
+           FROM projects.bid_recipients WHERE id = $1 AND request_id = $2`,
+        [recipientId, id],
+      );
+      const row = recipient.rows[0];
+      if (!row) throw notFound("Recipient not found");
+      if (row.awarded_po_id) {
+        const existing = await ctx.db.query(
+          `SELECT id, po_number, status::text AS status, amount FROM projects.purchase_orders WHERE id = $1`,
+          [row.awarded_po_id],
+        );
+        sendData(ctx.res, { ...existing.rows[0], amount: num(existing.rows[0]?.amount), idempotent: true });
+        return;
+      }
+      if (bid.closed_at) throw new ApiError("conflict", "This bid request is already closed.");
+      const body = parseBody(
+        z.object({
+          po_number: z.string().min(1).max(64),
+          scope_text: z.string().min(1).optional(),
+          cost_code_id: z.string().uuid().optional(),
+          cost_type: z.enum(["L", "M", "S", "O"]).optional(),
+        }),
+        ctx.req.body,
+      );
+      await assertVendorCompliant(ctx.db, row.vendor_id, "award");
+      const requestLines = await listBidLines(ctx, id);
+      let poLines: Array<{
+        cost_code_id: string;
+        cost_type: string;
+        description: string;
+        amount: number;
+        budget_line_id: string | null;
+      }>;
+      if (requestLines.length === 0) {
+        if (!body.cost_code_id) {
+          throw new ApiError(
+            "validation_failed",
+            "Choose a cost code. This bid request has no lines, so the draft purchase order needs one.",
+          );
+        }
+        if (row.quote_amount == null) {
+          throw new ApiError("conflict", "Record a quote amount before awarding this recipient.");
+        }
+        await requireOwnedRow(ctx.db, "cost_codes", body.cost_code_id, "cost_code_id", "AND active");
+        poLines = [
+          {
+            cost_code_id: body.cost_code_id,
+            cost_type: body.cost_type ?? "S",
+            description: "",
+            amount: Number(row.quote_amount),
+            budget_line_id: null,
+          },
+        ];
+      } else {
+        const quotes = await ctx.db.query<{ bid_request_line_id: string; amount: string }>(
+          `SELECT bid_request_line_id, amount::text AS amount
+             FROM projects.bid_quote_lines WHERE bid_recipient_id = $1`,
+          [recipientId],
+        );
+        const amounts = new Map(quotes.rows.map((quote) => [quote.bid_request_line_id, Number(quote.amount)]));
+        const missing = requestLines.filter((line) => !amounts.has(String(line.id)));
+        if (missing.length) {
+          throw new ApiError(
+            "conflict",
+            "Every bid line needs a quote before this recipient can be awarded.",
+            { missing_line_ids: missing.map((line) => line.id) },
+          );
+        }
+        poLines = requestLines.map((line) => ({
+          cost_code_id: String(line.cost_code_id),
+          cost_type: String(line.cost_type),
+          description: String(line.description ?? ""),
+          amount: amounts.get(String(line.id)) ?? 0,
+          budget_line_id: (line.budget_line_id as string | null) ?? null,
+        }));
+      }
+      const first = poLines[0]!;
+      const created = await ctx.db.query<{ id: string; po_number: string; status: string; amount: string }>(
+        `INSERT INTO projects.purchase_orders
+           (tenant_id, project_id, po_number, vendor_id, cost_code_id, cost_type, amount, scope_text,
+            status, kind, source_bid_recipient_id)
+         VALUES ($1,$2,$3,$4,$5,$6::projects.cost_type,0,$7,'draft','subcontract',$8)
+         RETURNING id, po_number, status::text AS status, amount::text AS amount`,
+        [
+          ctx.staff.tenantId,
+          bid.project_id,
+          body.po_number,
+          row.vendor_id,
+          first.cost_code_id,
+          first.cost_type,
+          body.scope_text ?? bid.scope,
+          recipientId,
+        ],
+      );
+      const po = created.rows[0]!;
+      let lineNo = 0;
+      for (const line of poLines) {
+        lineNo += 1;
+        await ctx.db.query(
+          `INSERT INTO projects.po_lines
+             (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount, budget_line_id)
+           VALUES ($1,$2,$3,$4,$5::projects.cost_type,$6,$7,$8)`,
+          [
+            ctx.staff.tenantId,
+            po.id,
+            lineNo,
+            line.cost_code_id,
+            line.cost_type,
+            line.description,
+            line.amount,
+            line.budget_line_id,
+          ],
+        );
+      }
+      await ctx.db.query(
+        `UPDATE projects.bid_recipients
+            SET response_status = CASE WHEN id = $2 THEN 'awarded' ELSE 'not_selected' END,
+                awarded_po_id = CASE WHEN id = $2 THEN $3 ELSE awarded_po_id END
+          WHERE request_id = $1 AND response_status <> 'awarded'`,
+        [id, recipientId, po.id],
+      );
+      await ctx.db.query(`UPDATE projects.bid_requests SET closed_at = now() WHERE id = $1`, [id]);
+      const stored = await ctx.db.query<{ amount: string }>(
+        `SELECT amount::text AS amount FROM projects.purchase_orders WHERE id = $1`,
+        [po.id],
+      );
+      sendData(
+        ctx.res,
+        {
+          id: po.id,
+          po_number: po.po_number,
+          status: "draft",
+          amount: Number(stored.rows[0]?.amount ?? 0),
+          idempotent: false,
+        },
+        undefined,
+        201,
+      );
     }),
   );
   async function prepare(ctx: StaffContext, sending: boolean) {
@@ -366,34 +740,108 @@ export function bidResponseRoutes(db: Database) {
         response
           .extend({
             response_status: z.enum(["interested", "declined", "quoted"]),
+            lines: z
+              .array(
+                z.object({
+                  bid_request_line_id: z.string().uuid(),
+                  amount: z.number().min(0),
+                  note: z.string().max(2000).nullish(),
+                }),
+              )
+              .optional(),
           })
           .refine(
-            (x) => x.response_status !== "quoted" || x.quote_amount != null,
+            (x) =>
+              x.response_status !== "quoted" ||
+              x.quote_amount != null ||
+              (x.lines?.length ?? 0) > 0,
             "A quoted amount is required",
           ),
         req.body,
       );
+      const quoted = b.lines?.length
+        ? roundMoney(b.lines.reduce((sum, line) => sum + line.amount, 0))
+        : (b.quote_amount ?? null);
       await client.query(
         `UPDATE projects.bid_recipients SET response_status=$2,quote_amount=$3,response_notes=$4,available_from=$5,responded_at=now(),history=history||$6::jsonb WHERE id=$1`,
         [
           row.id,
           b.response_status,
-          b.quote_amount ?? null,
+          quoted,
           b.response_notes ?? null,
           b.available_from ?? null,
           JSON.stringify([
             {
               at: new Date().toISOString(),
               actor: "subcontractor response link",
-              ...b,
+              response_status: b.response_status,
+              quote_amount: quoted,
             },
           ]),
         ],
       );
+      if (b.lines) {
+        await replaceQuoteLines(
+          client,
+          parseUuidParam(req.params.tenantId, "Request"),
+          row.request_id,
+          row.id,
+          b.lines,
+        );
+      }
       return { saved: true };
     })
       .then((data) => sendData(res, data))
       .catch(next);
   });
   return router;
+}
+
+async function listBidLines(ctx: StaffContext, requestId: string) {
+  const rows = await ctx.db.query(
+    `SELECT l.id, l.line_no, l.cost_code_id, cc.code AS cost_code, l.cost_type::text AS cost_type,
+            l.description, l.budget_line_id
+       FROM projects.bid_request_lines l
+       JOIN projects.cost_codes cc ON cc.id = l.cost_code_id
+      WHERE l.bid_request_id = $1
+      ORDER BY l.line_no`,
+    [requestId],
+  );
+  return rows.rows;
+}
+
+async function replaceQuoteLines(
+  db: SqlClient,
+  tenantId: string,
+  requestId: string,
+  recipientId: string,
+  lines: Array<{ bid_request_line_id: string; amount: number; note?: string | null }>,
+) {
+  const recipient = await db.query(
+    `SELECT id FROM projects.bid_recipients WHERE id = $1 AND request_id = $2`,
+    [recipientId, requestId],
+  );
+  if (!recipient.rows[0]) throw notFound("Recipient not found");
+  await db.query(`DELETE FROM projects.bid_quote_lines WHERE bid_recipient_id = $1`, [recipientId]);
+  for (const line of lines) {
+    const match = await db.query(
+      `SELECT id FROM projects.bid_request_lines WHERE id = $1 AND bid_request_id = $2`,
+      [line.bid_request_line_id, requestId],
+    );
+    if (!match.rows[0]) {
+      throw new ApiError("conflict", "That line is not on this bid request.");
+    }
+    await db.query(
+      `INSERT INTO projects.bid_quote_lines
+         (tenant_id, bid_recipient_id, bid_request_line_id, amount, note)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [tenantId, recipientId, line.bid_request_line_id, line.amount, line.note ?? null],
+    );
+  }
+  await db.query(
+    `UPDATE projects.bid_recipients
+        SET quote_amount = (SELECT COALESCE(SUM(amount), 0) FROM projects.bid_quote_lines WHERE bid_recipient_id = $1)
+      WHERE id = $1`,
+    [recipientId],
+  );
 }

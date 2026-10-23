@@ -249,7 +249,7 @@ afterAll(async () => {
   await h?.close();
 });
 
-type Method = "get" | "post" | "patch" | "delete";
+type Method = "get" | "post" | "put" | "patch" | "delete";
 
 interface RouteCase {
   method: Method;
@@ -368,6 +368,46 @@ const ROUTES: RouteCase[] = [
     template: BASE + "/bid-requests/:id/send",
     path: (f) => BASE + "/bid-requests/:id/send".replace(":id", f.bidId),
     body: () => ({}),
+  },
+  {
+    method: "get",
+    template: BASE + "/bid-requests/:id/lines",
+    path: (f) => BASE + "/bid-requests/" + f.bidId + "/lines",
+  },
+  {
+    method: "put",
+    template: BASE + "/bid-requests/:id/lines",
+    path: (f) => BASE + "/bid-requests/" + f.bidId + "/lines",
+    body: () => ({ lines: [] }),
+  },
+  {
+    method: "put",
+    template: BASE + "/bid-requests/:id/recipients/:recipientId/quote-lines",
+    path: (f) =>
+      BASE +
+      "/bid-requests/" +
+      f.bidId +
+      "/recipients/" +
+      f.recipientId +
+      "/quote-lines",
+    body: () => ({ lines: [] }),
+  },
+  {
+    method: "get",
+    template: BASE + "/bid-requests/:id/leveling",
+    path: (f) => BASE + "/bid-requests/" + f.bidId + "/leveling",
+  },
+  {
+    method: "post",
+    template: BASE + "/bid-requests/:id/recipients/:recipientId/award",
+    path: (f) =>
+      BASE +
+      "/bid-requests/" +
+      f.bidId +
+      "/recipients/" +
+      f.recipientId +
+      "/award",
+    body: () => ({ po_number: "FOREIGN" }),
   },
   {
     method: "get",
@@ -898,6 +938,8 @@ describe("cross-tenant isolation", () => {
         ? await req.get(path)
         : route.method === "post"
           ? await req.post(path).send(route.body?.(foreign) ?? {})
+          : route.method === "put"
+            ? await req.put(path).send(route.body?.(foreign) ?? {})
           : route.method === "delete"
             ? await req.del(path)
             : await req.patch(path).send(route.body?.(foreign) ?? {});
@@ -1027,6 +1069,8 @@ describe("cross-tenant isolation", () => {
           ? await req.get(path)
           : route.method === "post"
             ? await req.post(path).send(route.body?.(foreign) ?? {})
+            : route.method === "put"
+              ? await req.put(path).send(route.body?.(foreign) ?? {})
             : route.method === "delete"
               ? await req.del(path)
               : await req.patch(path).send(route.body?.(foreign) ?? {});

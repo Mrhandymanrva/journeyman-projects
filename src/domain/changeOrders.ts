@@ -1,4 +1,6 @@
 import type { SqlClient } from '../db/database.js';
+import { ApiError } from '../http/errors.js';
+import { assertSubcontractCompliance } from './vendorCompliance.js';
 
 /**
  * What approving a change order does to the project.
@@ -103,4 +105,133 @@ export async function applyApprovedChangeOrder(
     budgetLinesUpdated: updated,
     scheduleEndMovedTo: schedule.rows[0]?.scheduled_end ?? null,
   };
+}
+
+export interface PurchaseOrderLineEffect {
+  linesApplied: number;
+  linesAlreadyApplied: number;
+}
+
+/**
+ * Copy change-order lines that name a purchase order onto that order.
+ *
+ * Match an existing PO line on cost code and cost type. Otherwise add a line
+ * whose original amount stays 0 and whose change amount is this line. The
+ * po_line_changes unique key makes a repeated approval add the money once.
+ * Budget application is separate and must not run again.
+ */
+export async function applyChangeOrderToPurchaseOrders(
+  db: SqlClient,
+  tenantId: string,
+  projectId: string,
+  changeOrderId: string,
+  staffId: string,
+): Promise<PurchaseOrderLineEffect> {
+  const lines = await db.query<{
+    id: string;
+    po_id: string;
+    cost_code_id: string;
+    cost_type: string;
+    amount: string;
+    description: string | null;
+  }>(
+    `SELECT id, po_id, cost_code_id, cost_type::text AS cost_type, amount::text AS amount, description
+       FROM projects.change_order_lines
+      WHERE change_order_id = $1 AND po_id IS NOT NULL`,
+    [changeOrderId],
+  );
+
+  let applied = 0;
+  let already = 0;
+  for (const line of lines.rows) {
+    const po = await db.query<{
+      id: string;
+      project_id: string;
+      status: string;
+      kind: string;
+      vendor_id: string | null;
+    }>(
+      `SELECT id, project_id, status::text AS status, kind::text AS kind, vendor_id
+         FROM projects.purchase_orders WHERE id = $1`,
+      [line.po_id],
+    );
+    const order = po.rows[0];
+    if (!order || order.project_id !== projectId) {
+      throw new ApiError('conflict', 'That purchase order is not on this project.');
+    }
+    if (order.status === 'void') {
+      throw new ApiError('conflict', 'A void purchase order cannot take a change order.');
+    }
+    const amount = Number(line.amount);
+    const existingChange = await db.query<{ id: string }>(
+      `SELECT id FROM projects.po_line_changes WHERE change_order_line_id = $1`,
+      [line.id],
+    );
+    if (
+      existingChange.rows.length === 0 &&
+      ['issued', 'partially_billed', 'closed'].includes(order.status)
+    ) {
+      await assertSubcontractCompliance(db, order, 'issue');
+    }
+
+    let poLineId = (
+      await db.query<{ id: string; current_amount: string }>(
+        `SELECT id, current_amount::text AS current_amount
+           FROM projects.po_lines
+          WHERE po_id = $1 AND cost_code_id = $2 AND cost_type = $3::projects.cost_type
+          ORDER BY line_no
+          LIMIT 1`,
+        [line.po_id, line.cost_code_id, line.cost_type],
+      )
+    ).rows[0];
+
+    if (!poLineId) {
+      if (amount < 0) {
+        throw new ApiError(
+          'conflict',
+          'A new purchase order line cannot start from a negative change.',
+        );
+      }
+      const next = await db.query<{ n: string }>(
+        `SELECT COALESCE(MAX(line_no), 0)::text AS n FROM projects.po_lines WHERE po_id = $1`,
+        [line.po_id],
+      );
+      const inserted = await db.query<{ id: string; current_amount: string }>(
+        `INSERT INTO projects.po_lines
+           (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount)
+         VALUES ($1,$2,$3,$4,$5::projects.cost_type,$6,0)
+         RETURNING id, current_amount::text AS current_amount`,
+        [
+          tenantId,
+          line.po_id,
+          Number(next.rows[0]?.n ?? 0) + 1,
+          line.cost_code_id,
+          line.cost_type,
+          line.description ?? '',
+        ],
+      );
+      poLineId = inserted.rows[0];
+    }
+
+    const current = Number(poLineId?.current_amount ?? 0);
+    if (existingChange.rows.length === 0 && current + amount < -0.001) {
+      throw new ApiError(
+        'conflict',
+        'That change would take the purchase order line below zero.',
+      );
+    }
+
+    const inserted = await db.query<{ id: string }>(
+      `INSERT INTO projects.po_line_changes
+         (tenant_id, po_line_id, change_order_line_id, amount, applied_by)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (po_line_id, change_order_line_id) DO NOTHING
+       RETURNING id`,
+      [tenantId, poLineId!.id, line.id, amount, staffId],
+    );
+    if (inserted.rows.length) applied++;
+    else already++;
+  }
+
+  return { linesApplied: applied, linesAlreadyApplied: already };
 }

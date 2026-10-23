@@ -5,7 +5,7 @@ import { ApiError, notFound } from '../http/errors.js';
 import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from './shared.js';
-import { applyApprovedChangeOrder } from '../domain/changeOrders.js';
+import { applyApprovedChangeOrder, applyChangeOrderToPurchaseOrders } from '../domain/changeOrders.js';
 
 const lineSchema = z.object({
   cost_code_id: z.string().uuid(),
@@ -14,6 +14,7 @@ const lineSchema = z.object({
   // credit that cannot be recorded is a credit somebody argues about later.
   amount: z.number().finite(),
   description: z.string().nullish(),
+  po_id: z.string().uuid().nullish(),
 });
 
 const createSchema = z.object({
@@ -53,7 +54,7 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
 
       const lines = await ctx.db.query<Record<string, unknown>>(
         `SELECT l.id, l.change_order_id, l.cost_code_id, cc.code, cc.description AS cost_code_description,
-                l.cost_type::text AS cost_type, l.amount, l.description
+                l.cost_type::text AS cost_type, l.amount, l.description, l.po_id
            FROM projects.change_order_lines l
            JOIN projects.change_orders co ON co.id = l.change_order_id
            JOIN projects.cost_codes cc ON cc.id = l.cost_code_id
@@ -120,10 +121,11 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
       const changeOrderId = rows[0]!.id;
 
       for (const line of body.lines) {
+        await assertPoOnProject(ctx, projectId, line.po_id);
         await ctx.db.query(
           `INSERT INTO projects.change_order_lines
-             (tenant_id, change_order_id, cost_code_id, cost_type, amount, description)
-           VALUES ($1,$2,$3,$4::projects.cost_type,$5,$6)`,
+             (tenant_id, change_order_id, cost_code_id, cost_type, amount, description, po_id)
+           VALUES ($1,$2,$3,$4::projects.cost_type,$5,$6,$7)`,
           [
             ctx.staff.tenantId,
             changeOrderId,
@@ -131,6 +133,7 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
             line.cost_type,
             line.amount,
             line.description ?? null,
+            line.po_id ?? null,
           ],
         );
       }
@@ -188,10 +191,11 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         ]);
         for (const line of body.lines) {
           await requireOwnedRow(ctx.db, 'cost_codes', line.cost_code_id, 'lines[].cost_code_id');
+          await assertPoOnProject(ctx, co.project_id, line.po_id);
           await ctx.db.query(
             `INSERT INTO projects.change_order_lines
-               (tenant_id, change_order_id, cost_code_id, cost_type, amount, description)
-             VALUES ($1,$2,$3,$4::projects.cost_type,$5,$6)`,
+               (tenant_id, change_order_id, cost_code_id, cost_type, amount, description, po_id)
+             VALUES ($1,$2,$3,$4::projects.cost_type,$5,$6,$7)`,
             [
               ctx.staff.tenantId,
               coId,
@@ -199,6 +203,7 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
               line.cost_type,
               line.amount,
               line.description ?? null,
+              line.po_id ?? null,
             ],
           );
         }
@@ -249,7 +254,31 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
       const body = parseBody(approveSchema, ctx.req.body);
 
       if (co.status === 'approved') {
-        throw new ApiError('conflict', 'That change order is already approved.');
+        const limit = await threshold(ctx);
+        const amount = num(co.customer_amount) ?? 0;
+        if (amount > limit) requireCapability(ctx.staff.role, 'approve_change_order_over_threshold');
+        else requireCapability(ctx.staff.role, 'send_change_order');
+        const poEffect = await applyChangeOrderToPurchaseOrders(
+          ctx.db,
+          ctx.staff.tenantId,
+          co.project_id,
+          coId,
+          ctx.staff.staffId,
+        );
+        sendData(ctx.res, {
+          id: co.id,
+          co_number: co.co_number,
+          status: co.status,
+          customer_amount: num(co.customer_amount),
+          cost_amount: num(co.cost_amount),
+          budget_lines_created: 0,
+          budget_lines_updated: 0,
+          scheduled_end: null,
+          po_lines_applied: poEffect.linesApplied,
+          po_lines_already_applied: poEffect.linesAlreadyApplied,
+          revenue_effect: 'revised_contract, computed from approved change orders',
+        });
+        return;
       }
       if (co.status === 'void' || co.status === 'rejected') {
         throw new ApiError('conflict', `That change order was ${co.status}.`);
@@ -282,17 +311,27 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         `UPDATE projects.change_orders
             SET status = 'approved', approved_by = $2,
                 customer_approved_at = COALESCE($3::timestamptz, now())
-          WHERE id = $1
+          WHERE id = $1 AND status = 'sent'
           RETURNING id, co_number, status::text AS status, customer_amount, cost_amount,
                     schedule_impact_days, customer_approved_at`,
         [coId, ctx.staff.staffId, body.customer_approved_at ?? null],
       );
+      if (!rows[0]) {
+        throw new ApiError('conflict', 'That change order is already approved.');
+      }
 
       const effect = await applyApprovedChangeOrder(
         ctx.db,
         ctx.staff.tenantId,
         co.project_id,
         coId,
+      );
+      const poEffect = await applyChangeOrderToPurchaseOrders(
+        ctx.db,
+        ctx.staff.tenantId,
+        co.project_id,
+        coId,
+        ctx.staff.staffId,
       );
 
       sendData(ctx.res, {
@@ -302,6 +341,8 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         budget_lines_created: effect.budgetLinesCreated,
         budget_lines_updated: effect.budgetLinesUpdated,
         scheduled_end: effect.scheduleEndMovedTo,
+        po_lines_applied: poEffect.linesApplied,
+        po_lines_already_applied: poEffect.linesAlreadyApplied,
         // The revenue side needs no write: v_project_margin already adds every
         // approved change order to revised_contract. Said out loud because
         // adding it to contract_value as well is the obvious mistake.
@@ -349,9 +390,23 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
 interface ChangeOrderRow extends Record<string, unknown> {
   id: string;
   project_id: string;
+  co_number: number;
   status: string;
   customer_amount: string;
   cost_amount: string;
+}
+
+async function assertPoOnProject(
+  ctx: StaffContext,
+  projectId: string,
+  poId: string | null | undefined,
+): Promise<void> {
+  if (!poId) return;
+  const po = await ctx.db.query(
+    `SELECT id FROM projects.purchase_orders WHERE id = $1 AND project_id = $2`,
+    [poId, projectId],
+  );
+  if (!po.rows[0]) throw notFound('Purchase order not found');
 }
 
 async function loadVisibleChangeOrder(
