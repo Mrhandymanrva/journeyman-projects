@@ -14,6 +14,13 @@ import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseUuidParam, parseBody } from "./shared.js";
 import { queueVendor, type AccountingGateway } from "../adapters/quickbooks.js";
 import { buildVendorBillPayload, type BillCostGroup } from "../domain/vendorBillPayload.js";
+import {
+  COST_TYPES,
+  loadCostTypeAccounts,
+  suggestAccountMapping,
+  type AccountMapping,
+  type CostType,
+} from "../domain/accountMapping.js";
 import { assertSubcontractCompliance } from "../domain/vendorCompliance.js";
 export async function prepareBillAccounting(
   ctx: StaffContext,
@@ -27,6 +34,12 @@ export async function prepareBillAccounting(
   const b = result.rows[0];
   if (!b) throw notFound("Vendor bill not found");
   await loadVisibleProject(ctx, b.project_id, "id");
+  if (b.source === "qbo_link") {
+    throw new ApiError(
+      "conflict",
+      "This bill is linked to an existing QuickBooks transaction and will not be sent again.",
+    );
+  }
   if (
     b.status !== "received" &&
     !(
@@ -133,6 +146,22 @@ export async function prepareBillAccounting(
   const groups: BillCostGroup[] = grouped.rows.length
     ? grouped.rows.map((row) => ({ costType: row.cost_type, amount: Number(row.gross) }))
     : [{ costType: b.po_cost_type ?? "S", amount: Number(b.amount) }];
+  const mapping = await loadCostTypeAccounts(ctx.db);
+  const labels: Record<CostType, string> = {
+    L: "labor",
+    M: "material",
+    S: "subcontract",
+    O: "other",
+  };
+  for (const type of COST_TYPES) {
+    const mapped = mapping.accounts[type];
+    if (mapped && !config.accounts.some((account: { id: string }) => account.id === mapped)) {
+      throw new ApiError(
+        "validation_failed",
+        `The ${labels[type]} cost type is mapped to QuickBooks account ${mapped}, which is not in the current chart of accounts. Refresh the lists or clear that mapping before approving.`,
+      );
+    }
+  }
   const bill = buildVendorBillPayload({
     id: b.id,
     invoiceNumber: b.vendor_invoice_number,
@@ -146,6 +175,7 @@ export async function prepareBillAccounting(
     accountId: body.qbo_account_id,
     customerId: b.qbo_customer_id,
     groups,
+    accounts: mapping.accounts,
   });
   await ctx.db.query(
     `UPDATE projects.vendor_bills SET qbo_account_id=$2 WHERE id=$1`,
@@ -219,6 +249,66 @@ export function accountingRoutes(
         sendData(ctx.res, { refreshed: true });
       },
     ),
+  );
+  router.get(
+    "/accounting/cost-type-accounts",
+    staffRoute(deps, async (ctx) => {
+      sendData(ctx.res, await presentCostTypeAccounts(ctx));
+    }),
+  );
+  router.patch(
+    "/accounting/cost-type-accounts",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_company_settings");
+      const body = parseBody(
+        z.object({
+          agreement_grace_days: z.number().int().min(0).max(365).optional(),
+          accounts: z
+            .object({
+              L: z.string().regex(/^[0-9]+$/).nullable(),
+              M: z.string().regex(/^[0-9]+$/).nullable(),
+              S: z.string().regex(/^[0-9]+$/).nullable(),
+              O: z.string().regex(/^[0-9]+$/).nullable(),
+            })
+            .optional(),
+        }),
+        ctx.req.body,
+      );
+      if (body.accounts) {
+        const config = (
+          await ctx.db.query<{ accounts: Array<{ id: string }> }>(
+            "SELECT accounts FROM projects.accounting_config",
+          )
+        ).rows[0];
+        const known = new Set((config?.accounts ?? []).map((account) => String(account.id)));
+        for (const id of Object.values(body.accounts)) {
+          if (id && !known.has(id)) {
+            throw new ApiError(
+              "validation_failed",
+              "Refresh QuickBooks lists and choose an expense account from the chart. Nothing was saved.",
+            );
+          }
+        }
+      }
+      const current = await loadCostTypeAccounts(ctx.db);
+      const accounts: AccountMapping = body.accounts ?? current.accounts;
+      const grace = body.agreement_grace_days ?? current.graceDays;
+      const updated = await ctx.db.query(
+        `UPDATE projects.tenant_settings
+            SET agreement_grace_days = $2,
+                qbo_account_labor = $3,
+                qbo_account_material = $4,
+                qbo_account_subcontract = $5,
+                qbo_account_other = $6,
+                updated_at = now()
+          WHERE tenant_id = $1`,
+        [ctx.staff.tenantId, grace, accounts.L, accounts.M, accounts.S, accounts.O],
+      );
+      if (updated.rowCount === 0) {
+        throw new ApiError("conflict", "Company settings are not initialized.");
+      }
+      sendData(ctx.res, await presentCostTypeAccounts(ctx));
+    }),
   );
   router.get(
     "/projects/:id/vendor-bills",
@@ -441,4 +531,23 @@ export function accountingRoutes(
     ),
   );
   return router;
+}
+
+async function presentCostTypeAccounts(ctx: StaffContext) {
+  const saved = await loadCostTypeAccounts(ctx.db);
+  const config = (
+    await ctx.db.query<{ accounts: Array<{ id: string; name: string }> | null }>(
+      "SELECT accounts FROM projects.accounting_config",
+    )
+  ).rows[0];
+  const catalog = (config?.accounts ?? []).map((account) => ({
+    id: String(account.id),
+    name: String(account.name ?? ""),
+  }));
+  return {
+    agreement_grace_days: saved.graceDays,
+    accounts: saved.accounts,
+    suggestions: suggestAccountMapping(catalog),
+    catalog,
+  };
 }

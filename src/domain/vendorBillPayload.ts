@@ -1,3 +1,4 @@
+import type { AccountMapping } from './accountMapping.js';
 import { roundMoney } from './poMath.js';
 
 export interface BillCostGroup {
@@ -17,14 +18,16 @@ export interface QbLine {
 }
 
 /**
- * Expense account for a cost type.
- *
- * Whether L/M/S/O each post to their own QuickBooks account is still open.
- * Until that mapping exists, every cost type uses the account chosen on the
- * bill. Lines are still split by cost type so a future mapping only changes
- * this function. One cost type stays one QuickBooks line.
+ * Expense account for a cost type. A saved per-tenant mapping wins. An
+ * unmapped cost type uses the account chosen on the bill.
  */
-export function expenseAccountForCostType(_costType: string, defaultAccountId: string): string {
+export function expenseAccountForCostType(
+  costType: string,
+  defaultAccountId: string,
+  mapping?: Partial<AccountMapping> | null,
+): string {
+  const mapped = mapping?.[costType as keyof AccountMapping];
+  if (mapped && /^[0-9]+$/.test(mapped)) return mapped;
   return defaultAccountId;
 }
 
@@ -48,7 +51,12 @@ function detail(accountId: string, customerId: string | null): QbLine['AccountBa
   };
 }
 
-/** The QuickBooks bill is the full Journeyman amount, split by cost type when that split still adds up. */
+/**
+ * The QuickBooks bill is the full Journeyman amount. Positive cost-type
+ * groups that add up to that amount are posted to their mapped expense
+ * accounts, and groups that resolve to the same account are combined.
+ * Anything unmapped uses the account chosen on the bill.
+ */
 export function buildVendorBillPayload(input: {
   id: string;
   invoiceNumber: string;
@@ -62,6 +70,7 @@ export function buildVendorBillPayload(input: {
   accountId: string;
   customerId: string | null;
   groups: BillCostGroup[];
+  accounts?: Partial<AccountMapping> | null;
 }): { DocNumber: string; TxnDate: string; DueDate: string; PrivateNote: string; Line: QbLine[] } {
   const positive = input.groups.filter((group) => group.amount > 0);
   const groupedTotal = roundMoney(positive.reduce((sum, group) => sum + group.amount, 0));
@@ -69,14 +78,31 @@ export function buildVendorBillPayload(input: {
     positive.length > 0 && Math.abs(groupedTotal - input.amount) <= 0.001
       ? positive
       : [{ costType: '', amount: input.amount }];
-  const lines: QbLine[] = source.map((group) => ({
-    Amount: roundMoney(group.amount),
+  const buckets: Array<{ accountId: string; amount: number; costTypes: string[] }> = [];
+  for (const group of source) {
+    const accountId = expenseAccountForCostType(group.costType, input.accountId, input.accounts);
+    const existing = buckets.find((bucket) => bucket.accountId === accountId);
+    if (existing) {
+      existing.amount = roundMoney(existing.amount + group.amount);
+      if (group.costType) existing.costTypes.push(group.costType);
+    } else {
+      buckets.push({
+        accountId,
+        amount: roundMoney(group.amount),
+        costTypes: group.costType ? [group.costType] : [],
+      });
+    }
+  }
+  const lines: QbLine[] = buckets.map((bucket) => ({
+    Amount: bucket.amount,
     Description: (
       input.description ||
-      `Project ${input.projectNumber} / PO ${input.poNumber}${group.costType ? ` / ${group.costType}` : ''}`
+      `Project ${input.projectNumber} / PO ${input.poNumber}${
+        bucket.costTypes.length ? ` / ${bucket.costTypes.join(',')}` : ''
+      }`
     ).slice(0, 4000),
     DetailType: 'AccountBasedExpenseLineDetail',
-    AccountBasedExpenseLineDetail: detail(expenseAccountForCostType(group.costType, input.accountId), input.customerId),
+    AccountBasedExpenseLineDetail: detail(bucket.accountId, input.customerId),
   }));
   const drift = roundMoney(input.amount - sumLineAmounts(lines));
   if (lines.length && drift !== 0) {

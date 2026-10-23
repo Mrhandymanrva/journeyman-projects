@@ -110,11 +110,15 @@ describe('compliance gates', () => {
     expect(res.body.data.kind).toBe('material');
   });
 
-  it('requires a signed agreement before a subcontract can be issued', async () => {
+  it('allows a new subcontract to issue inside the 14-day agreement grace, with a warning', async () => {
     const { projectId, costCodeId } = await projectAndCode();
-    const { vendorId } = await vendorWithDocs('2027-12-31');
-    const res = await owner().post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
-      po_number: 'PO-NO-AGR',
+    const { vendorId, agreementId } = await vendorWithDocs('2027-12-31');
+    const settings = await owner().get('/api/v1/projects/accounting/cost-type-accounts');
+    expect(settings.status).toBe(200);
+    expect(settings.body.data.agreement_grace_days).toBe(14);
+
+    const warned = await owner().post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
+      po_number: 'PO-GRACE',
       vendor_id: vendorId,
       cost_code_id: costCodeId,
       cost_type: 'S',
@@ -122,9 +126,52 @@ describe('compliance gates', () => {
       scope_text: 'Work',
       issue: true,
     });
-    expect(res.status).toBe(409);
-    expect(res.body.error.code).toBe('conflict');
-    expect(res.body.error.message).toMatch(/signed agreement/i);
+    expect(warned.status, JSON.stringify(warned.body)).toBe(201);
+    expect(warned.body.data.status).toBe('issued');
+    expect(warned.body.data.agreement_warning.message).toMatch(/14 day/i);
+    expect(warned.body.data.agreement_warning.message).toMatch(/warning/i);
+
+    const signed = await owner().post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
+      po_number: 'PO-SIGNED',
+      vendor_id: vendorId,
+      cost_code_id: costCodeId,
+      cost_type: 'S',
+      amount: 1000,
+      scope_text: 'Work',
+      issue: true,
+      agreement_document_id: agreementId,
+      agreement_signed_at: '2026-10-01T00:00:00.000Z',
+    });
+    expect(signed.status, JSON.stringify(signed.body)).toBe(201);
+    expect(signed.body.data.agreement_warning).toBeNull();
+  });
+
+  it('blocks issue after the agreement grace and says why', async () => {
+    const { projectId, costCodeId } = await projectAndCode();
+    const { vendorId } = await vendorWithDocs('2027-12-31');
+    const draft = await owner().post(`/api/v1/projects/projects/${projectId}/purchase-orders`).send({
+      po_number: 'PO-LATE',
+      vendor_id: vendorId,
+      cost_code_id: costCodeId,
+      cost_type: 'S',
+      amount: 1000,
+      scope_text: 'Work',
+    });
+    expect(draft.status, JSON.stringify(draft.body)).toBe(201);
+    await h.db.withTenant(t.id, (c) =>
+      c.query(`UPDATE projects.purchase_orders SET created_at = now() - interval '15 days' WHERE id = $1`, [
+        draft.body.data.id,
+      ]),
+    );
+    const blocked = await owner().patch(`/api/v1/projects/purchase-orders/${draft.body.data.id}`).send({
+      status: 'issued',
+    });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error.code).toBe('conflict');
+    expect(blocked.body.error.message).toMatch(/grace has ended/i);
+    expect(blocked.body.error.message).toMatch(/blocked/i);
+    const still = await owner().get(`/api/v1/projects/projects/${projectId}/purchase-orders`);
+    expect(still.body.data.find((po: { id: string }) => po.id === draft.body.data.id).status).toBe('draft');
   });
 
   it('blocks approval when the certificate was expired on the invoice date', async () => {
