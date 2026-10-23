@@ -36,6 +36,7 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/021_coi_coverage.sql"),
   path.join(repoRoot, "db/022_vendor_sync.sql"),
   path.join(repoRoot, "db/023_agreement_advisory.sql"),
+  path.join(repoRoot, "db/024_po_lines.sql"),
 ];
 
 export interface TenantFixture {
