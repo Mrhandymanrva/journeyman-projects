@@ -558,10 +558,21 @@ async function presentCostTypeAccounts(ctx: StaffContext) {
       "SELECT accounts FROM projects.accounting_config",
     )
   ).rows[0];
-  const catalog = (config?.accounts ?? []).map((account) => ({
-    id: String(account.id),
-    name: String(account.name ?? ""),
-  }));
+  const catalog = (config?.accounts ?? []).map((account) => {
+    const row = account as {
+      id?: string;
+      name?: string;
+      accountType?: string | null;
+      account_type?: string | null;
+      AccountType?: string | null;
+      classification?: string | null;
+    };
+    return {
+      id: String(row.id ?? ""),
+      name: String(row.name ?? ""),
+      accountType: row.accountType ?? row.account_type ?? row.AccountType ?? row.classification ?? null,
+    };
+  });
   return {
     agreement_grace_days: saved.graceDays,
     accounts: saved.accounts,

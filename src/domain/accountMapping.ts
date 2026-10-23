@@ -19,36 +19,46 @@ export interface CatalogAccount {
   classification?: string | null;
 }
 
-const SUGGESTIONS: Record<CostType, RegExp> = {
-  L: /labor|labour|wages|payroll|field labor/i,
-  M: /material|supplies|\bpurchases\b/i,
-  S: /subcontract|sub-contract|outside service|1099|contract labor|independent contractor/i,
-  O: /\b(?:overhead|general expense|miscellaneous(?: expense)?|operating expense)\b/i,
+/**
+ * Job-cost words for the cost types this app actually stores: L, M, S, O.
+ * There is no equipment cost type, so equipment rental is not a mapping target.
+ * Phrases are matched as whole words and tolerate a trailing plural.
+ */
+const KEYWORDS: Record<CostType, readonly string[]> = {
+  L: ['job labor', 'field labor', 'labor', 'labour', 'wages', 'payroll'],
+  M: ['job materials', 'materials', 'supplies'],
+  S: ['subcontractors', 'subcontractor', 'subcontract', 'sub contract', 'subs'],
+  O: ['other job costs', 'other costs of goods sold', 'miscellaneous job costs'],
 };
 
 const NOT_AN_EXPENSE =
-  /income|asset|liabilit|equity|\bbank\b|receivable|payable|credit card|undeposited|opening balance|advertis|director/i;
+  /income|asset|liabilit|equity|\bbank\b|receivable|payable|credit card|undeposited|opening balance/i;
+
+/** Vehicle, office, and marketing accounts are not job-cost matches for L/M/S/O. */
+const EXCLUDED_TOKENS = new Set([
+  'vehicle',
+  'van',
+  'auto',
+  'automobile',
+  'fuel',
+  'truck',
+  'office',
+  'admin',
+  'administrative',
+  'marketing',
+  'advertising',
+  'advertisement',
+  'directory',
+]);
 
 export function emptyAccountMapping(): AccountMapping {
   return { L: null, M: null, S: null, O: null };
 }
 
-/**
- * Propose a cost-type mapping from chart-of-account names already stored on
- * the tenant. This does not call QuickBooks and does not write anything.
- * The first unused match wins, in L, M, S, O order, so one account is not
- * suggested for two cost types. The owner confirms before a mapping is saved.
- */
 function accountType(account: CatalogAccount): string {
   return String(
     account.accountType ?? account.account_type ?? account.AccountType ?? account.classification ?? '',
   ).toLowerCase();
-}
-
-/** The leaf is what the cost type is. A parent of "Cost of Goods Sold" must not steal a subcontract child. */
-function leafName(name: string): string {
-  const parts = name.split(':');
-  return (parts[parts.length - 1] ?? name).trim();
 }
 
 function plausibleExpense(account: CatalogAccount): boolean {
@@ -57,26 +67,93 @@ function plausibleExpense(account: CatalogAccount): boolean {
   return !NOT_AN_EXPENSE.test(account.name);
 }
 
+function normalizeToken(word: string): string {
+  const lower = word.toLowerCase();
+  if (lower.endsWith('ies') && lower.length > 4) return lower.slice(0, -3) + 'y';
+  if (lower.endsWith('s') && !lower.endsWith('ss') && lower.length > 3) return lower.slice(0, -1);
+  return lower;
+}
+
+function tokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .map(normalizeToken);
+}
+
+function phraseIn(text: string, phrase: string): boolean {
+  const haystack = tokens(text);
+  const needle = tokens(phrase);
+  if (!needle.length || haystack.length < needle.length) return false;
+  for (let i = 0; i <= haystack.length - needle.length; i += 1) {
+    if (needle.every((part, offset) => haystack[i + offset] === part)) return true;
+  }
+  return false;
+}
+
+function excludedAccount(name: string): boolean {
+  return tokens(name).some((token) => EXCLUDED_TOKENS.has(token));
+}
+
+function isCogs(account: CatalogAccount): boolean {
+  const type = accountType(account);
+  if (type === 'cost of goods sold' || type === 'cogs') return true;
+  const parents = account.name
+    .split(':')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, -1);
+  return parents.some((part) => /^(cost of goods sold|cogs)$/i.test(part));
+}
+
+/** A keyword hit is required. Cost of Goods Sold parentage only ranks a real hit. */
+function scoreAccount(account: CatalogAccount, type: CostType): number {
+  const parts = account.name
+    .split(':')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const leaf = parts[parts.length - 1] ?? account.name;
+  const parents = parts.slice(0, -1).join(' ');
+  let best = 0;
+  for (const keyword of KEYWORDS[type]) {
+    if (phraseIn(leaf, keyword)) best = Math.max(best, 100 + keyword.length);
+    else if (parents && phraseIn(parents, keyword)) best = Math.max(best, 40 + keyword.length);
+  }
+  if (best === 0) return 0;
+  if (isCogs(account)) best += 200;
+  return best;
+}
+
 /**
  * Propose a cost-type mapping from chart-of-account names already stored on
  * the tenant. This does not call QuickBooks and does not write anything.
- * The first unused plausible match wins, in L, M, S, O order. A name that is
- * income, an asset, advertising, or otherwise not an expense or COGS account
- * is not suggested. The owner confirms before a mapping is saved.
+ * An account is offered only to the cost type it scores highest for, COGS
+ * accounts rank ahead of other expenses, and a weak name returns no suggestion.
+ * The owner confirms before a mapping is saved.
  */
 export function suggestAccountMapping(accounts: CatalogAccount[]): AccountMapping {
+  const candidates: Array<{ id: string; type: CostType; score: number }> = [];
+  for (const account of accounts) {
+    if (!plausibleExpense(account) || excludedAccount(account.name)) continue;
+    const scores = COST_TYPES.map((type) => ({ type, score: scoreAccount(account, type) })).filter(
+      (row) => row.score > 0,
+    );
+    const best = scores.reduce((max, row) => Math.max(max, row.score), 0);
+    if (best === 0) continue;
+    for (const row of scores) {
+      if (row.score !== best) continue;
+      candidates.push({ id: String(account.id), type: row.type, score: row.score });
+    }
+  }
+  const typeRank: Record<CostType, number> = { L: 0, M: 1, S: 2, O: 3 };
+  candidates.sort((a, b) => b.score - a.score || typeRank[a.type] - typeRank[b.type]);
   const used = new Set<string>();
   const suggested = emptyAccountMapping();
-  for (const type of COST_TYPES) {
-    const match = accounts.find((account) => {
-      if (used.has(String(account.id)) || !plausibleExpense(account)) return false;
-      const leaf = leafName(account.name);
-      if (type === 'M' && /cost of goods sold|^cogs$/i.test(leaf)) return true;
-      return SUGGESTIONS[type].test(leaf);
-    });
-    if (!match) continue;
-    suggested[type] = String(match.id);
-    used.add(String(match.id));
+  for (const row of candidates) {
+    if (suggested[row.type] || used.has(row.id)) continue;
+    suggested[row.type] = row.id;
+    used.add(row.id);
   }
   return suggested;
 }
