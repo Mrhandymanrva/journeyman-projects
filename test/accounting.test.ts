@@ -25,9 +25,15 @@ describe('QuickBooks payables',()=>{
  it('requires tax review and an account before approval; freezes one posting',async()=>{
  const p=await owner().post(base+'/projects').send(projectBody());expect(p.status).toBe(201);projectId=p.body.data.id;
  const codes=await owner().get(base+'/cost-codes');
- const po=await owner().post(`${base}/projects/${projectId}/purchase-orders`).send({po_number:'AP-1',supplier_name:'Plumbing LLC',cost_code_id:codes.body.data[0].id,cost_type:'M',amount:100,scope_text:'Materials',issue:true});expect(po.status,JSON.stringify(po.body)).toBe(201);poId=po.body.data.id;
- await h.db.withTenant(t.id,s=>s.query('UPDATE projects.purchase_orders SET vendor_id=$2 WHERE id=$1',[poId,vendorId]));
- const bill=await owner().post(`${base}/purchase-orders/${poId}/bills`).send({vendor_invoice_number:'SUB-100',amount:125,invoice_date:'2026-09-18',due_date:'2026-10-18'});expect(bill.status).toBe(201);billId=bill.body.data.id;expect(bill.body.data.warning.over_by).toBe(25);
+ const material=await owner().post(`${base}/projects/${projectId}/purchase-orders`).send({po_number:'AP-MAT',supplier_name:'Plumbing LLC',cost_code_id:codes.body.data[0].id,cost_type:'M',amount:100,scope_text:'Materials',issue:true});expect(material.status,JSON.stringify(material.body)).toBe(201);
+ const materialBill=await owner().post(`${base}/purchase-orders/${material.body.data.id}/bills`).send({vendor_invoice_number:'MAT-100',amount:125,invoice_date:'2026-09-18',due_date:'2026-10-18'});expect(materialBill.status).toBe(201);expect(materialBill.body.data.warning.over_by).toBe(25);
+ const refusedMaterial=await owner().post(`${base}/bills/${materialBill.body.data.id}/approve`).send({qbo_account_id:'71'});
+ expect(refusedMaterial.status).toBe(409);
+ expect(refusedMaterial.body.error.message).toMatch(/not approved/i);
+ expect((await h.db.withTenant(t.id,s=>s.query(`SELECT id FROM projects.accounting_queue WHERE kind='bill' AND record_id=$1`,[materialBill.body.data.id]))).rows).toEqual([]);
+ await h.db.withTenant(t.id,s=>s.query(`INSERT INTO projects.vendor_documents(tenant_id,vendor_id,kind,file_name,media_type,file_data,file_size,expires_on) SELECT $1,$2,kind::projects.doc_kind,'doc.pdf','application/pdf',$3,12,'2027-12-31' FROM (VALUES ('license'),('gl_insurance'),('wc_insurance'),('auto_insurance')) AS docs(kind)`,[t.id,vendorId,Buffer.from('%PDF-fixture')]));
+ const po=await owner().post(`${base}/projects/${projectId}/purchase-orders`).send({po_number:'AP-1',vendor_id:vendorId,cost_code_id:codes.body.data[0].id,cost_type:'S',amount:10000,scope_text:'Install',issue:true});expect(po.status,JSON.stringify(po.body)).toBe(201);poId=po.body.data.id;
+ const bill=await owner().post(`${base}/purchase-orders/${poId}/bills`).send({vendor_invoice_number:'SUB-100',amount:125,invoice_date:'2026-09-18',due_date:'2026-10-18'});expect(bill.status,JSON.stringify(bill.body)).toBe(201);billId=bill.body.data.id;
  expect((await owner().post(`${base}/bills/${billId}/approve`).send({qbo_account_id:'71'})).status).toBe(409);
  expect((await owner().post(`${base}/vendors/${vendorId}/accounting-tax`).send({tax_id:'000-00-0000',vendor_1099:true,confirmed:true})).status).toBe(200);
  const tax=calls.find(c=>c.action==='tax');expect(tax?.taxId).toBe('000000000');expect(tax?.expectedRealm).toBe('123');
@@ -73,6 +79,11 @@ describe('QuickBooks payables',()=>{
  expect(before.body.data.agreement_grace_days).toBe(14);
  const refused=await h.as(t.staff.bookkeeper!.token).patch(base+'/accounting/cost-type-accounts').send({agreement_grace_days:3,accounts:{L:'11',M:'22',S:'71',O:'44'}});
  expect(refused.status).toBe(403);
+ for (const role of ['bookkeeper','pm','office','estimator'] as const) {
+  const read=await h.as(t.staff[role]!.token).get(base+'/accounting/cost-type-accounts');
+  expect(read.status, role).toBe(403);
+ }
+ expect((await h.as(t.staff.manager!.token).get(base+'/accounting/cost-type-accounts')).status).toBe(200);
  const still=await owner().get(base+'/accounting/cost-type-accounts');
  expect(still.body.data.accounts.L).toBeNull();
  const saved=await owner().patch(base+'/accounting/cost-type-accounts').send({agreement_grace_days:21,accounts:{L:'11',M:null,S:'71',O:null}});

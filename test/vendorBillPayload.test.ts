@@ -29,6 +29,22 @@ describe('cost type expense accounts', () => {
 
     const shared = suggestAccountMapping([{ id: '55', name: 'Subcontract materials' }]);
     expect(shared).toEqual({ L: null, M: '55', S: null, O: null });
+
+    const qualified = suggestAccountMapping([
+      { id: '80', name: 'Cost of Goods Sold:Materials' },
+      { id: '81', name: 'Cost of Goods Sold:Subcontractors' },
+      { id: '82', name: 'Advertising:Print Advertising:Directories' },
+      { id: '83', name: 'Other Expense:Advertising:Print Advertising:Directories' },
+      { id: '84', name: 'Other Current Assets' },
+      { id: '85', name: 'Other Income' },
+    ]);
+    expect(qualified).toEqual({ L: null, M: '80', S: '81', O: null });
+
+    const typed = suggestAccountMapping([
+      { id: '90', name: 'Field Labor', accountType: 'Income' },
+      { id: '91', name: 'Job Materials', accountType: 'Cost of Goods Sold' },
+    ]);
+    expect(typed).toEqual({ L: null, M: '91', S: null, O: null });
   });
 
   it('uses the bill account when a cost type is unmapped, and combines lines on that account', () => {

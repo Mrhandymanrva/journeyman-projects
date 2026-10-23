@@ -654,8 +654,17 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         if (row.qbo_id && row.qbo_id !== body.qbo_id) {
           throw new ApiError('conflict', 'This bill is already linked to a different QuickBooks transaction.');
         }
-        if (!accounting || accounting.tenantId !== ctx.staff.tenantId) {
-          throw new ApiError('conflict', 'QuickBooks connector is not configured.');
+        if (!accounting) {
+          throw new ApiError(
+            'conflict',
+            'QuickBooks connector is not configured, so nothing was linked or queued. The Journeyman service needs PM_QBO_TENANT_ID, PM_ACCOUNTING_KEY, PO_APP_ORIGIN, PO_APP_USER, and PO_APP_PASSWORD.',
+          );
+        }
+        if (accounting.tenantId !== ctx.staff.tenantId) {
+          throw new ApiError(
+            'conflict',
+            'QuickBooks connector is configured for a different company than this login. Nothing was linked or queued.',
+          );
         }
         const config = await ctx.db.query<{ realm: string }>(
           `SELECT realm FROM projects.accounting_config`,
@@ -1028,8 +1037,17 @@ async function prepareQboRead(
 ): Promise<QboRead & { skipped?: boolean }> {
   requireCapability(ctx.staff.role, 'approve_vendor_bill');
   const po = await loadVisiblePo(ctx, poId);
-  if (!accounting || accounting.tenantId !== ctx.staff.tenantId) {
-    throw new ApiError('conflict', 'QuickBooks connector is not configured.');
+  if (!accounting) {
+    throw new ApiError(
+      'conflict',
+      'QuickBooks connector is not configured, so the lookup did not run. Nothing was linked or queued. The Journeyman service needs PM_QBO_TENANT_ID, PM_ACCOUNTING_KEY, PO_APP_ORIGIN, PO_APP_USER, and PO_APP_PASSWORD.',
+    );
+  }
+  if (accounting.tenantId !== ctx.staff.tenantId) {
+    throw new ApiError(
+      'conflict',
+      'QuickBooks connector is configured for a different company than this login. Nothing was linked or queued.',
+    );
   }
   let vendorQboId: string | null = null;
   if (po.vendor_id) {

@@ -66,6 +66,11 @@ try {
 const staffSessions = new MemoryStaffSessions();
 
 const accounting=accountingGateway();
+if (!accounting) {
+  console.warn(
+    "QuickBooks connector is not configured. Link QuickBooks transaction and bill sync stay off until PM_QBO_TENANT_ID, PM_ACCOUNTING_KEY, PO_APP_ORIGIN, PO_APP_USER, and PO_APP_PASSWORD are set.",
+  );
+}
 startAccountingWorker(database,accounting);
 const app = createApp({
   accounting,

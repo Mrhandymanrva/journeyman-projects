@@ -53,6 +53,10 @@ export function createWorkspace({
     ],
     logs: ["Daily logs", "Keep a clear record of work completed on site."],
     users: ["Users", "Manage staff access and login credentials."],
+    settings: [
+      "Setup",
+      "Company settings for QuickBooks cost-type accounts and the subcontract agreement window.",
+    ],
     project: [
       "Project details & permits",
       "ServiceTitan information, project stages and permit milestones.",
@@ -64,6 +68,7 @@ export function createWorkspace({
     risks: "△",
     communications: "◉",
     users: "♙",
+    settings: "⚙",
     dashboard: "▦",
     bids: "◇",
     resources: "♧",
@@ -187,6 +192,7 @@ export function createWorkspace({
   );
   el("page-bids").innerHTML =
     '<div id="bids-content" class="card workspace-records"></div>';
+  el("page-settings").innerHTML = '<div id="company-settings"></div>';
   document.querySelector(".grid")?.remove();
   const today = () => {
     const d = new Date();
@@ -261,6 +267,15 @@ export function createWorkspace({
     if (active === "users") {
       el("shell").hidden = false;
       await users.render();
+      return;
+    }
+    if (active === "settings") {
+      if (!can("manage_company_settings")) {
+        show("dashboard");
+        return;
+      }
+      el("shell").hidden = false;
+      await accounting.renderSettings();
       return;
     }
     if (!data) return;
