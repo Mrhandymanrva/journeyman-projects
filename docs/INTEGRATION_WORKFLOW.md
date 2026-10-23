@@ -1,7 +1,6 @@
 # Estimate to closeout: where each step happens, and where the data goes
 
-**Status:** design proposal, nothing built. Written in response to "I need to be
-able to set the project up here and have it write to ST and QB as well."
+**Status:** design proposal from before the adapters existed. The accounts-receivable path below was not adopted. As of 2026-10-23: customer invoices are created in ServiceTitan only, and ServiceTitan exports them to QuickBooks. Journeyman reads ServiceTitan invoices to track draws and billing status, and it never creates or writes customer invoices to ServiceTitan or QuickBooks. Vendor bills still go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge. See [`INTEGRATION_DECISIONS.md`](INTEGRATION_DECISIONS.md).
 
 ---
 
@@ -30,7 +29,11 @@ So this is not "reads but does not write". It is "neither".
 > configuration. That is a product rule, not a Mr. Handyman preference."*
 
 Mason owns that rule and can lift it. It is quoted here because the schema is
-built on it, and lifting it changes more than the adapter:
+built on it, and lifting it changes more than the adapter. The lift that was
+actually taken is narrower: vendor bills go to QuickBooks, and a few
+ServiceTitan operational writes exist. Customer invoices stay created in
+ServiceTitan only. The table is the cost that was being weighed, not the
+path that was built:
 
 | Built this way because of the rule | What changes if it is lifted |
 |---|---|
@@ -168,9 +171,9 @@ ServiceTitan  ──existing ST↔QB sync──▶  QuickBooks
   (invoices)                            (vendor bills, direct)
 ```
 
-- **AR:** Projects → ServiceTitan → (their existing sync) → QuickBooks
-- **AP:** Projects → QuickBooks directly. ST has no concept of these vendors.
-- **Never:** Projects → QuickBooks for revenue.
+- **AR:** ServiceTitan creates the customer invoice and exports it to QuickBooks. Journeyman reads that invoice. It does not write it to ServiceTitan or QuickBooks.
+- **AP:** Journeyman → QuickBooks through the purchase_orders `/api/pm-accounting` bridge. ServiceTitan has no concept of these vendors.
+- **Never:** Journeyman → QuickBooks or ServiceTitan for a customer invoice.
 
 This depends entirely on what the existing ST↔QB sync is configured to carry.
 It has to be checked before a line of adapter code is written.
@@ -206,7 +209,7 @@ Rough effort, and what drives it:
 |---|---|---|
 | Outbox, idempotency, retry, failure view | ~1 week | Foundation; everything else is unsafe without it |
 | ST adapter, read only (customer, job, invoice lookback) | ~1 week | Makes `verify_invoices` real, low risk |
-| ST adapter, write (job create, invoice create) | 1–1.5 weeks | Reconciliation, not the calls |
+| ST adapter, write a customer invoice | not adopted | 2026-10-23: ServiceTitan creates customer invoices. Journeyman only reads them. |
 | QuickBooks Online adapter (AP only) | ~2 weeks | OAuth2 and chart-of-accounts mapping are the time sinks |
 | Estimating emitter | unknown | Depends on the other module, not this one |
 

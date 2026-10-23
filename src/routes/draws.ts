@@ -6,6 +6,7 @@ import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam } from './shared.js';
 import { resolveAdapter } from '../adapters/externalSystem.js';
+import { assertLocalCustomerInvoicesAllowed, serviceTitanOwnsRevenue } from '../domain/localInvoices.js';
 
 const drawScheduleSchema = z.object({
   draws: z
@@ -58,6 +59,9 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         // that cannot work. A manual-adapter tenant sees false.
         revenue_system: adapter.displayName,
         verification_available: adapter.verifyInvoices,
+        // False while ServiceTitan is the revenue system. The console hides
+        // the local invoice recorder; the API refuses the same writes.
+        local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
         draws: rows.map(serialiseDraw),
       });
     }),
@@ -166,6 +170,7 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
       requireCapability(ctx.staff.role, 'record_external_invoice');
       const drawId = parseUuidParam(ctx.req.params.id, 'Draw');
       const draw = await loadVisibleDraw(ctx, drawId);
+      await assertLocalCustomerInvoicesAllowed(ctx.db);
       const body = parseBody(externalInvoiceSchema, ctx.req.body);
 
       if (draw.external_invoice_number) {
@@ -176,15 +181,11 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         );
       }
 
-      // Shortcut for the common case: this draw was billed, and here is the
-      // number the resulting invoice carries in the revenue system. It issues
-      // the project invoice and records its external reference in one call,
-      // because that is what "record the invoice number for this draw" means
-      // now that this module produces the customer's document.
-      //
-      // Use POST /draws/:id/invoice and POST /invoices/:id/external-ref when
-      // the two happen at different times, which is the usual case once the
-      // adapter is doing the recording.
+      // When ServiceTitan is not the revenue system, this stores the invoice
+      // number and inserts a local project_invoices row if the draw does not
+      // have one. The ServiceTitan check above runs first, so this insert
+      // never happens while ServiceTitan owns revenue. Neither branch writes
+      // a customer invoice to ServiceTitan or QuickBooks.
       const existing = await ctx.db.query<{ id: string }>(
         `SELECT id FROM projects.project_invoices
           WHERE draw_id = $1 AND status <> 'void'`,

@@ -1,20 +1,25 @@
 import type { SqlClient } from '../db/database.js';
 
 /**
- * The revenue system of record, behind an interface.
+ * The revenue system of record, behind an interface that only checks an
+ * invoice that already exists.
  *
- * No field service platform is named in the data model, and none is named
- * here either — a tenant registers whichever system holds their customers and
- * revenue and this module stores opaque ids. Two rules that are not
- * negotiable and are enforced by the shape of this interface:
+ * Customer invoices are created in ServiceTitan only, and ServiceTitan
+ * exports them to QuickBooks. Journeyman reads ServiceTitan invoices to
+ * track draws and billing status, and it never creates or writes customer
+ * invoices to ServiceTitan or QuickBooks. This interface has verifyInvoice
+ * and nothing that creates an invoice.
  *
- *  - There is no write method. Not "a write method nobody calls" — none. The
- *    module is read-only against every external system in every
- *    configuration, and that is what keeps it from ever being blamed for
- *    corrupting a customer's books.
+ * Vendor bills still go from Journeyman to QuickBooks through the
+ * purchase_orders /api/pm-accounting bridge. That write is not on this
+ * interface. ServiceTitan writes that already exist — project notes, file
+ * attachments, appointment reschedule, and technician assignment — live on
+ * the ServiceTitan client and are not invoice writes.
  *
- *  - The manual adapter is built first, so graceful degradation is the default
- *    path rather than the fallback nobody tested.
+ * No field service platform is named in the data model. A tenant registers
+ * whichever system holds their customers and revenue, and this module stores
+ * opaque ids. The manual adapter is built first, so a tenant with no
+ * connector still records an invoice number without claiming it was verified.
  */
 
 export interface InvoiceVerification {

@@ -101,23 +101,20 @@ request borrows it next, and no code anywhere looks wrong.
 application role is a superuser, has `BYPASSRLS`, owns the tables, or if any
 table lost its policy.
 
-**5. Writes to external systems are deliberate, single-path, and never
-duplicated.** The handoff's original rule was that this module writes to
-nothing. That was lifted in August 2026 — see
-[`docs/INTEGRATION_DECISIONS.md`](docs/INTEGRATION_DECISIONS.md). What replaces
-it is narrower and harder:
-
-  - Revenue reaches QuickBooks by exactly one path — this module writes the
-    consolidated project invoice into ServiceTitan, and ST's existing sync
-    carries it to QuickBooks. This module never writes an invoice to
-    QuickBooks, because that would post revenue twice.
-  - Vendor bills go to QuickBooks directly, because ServiceTitan has no concept
-    of these subcontractors and there is no second path to duplicate.
-  - Scheduling is pulled, not pushed. In-house appointments are created in ST
-    and mirrored here.
-  - Every outbound write carries an idempotency key and is recorded before it
-    is attempted, because a timeout that actually succeeded is indistinguishable
-    from one that did not.
+**5. Customer invoices are created in ServiceTitan only, and ServiceTitan
+exports them to QuickBooks.** Journeyman reads ServiceTitan invoices to track
+draws and billing status, and it never creates or writes customer invoices to
+ServiceTitan or QuickBooks. While ServiceTitan is the revenue system, the local
+invoice actions return 409 and the console hides them; they still work only
+when ServiceTitan is not the revenue system. Vendor bills still go from Journeyman to QuickBooks
+through the purchase_orders `/api/pm-accounting` bridge. Scheduling is pulled,
+not pushed: in-house appointments are created in ServiceTitan and mirrored
+here. The ServiceTitan writes that already exist — project notes, file
+attachments, appointment reschedule, and technician assignment — are not
+invoice writes. Outbound writes that do exist carry an idempotency key and are
+recorded before they are attempted, because a timeout that actually succeeded
+is indistinguishable from one that did not. See
+[`docs/INTEGRATION_DECISIONS.md`](docs/INTEGRATION_DECISIONS.md).
 
 **6. Two route trees, separately authenticated.** `/api/v1/projects/…` for
 staff, `/api/v1/portal/…` for subcontractors — two resolvers, two session
@@ -150,7 +147,7 @@ src/
     staffSession.ts     staff identity; must not be imported by the portal tree
   routes/
   adapters/
-    externalSystem.ts   the revenue system of record; note there is no write method
+    externalSystem.ts   reads the revenue system of record; does not write customer invoices
 client/                 the console — the reference mock, on live data. No build step.
 scripts/
   devServer.ts          pnpm dev: in-process Postgres, demo data, console

@@ -6,6 +6,7 @@ import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from './shared.js';
 import { applyApprovedChangeOrder } from '../domain/changeOrders.js';
+import { serviceTitanOwnsRevenue } from '../domain/localInvoices.js';
 
 const lineSchema = z.object({
   cost_code_id: z.string().uuid(),
@@ -66,6 +67,7 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
 
       sendData(ctx.res, {
         approval_threshold: settings,
+        local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
         change_orders: rows.map((co) => ({
           ...co,
           customer_amount: num(co.customer_amount),
@@ -228,10 +230,9 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
         throw new ApiError('conflict', `This change order is already ${co.status}.`);
       }
 
-      // "Send" records that it went out. Producing and delivering the document
-      // is still the revenue system's job — this module originates the
-      // consolidated project invoice, not the change order paperwork. See
-      // docs/INTEGRATION_DECISIONS.md.
+      // "Send" records that it went out. Customer invoices are created in
+      // ServiceTitan only. This call does not write an invoice to ServiceTitan
+      // or QuickBooks. See docs/INTEGRATION_DECISIONS.md.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `UPDATE projects.change_orders SET status = 'sent', sent_at = now()
           WHERE id = $1

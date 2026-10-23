@@ -4,6 +4,7 @@ import { sendData } from '../http/envelope.js';
 import { ApiError, notFound } from '../http/errors.js';
 import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
+import { assertLocalCustomerInvoicesAllowed } from '../domain/localInvoices.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam } from './shared.js';
 
 /**
@@ -342,8 +343,7 @@ async function issue(
     note: string | null;
   },
 ): Promise<Record<string, unknown>> {
-  const owner=await ctx.db.query("SELECT id FROM projects.external_systems WHERE active AND adapter_key='servicetitan' AND is_revenue_system_of_record");
-  if(owner.rows.length)throw new ApiError('conflict','Customer invoices are issued in ServiceTitan. Record the ST invoice reference on the project draw.');
+  await assertLocalCustomerInvoicesAllowed(ctx.db);
   const project = await ctx.db.query<{ project_number: string }>(
     `SELECT project_number FROM projects.projects WHERE id = $1`,
     [input.projectId],

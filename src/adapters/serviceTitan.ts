@@ -63,8 +63,11 @@ export interface ServiceTitanConfig {
 export class ServiceTitanReadError extends Error {}
 export class ServiceTitanWriteUncertainError extends ServiceTitanReadError {}
 
-/** A read-only, explicitly configured client. It does not use a process-global
+/** An explicitly configured ServiceTitan client. It does not use a process-global
  * token or default tenant: callers must supply the connection for their tenant.
+ * It reads projects, jobs, appointments, and assignments. The writes it already
+ * has are project notes, file attachments, appointment reschedule, and
+ * technician assignment. It does not create or write customer invoices.
  * Reuses the PO application's host allowlist/authentication pattern, without
  * coupling this module to its singleton state or exposing source payloads. */
 export class ServiceTitanReadAdapter {

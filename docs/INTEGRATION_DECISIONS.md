@@ -1,14 +1,27 @@
 # Integration: decisions taken, and the one that can double-bill a customer
 
+## 2026-10-23 — customer invoices stay in ServiceTitan
+
+This replaces the August 2026 answer that Journeyman generates project invoices and writes them into ServiceTitan.
+
+Customer invoices are created in ServiceTitan only, and ServiceTitan exports them to QuickBooks. Journeyman reads ServiceTitan invoices to track draws and billing status, and it never creates or writes customer invoices to ServiceTitan or QuickBooks. Vendor bills still go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge.
+
+While ServiceTitan is the revenue system of record, `POST /draws/:id/invoice`, `POST /change-orders/:id/invoice`, and `POST /draws/:id/external-invoice` return 409 and do not insert a `project_invoices` row. The console hides the draw invoice recorder and says why. Those three actions still create a local invoice row only when ServiceTitan is not the revenue system. They still do not write to ServiceTitan or QuickBooks. Recording a ServiceTitan invoice number on the draw, without also creating a local invoice row, is not a separate action.
+
+The August record below stays so the earlier double-bill hazard is visible. Where it says this app originates or writes the project invoice, the 2026-10-23 decision wins. Customer-draw retainage (`draws.is_retainage`, the 30/30/30/10 schedule) is a different concept and is unchanged.
+
+---
+
 **Decided by Mason, August 2026.** This supersedes handoff README rules 2 and 3
 and Addendum §4. Recorded here because the repository asserted the opposite in
-several places and those have been corrected.
+several places and those have been corrected. The October 2026 decision above
+supersedes answer 3 and the accounts-receivable half of the topology.
 
 | # | Question | Answer |
 |---|---|---|
 | 1 | Is read-only lifted? | **Yes, for both ServiceTitan and QuickBooks** |
 | 2 | What does the ST↔QB sync carry? | **Invoices and payments** |
-| 3 | Who originates customer invoices? | **Daily invoices stay in ST. Project invoices are consolidated and generated in this app.** |
+| 3 | Who originates customer invoices? | **ServiceTitan only, including project invoices.** Journeyman reads them. The August answer (project invoices generated here) was superseded on 2026-10-23. |
 | 4 | Which QuickBooks? | **QuickBooks Online.** ST already syncs invoices to it |
 | 5 | Scheduling | Project jobs can be scheduled on in-house techs **in ST**, and must be **pulled into** this app. This app is the consolidated source for everything about the project |
 | 6 | Sandboxes | Mason |
@@ -16,6 +29,8 @@ several places and those have been corrected.
 ---
 
 ## The hazard: a project job can be invoiced twice, to the customer
+
+This section is the August 2026 hazard. It assumed Journeyman would generate the customer invoice. That path was not adopted. Customer invoices are created in ServiceTitan only.
 
 This is the one to settle before any code.
 
@@ -57,36 +72,23 @@ Recommendation: 1 and 3. Treat 2 as a bonus.
 
 ## The resolved topology
 
-The thing that makes it work is that "generated in this app" and "recorded in
-ServiceTitan" are not in conflict. This app **originates** the project invoice —
-it decides the amount, the timing, and what it covers. ST **records** it, and
-ST's existing sync carries it to QuickBooks.
+**Current as of 2026-10-23.** Customer invoices are created in ServiceTitan only, and ServiceTitan exports them to QuickBooks. Journeyman reads ServiceTitan invoices to track draws and billing status, and it never creates or writes customer invoices to ServiceTitan or QuickBooks. Vendor bills still go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge.
+
+While ServiceTitan is the revenue system of record, `POST /draws/:id/invoice`, `POST /change-orders/:id/invoice`, and `POST /draws/:id/external-invoice` return 409 and do not insert a `project_invoices` row. The console hides the draw invoice recorder and says why. Those three actions still create a local invoice row only when ServiceTitan is not the revenue system. They still do not write to ServiceTitan or QuickBooks. Recording a ServiceTitan invoice number on the draw, without also creating a local invoice row, is not a separate action.
 
 ```
-  Estimating ──snapshot──▶  PROJECTS  ◀──appointments pulled── ServiceTitan
-                               │                                     ▲
-                 AR           │            AP                       │
-     ┌──────────────────────────┴──────────────────┐                 │
-     │                                             ▼                 │
-     └───── consolidated project invoice ──────────────────────────►─┘
-                                                   │
-                                        QuickBooks Online
-                                        ▲                ▲
-                            AP (bills)  │                │  AR (invoices,
-                            direct from │                │  payments) via the
-                            Projects    │                │  existing ST sync
+  Estimating ──snapshot──▶  JOURNEYMAN  ◀──invoices and appointments read── ServiceTitan
+                               │                                                │
+                               │ AP: vendor bills                               │ AR: customer invoices
+                               ▼                                                ▼
+                          QuickBooks Online ◀──────── existing ST export ──────┘
 ```
 
-**Revenue (AR).** Projects composes the draw invoice and writes it into ST
-against the project job. ST's existing sync carries it, and the payment against
-it, into QuickBooks. Revenue posts **once**, by the path it already travels, and
-ST job profitability stays correct. Projects never writes an invoice to
-QuickBooks — that is the double-post you asked about in question 2, and this is
-how it is avoided.
+**Revenue (AR).** ServiceTitan creates the customer invoice and exports it to QuickBooks. Journeyman does not write that invoice to either system. It reads the ServiceTitan invoice to track the draw and the billing status. Revenue posts once, on the path ServiceTitan already uses.
 
-**Cost (AP).** Vendor bills go from Projects to QuickBooks Online directly.
-ServiceTitan has no concept of these subcontractors, so there is no second path
-and nothing to duplicate. This is the one place Projects talks to QB at all.
+**Cost (AP).** Vendor bills go from Journeyman to QuickBooks through the purchase_orders `/api/pm-accounting` bridge. ServiceTitan has no concept of these subcontractors, so there is no second path and nothing to duplicate.
+
+The August diagram that sent a consolidated project invoice from this app into ServiceTitan is not the path.
 
 **Scheduling.** One direction: pulled. In-house appointments are created in ST,
 where the dispatch board and payroll live, and mirrored into this app so the
@@ -113,10 +115,10 @@ was paid, unless the ST invoice lookback also returns payment status. Worth
 including in the read adapter — "invoiced but unpaid at 60 days" is a report
 somebody wants.
 
-**Retention is not modelled on the customer side.** `vendor_bills.retention_held`
-exists for money withheld from subs. Nothing withholds retention from a customer
-draw. If these contracts hold retainage, the consolidated invoice is wrong and
-that is a schema addition.
+**Customer-draw retainage is modelled.** `draws.is_retainage` and the
+30/30/30/10 schedule withhold the last draw until closeout. Vendor bills do not
+calculate retainage. `vendor_bills.retention_held` is only a stored amount, and
+approval refuses a bill that still carries one.
 
 **Change orders and the draw schedule need reconciling.** An approved change
 order raises the revised contract, but the draw schedule was written against the
@@ -139,7 +141,7 @@ are unblocked now.
 | 4 | ST adapter, read: customer, job, appointments, invoice lookback, payment status | ST sandbox |
 | 5 | Appointment mirror: pull ST appointments onto the project schedule | 4 |
 | 6 | Unexpected-invoice exception — the double-bill backstop | 4 |
-| 7 | ST adapter, write: create job at project creation, create the consolidated draw invoice | 4, and the ST job-type configuration decision |
+| 7 | ST adapter, write a customer invoice | **Not adopted (2026-10-23).** ServiceTitan creates customer invoices. Journeyman does not. |
 | 8 | QBO adapter: OAuth2, customer/project resolution, vendor bill push | QBO sandbox |
 
 Rough: 1–3 is about two weeks. 4–7 about three. 8 about two, most of it OAuth
@@ -199,12 +201,10 @@ on it somebody sends it out with the job's margin at the bottom.
 
 ## Still needed from you
 
-1. **Does ServiceTitan still raise daily invoices on project jobs?** Your answer
-   pointed at reconciliation rather than prevention, which works — but if ST
-   daily invoices AND this app's consolidated draw invoices both reach the same
-   customer, that is still a double bill. Reconciliation surfaces it; it does
-   not stop it. The question is whether project jobs are configured not to
-   invoice, so that only this app bills them.
+1. **Which ServiceTitan invoice belongs to which draw?** Journeyman does not
+   create the customer invoice. It reads the ServiceTitan invoice and records
+   the reference on the draw. Matching one ST invoice to one draw, and what to
+   do when several invoices cover one draw, is still open.
 2. **Is retainage held on change orders too**, or only on the original contract?
    The schedule holds 10% of the original; a change order invoiced separately
    currently has none held against it.
