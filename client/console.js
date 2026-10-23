@@ -750,6 +750,32 @@ function milestoneDetail(m, permit) {
   return permit.jurisdiction || "";
 }
 
+function serviceTitanNumberControl(dr, drawData, canRecord) {
+  const verified = dr.external_invoice_verified_at;
+  const recorded = dr.external_invoice_number
+    ? `ServiceTitan invoice · ${esc(dr.external_invoice_number)} · ${
+        verified ? "verified" : "recorded, not verified"
+      }`
+    : `No ServiceTitan invoice number on this draw. Recording it does not create an invoice in ${esc(
+        drawData.revenue_system,
+      )}.`;
+  if (!canRecord) {
+    return `<div class="stref"><span class="w">${recorded} Ask an owner, manager or office user to record it.</span></div>`;
+  }
+  return `<div class="stref${dr.external_invoice_number ? " filled" : ""}">
+        <span class="w">${recorded}</span>
+        <input id="st-${dr.id}" placeholder="ServiceTitan invoice #" aria-label="ServiceTitan invoice number" value="${esc(
+          dr.external_invoice_number || "",
+        )}">
+        <button data-st-record="${dr.id}">${
+          dr.external_invoice_number ? "Correct" : "Record"
+        }</button>${
+          dr.external_invoice_number
+            ? `<button data-st-clear="${dr.id}">Clear</button>`
+            : ""
+        }</div>`;
+}
+
 function renderDraws(drawData) {
   const canRecord = ["owner", "manager", "office"].includes(session.staff.role);
 
@@ -760,24 +786,28 @@ function renderDraws(drawData) {
         // The signature interaction. In the mock this wrote to a local object;
         // here it is a real write, and it is only offered to a role that holds
         // record_external_invoice — a button that 403s is worse than no button.
-        // While ServiceTitan is the revenue system the control is absent: the
-        // API would refuse the local invoice row.
-        ref = drawData.local_invoices_allowed === false
-          ? `<div class="stref"><span class="w">Customer invoices are created in ServiceTitan. Journeyman will not record a local invoice.</span></div>`
-          : canRecord
-          ? `<div class="stref">
+        // While ServiceTitan owns revenue the local recorder is replaced by a
+        // control that only stores the ServiceTitan invoice number.
+        ref =
+          drawData.local_invoices_allowed === false
+            ? serviceTitanNumberControl(dr, drawData, canRecord)
+            : canRecord
+              ? `<div class="stref">
         <span class="w">No invoice recorded in ${esc(drawData.revenue_system)}</span>
         <input id="in-${dr.id}" placeholder="Invoice #" aria-label="Invoice number in the revenue system">
-        <button data-id="${dr.id}">Record</button></div>`
-          : `<div class="stref">
+        <button data-record-invoice="${dr.id}" data-id="${dr.id}">Record</button></div>`
+              : `<div class="stref">
         <span class="w">No invoice recorded in ${esc(
           drawData.revenue_system,
         )} — ask an owner, manager or office user to record it</span></div>`;
       } else if (dr.external_invoice_number) {
         const verified = dr.external_invoice_verified_at;
-        ref = `<div class="stref filled"><span class="w">Invoiced · ${esc(
-          dr.external_invoice_number,
-        )} · ${verified ? "verified" : "recorded, not verified"}</span></div>`;
+        ref =
+          drawData.local_invoices_allowed === false
+            ? serviceTitanNumberControl(dr, drawData, canRecord)
+            : `<div class="stref filled"><span class="w">Invoiced · ${esc(
+                dr.external_invoice_number,
+              )} · ${verified ? "verified" : "recorded, not verified"}</span></div>`;
       } else if (dr.status === "scheduled") {
         ref = "";
       }
@@ -793,7 +823,7 @@ function renderDraws(drawData) {
     })
     .join("");
 
-  document.querySelectorAll("#draws button").forEach((btn) => {
+  document.querySelectorAll("#draws [data-record-invoice]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const input = el("in-" + btn.dataset.id);
       const value = (input.value || "").trim();
@@ -815,6 +845,47 @@ function renderDraws(drawData) {
         input.disabled = false;
         input.style.borderColor = "#B4231F";
         input.title = err.message;
+      }
+    });
+  });
+
+  document.querySelectorAll("#draws [data-st-record]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const input = el("st-" + btn.dataset.stRecord);
+      const value = (input.value || "").trim();
+      if (!value) {
+        input.focus();
+        input.style.borderColor = "#B4231F";
+        return;
+      }
+      btn.disabled = true;
+      input.disabled = true;
+      try {
+        await api(`/draws/${btn.dataset.stRecord}/external-invoice`, {
+          method: "PATCH",
+          body: JSON.stringify({ external_invoice_number: value }),
+        });
+        await select(current.id);
+      } catch (err) {
+        btn.disabled = false;
+        input.disabled = false;
+        input.style.borderColor = "#B4231F";
+        input.title = err.message;
+      }
+    });
+  });
+  document.querySelectorAll("#draws [data-st-clear]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/draws/${btn.dataset.stClear}/external-invoice`, {
+          method: "PATCH",
+          body: JSON.stringify({ external_invoice_number: null }),
+        });
+        await select(current.id);
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(err.message);
       }
     });
   });

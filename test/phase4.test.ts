@@ -384,3 +384,119 @@ it('still creates a local invoice when ServiceTitan is not the revenue system', 
   const issued = await owner().post(`/api/v1/projects/draws/${deposit!.id}/invoice`).send({});
   expect(issued.status, JSON.stringify(issued.body)).toBe(201);
 });
+
+it('records a ServiceTitan invoice number on the draw without a local invoice', async () => {
+  const [deposit] = await schedule();
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
+  await h.db.withTenant(t.id, (db) => db.query(
+    `INSERT INTO projects.external_systems
+       (tenant_id, adapter_key, display_name, is_revenue_system_of_record)
+     VALUES ($1, 'servicetitan', 'ST', true)`,
+    [t.id],
+  ));
+
+  const recorded = await h
+    .as(t.staff.office!.token)
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: '  ST-100  ' });
+  expect(recorded.status, JSON.stringify(recorded.body)).toBe(200);
+  expect(recorded.body.data.external_invoice_number).toBe('ST-100');
+  expect(recorded.body.data.status).toBe('invoiced');
+  expect(recorded.body.data.external_invoice_recorded_at).toBeTruthy();
+  expect(recorded.body.data.external_invoice_verified_at).toBeNull();
+
+  const posted = await owner()
+    .post(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'ST-999' });
+  expect(posted.status).toBe(409);
+  expect(posted.body.error.message).toMatch(/will not create a local invoice/i);
+
+  const corrected = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'ST-200' });
+  expect(corrected.status).toBe(200);
+  expect(corrected.body.data.external_invoice_number).toBe('ST-200');
+  expect(corrected.body.data.status).toBe('invoiced');
+  expect(corrected.body.data.external_invoice_verified_at).toBeNull();
+
+  await h.db.withTenant(t.id, (db) => db.query(
+    `UPDATE projects.draws SET external_invoice_verified_at = now() WHERE id = $1`,
+    [deposit!.id],
+  ));
+  const same = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'ST-200' });
+  expect(same.status).toBe(200);
+  expect(same.body.data.external_invoice_verified_at).toBeTruthy();
+
+  const blank = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: '   ' });
+  expect(blank.status).toBe(400);
+
+  const pm = await h
+    .as(t.staff.pm!.token)
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'PM-1' });
+  expect(pm.status).toBe(403);
+
+  const cleared = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: null });
+  expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+  expect(cleared.body.data.external_invoice_number).toBeNull();
+  expect(cleared.body.data.status).toBe('approved');
+  expect(cleared.body.data.external_invoice_recorded_at).toBeNull();
+  expect(cleared.body.data.external_invoice_verified_at).toBeNull();
+
+  const exceptions = await owner().get('/api/v1/projects/exceptions/draws');
+  expect(exceptions.body.data).toHaveLength(1);
+  expect(exceptions.body.data[0].label).toBe('Deposit');
+
+  await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'ST-300' });
+  await h.db.withTenant(t.id, (db) => db.query(
+    `UPDATE projects.draws SET status = 'paid' WHERE id = $1`,
+    [deposit!.id],
+  ));
+  const paid = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: null });
+  expect(paid.status).toBe(200);
+  expect(paid.body.data.external_invoice_number).toBeNull();
+  expect(paid.body.data.status).toBe('paid');
+
+  const stamp = await h.db.withTenant(t.id, (db) => db.query<{
+    recorded_by: string | null;
+    invoices: string;
+    discovered: string;
+  }>(
+    `SELECT d.external_invoice_recorded_by AS recorded_by,
+            (SELECT count(*)::text FROM projects.project_invoices WHERE project_id = $1) AS invoices,
+            (SELECT count(*)::text FROM projects.external_invoices WHERE project_id = $1) AS discovered
+       FROM projects.draws d WHERE d.id = $2`,
+    [projectId, deposit!.id],
+  ));
+  expect(stamp.rows[0]?.recorded_by).toBeNull();
+  expect(stamp.rows[0]?.invoices).toBe('0');
+  expect(stamp.rows[0]?.discovered).toBe('0');
+  expect((await owner().get(`/api/v1/projects/projects/${projectId}/invoices`)).body.data).toHaveLength(0);
+});
+
+it('stores an invoice number on the draw without a local row when ServiceTitan is not the revenue system', async () => {
+  const [deposit] = await schedule();
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
+  await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
+  const recorded = await owner()
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'LOCAL-1' });
+  expect(recorded.status).toBe(200);
+  expect(recorded.body.data.status).toBe('invoiced');
+  const rows = await h.db.withTenant(t.id, (db) => db.query(
+    `SELECT id FROM projects.project_invoices WHERE draw_id = $1`,
+    [deposit!.id],
+  ));
+  expect(rows.rows).toEqual([]);
+});
