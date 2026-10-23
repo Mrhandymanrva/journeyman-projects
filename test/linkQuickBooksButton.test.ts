@@ -73,7 +73,10 @@ function screen(api: (path: string, options?: { method?: string; body?: string }
     api,
     el: (id: string) => nodes.get(id) ?? null,
     esc: (value: unknown) => String(value ?? ''),
-    can: (capability: string) => capability === 'approve_vendor_bill',
+    can: (capability: string) =>
+      capability === 'approve_vendor_bill' ||
+      capability === 'link_material_purchase' ||
+      capability === 'issue_purchase_order',
     current: () => ({ id: 'project-1' }),
     openDrawer(title: string, html: string) {
       nodes.get('drawer-title')!.textContent = title;
@@ -159,6 +162,8 @@ describe('Link QuickBooks transaction', () => {
     const cabinets = html.slice(html.indexOf('SO92493149'), html.indexOf('SUB-1'));
     expect(cabinets).not.toContain('OVER CONTRACT');
     expect(cabinets).not.toContain('Review & approve');
+    expect(cabinets).toContain('Awaiting card charge');
+    expect(cabinets).not.toContain('Not sent');
     expect(cabinets).toContain('Link QuickBooks transaction');
 
     const button = payables._links[0]!;
@@ -198,5 +203,36 @@ describe('Link QuickBooks transaction', () => {
     expect(linked?.body).toContain('"qbo_txn_type":"Purchase"');
     expect(linked?.body).toContain('"qbo_id":"9001"');
     expect(calls.some((call) => call.path.includes('/approve'))).toBe(false);
+  });
+
+  it('suggests the closer card charge and shows a tax or shipping variance', async () => {
+    const { accounting, payables, nodes } = screen(async (path) => {
+      if (path === '/accounting/catalog') return { connected: false, accounts: [], customers: [] };
+      if (path.includes('/vendor-bills')) {
+        return {
+          bills: [{ ...material, vendor: 'Home Depot', invoice_date: '2026-10-01', amount: 100, card_charge_state: 'awaiting_card_charge' }],
+          qbo_customer_id: null,
+        };
+      }
+      if (path.endsWith('/qbo-candidates')) {
+        return {
+          transactions: [
+            { id: 'far', txn_type: 'Purchase', doc_number: 'FAR', total: 500, txn_date: '2026-01-01', vendor_name: 'Other Store', variance: 400 },
+            { id: 'card', txn_type: 'Purchase', doc_number: 'CARD', total: 102.5, txn_date: '2026-10-02', vendor_name: 'Home Depot', variance: 2.5 },
+          ],
+        };
+      }
+      if (path.includes('/purchase-orders')) return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    await accounting.render();
+    expect(payables.innerHTML).toContain('Awaiting card charge');
+    expect(payables.innerHTML).toContain('card charges cannot be looked up yet');
+    expect(payables.innerHTML).not.toContain('Review & approve');
+    await payables._links[0]!.onclick?.();
+    const options = nodes.get('ap-link-body')!.innerHTML;
+    expect(options.indexOf('CARD')).toBeLessThan(options.indexOf('FAR'));
+    expect(options).toContain('Suggested');
+    expect(options).toMatch(/variance/i);
   });
 });

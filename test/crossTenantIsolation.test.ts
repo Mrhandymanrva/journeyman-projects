@@ -637,6 +637,17 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/po-lines/${f.poLineId}`,
   },
   {
+    method: "post",
+    template: `${BASE}/projects/:id/material-bills`,
+    path: (f) => `${BASE}/projects/${f.projectId}/material-bills`,
+    body: (f) => ({
+      supplier_name: "Foreign supplier",
+      cost_code_id: f.costCodeId,
+      amount: 10,
+      order_number: "ORD-FOREIGN",
+    }),
+  },
+  {
     method: "get",
     template: `${BASE}/purchase-orders/:id/qbo-candidates`,
     path: (f) => `${BASE}/purchase-orders/${f.poId}/qbo-candidates`,

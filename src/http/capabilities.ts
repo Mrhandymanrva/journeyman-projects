@@ -27,6 +27,9 @@ export const CAPABILITIES = {
   edit_budget_before_freeze: ['owner', 'manager', 'project_manager'],
   issue_purchase_order: ['owner', 'manager', 'project_manager'],
   approve_vendor_bill: ['owner', 'manager', 'bookkeeper'],
+  // Matching a card charge is not approving a subcontract bill. A project
+  // manager records the material order and later links the QuickBooks charge.
+  link_material_purchase: ['owner', 'manager', 'bookkeeper', 'project_manager'],
   manage_company_settings: ['owner', 'manager'],
   approve_draw: ['owner', 'manager'],
   record_external_invoice: ['owner', 'manager', 'office'],
