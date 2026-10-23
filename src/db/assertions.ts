@@ -57,6 +57,8 @@ export const TENANT_SCOPED_TABLES = [
   'stage_gates',
   'budget_lines',
   'purchase_orders',
+  'po_lines',
+  'po_line_changes',
   'vendor_bills',
   'change_orders',
   'change_order_lines',

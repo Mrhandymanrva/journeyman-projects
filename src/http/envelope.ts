@@ -69,6 +69,9 @@ function mapDatabaseError(
   if (pgCode === '23514' && /cannot be scheduled/i.test(message)) {
     return { status: 409, code: 'compliance_blocked', message };
   }
+  if (pgCode === '23514' && /purchase order line/i.test(message)) {
+    return { status: 409, code: 'conflict', message };
+  }
   if (pgCode === '23505') {
     return { status: 409, code: 'conflict', message: 'That record already exists.' };
   }

@@ -27,6 +27,8 @@ const createPoSchema = z
     window_start: z.string().date().nullish(),
     window_end: z.string().date().nullish(),
     issue: z.boolean().default(false),
+    kind: z.enum(['subcontract', 'material']).optional(),
+    retainage_pct: z.number().min(0).max(50).optional(),
   })
   .refine((v) => Boolean(v.vendor_id) || Boolean(v.supplier_name), {
     message: 'Provide vendor_id, or supplier_name for a counter purchase',
@@ -62,6 +64,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       await loadVisibleProject(ctx, projectId, 'id');
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT po.id, po.po_number, po.status::text AS status, po.amount,
+                po.kind::text AS kind, po.retainage_pct,
                 po.cost_code_id, cc.code AS cost_code, cc.description AS cost_code_description,
                 po.cost_type::text AS cost_type, po.vendor_id,
                 COALESCE(v.legal_name, po.supplier_name) AS vendor,
@@ -70,7 +73,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
                 COALESCE(b.billed, 0) AS billed,
                 po.amount - COALESCE(b.billed, 0) AS open_amount
            FROM projects.purchase_orders po
-           JOIN projects.cost_codes cc ON cc.id = po.cost_code_id
+           LEFT JOIN projects.cost_codes cc ON cc.id = po.cost_code_id
            LEFT JOIN projects.vendors v ON v.id = po.vendor_id
            LEFT JOIN LATERAL (
              SELECT sum(vb.amount) AS billed FROM projects.vendor_bills vb
@@ -85,6 +88,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         rows.map((r) => ({
           ...r,
           amount: num(r.amount),
+          retainage_pct: num(r.retainage_pct),
           billed: num(r.billed),
           open_amount: num(r.open_amount),
         })),
@@ -111,15 +115,16 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         await assertVendorSchedulable(ctx, body.vendor_id);
       }
 
+      const kind = body.kind ?? (body.vendor_id ? 'subcontract' : 'material');
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.purchase_orders
            (tenant_id, project_id, po_number, vendor_id, supplier_name, cost_code_id,
             cost_type, amount, scope_text, exclusions, window_start, window_end,
-            status, issued_by, issued_at)
+            status, issued_by, issued_at, kind, retainage_pct)
          VALUES ($1,$2,$3,$4,$5,$6,$7::projects.cost_type,$8,$9,$10,$11,$12,
-                 $13::projects.po_status, $14, $15)
+                 $13::projects.po_status, $14, $15, $16::projects.po_kind, $17)
          RETURNING id, po_number, status::text AS status, amount, scope_text,
-                   exclusions, window_start, window_end, issued_at`,
+                   exclusions, window_start, window_end, issued_at, kind::text AS kind`,
         [
           ctx.staff.tenantId,
           projectId,
@@ -136,6 +141,26 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
           body.issue ? 'issued' : 'draft',
           body.issue ? ctx.staff.staffId : null,
           body.issue ? new Date().toISOString() : null,
+          kind,
+          body.retainage_pct ?? 0,
+        ],
+      );
+      // The header amount is derived from lines. One line keeps the create
+      // payload the console and the existing tests already send.
+      await ctx.db.query(
+        `INSERT INTO projects.po_lines
+           (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount, budget_line_id)
+         VALUES ($1,$2,1,$3,$4::projects.cost_type,'',$5,
+           (SELECT id FROM projects.budget_lines
+             WHERE project_id = $6 AND cost_code_id = $3 AND cost_type = $4::projects.cost_type
+             LIMIT 1))`,
+        [
+          ctx.staff.tenantId,
+          rows[0]!.id,
+          body.cost_code_id,
+          body.cost_type,
+          body.amount,
+          projectId,
         ],
       );
       // v_cost_position matches a commitment to a budget line on cost code AND
@@ -212,6 +237,29 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
 
       if (body.status === 'issued' && po.status === 'draft' && po.vendor_id) {
         await assertVendorSchedulable(ctx, po.vendor_id);
+      }
+
+      if (body.amount !== undefined && po.status !== 'draft') {
+        throw new ApiError(
+          'conflict',
+          'An issued purchase order changes amount only through an approved change order.',
+        );
+      }
+      if (body.amount !== undefined && po.status === 'draft') {
+        const lines = await ctx.db.query<{ id: string; n: string }>(
+          `SELECT id, count(*) OVER ()::text AS n FROM projects.po_lines WHERE po_id = $1`,
+          [poId],
+        );
+        if (Number(lines.rows[0]?.n ?? 0) !== 1) {
+          throw new ApiError(
+            'conflict',
+            'This purchase order has more than one line. Edit the lines instead of the header amount.',
+          );
+        }
+        await ctx.db.query(
+          `UPDATE projects.po_lines SET original_amount = $2 WHERE id = $1`,
+          [lines.rows[0]!.id, body.amount],
+        );
       }
 
       const assignable: Record<string, unknown> = {
