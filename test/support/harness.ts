@@ -37,6 +37,7 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/022_vendor_sync.sql"),
   path.join(repoRoot, "db/023_agreement_advisory.sql"),
   path.join(repoRoot, "db/024_po_lines.sql"),
+  path.join(repoRoot, "db/025_bid_request_lines.sql"),
   path.join(repoRoot, "db/026_bill_lines.sql"),
   path.join(repoRoot, "db/029_tenant_accounting_settings.sql"),
 ];
@@ -60,6 +61,7 @@ export interface Harness {
 export interface TokenScopedRequest {
   get(url: string): supertest.Test;
   post(url: string): supertest.Test;
+  put(url: string): supertest.Test;
   patch(url: string): supertest.Test;
   del(url: string): supertest.Test;
 }
@@ -96,6 +98,7 @@ export async function startHarness(
       return {
         get: (url) => auth(request.get(url)),
         post: (url) => auth(request.post(url)),
+        put: (url) => auth(request.put(url)),
         patch: (url) => auth(request.patch(url)),
         del: (url) => auth(request.delete(url)),
       };
