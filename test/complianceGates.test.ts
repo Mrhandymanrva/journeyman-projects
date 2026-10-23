@@ -194,9 +194,10 @@ describe('compliance gates', () => {
         [t.id, JSON.stringify([{ id: '71', name: 'Subcontractors' }])],
       );
       await c.query(
-        `INSERT INTO projects.accounting_queue (tenant_id, kind, record_id, payload, realm, state)
-         VALUES ($1, 'vendor', $2, '{}'::jsonb, '123', 'synced')`,
-        [t.id, vendorId],
+        `UPDATE projects.accounting_queue
+            SET realm = '123', state = 'synced'
+          WHERE kind = 'vendor' AND record_id = $1`,
+        [vendorId],
       );
     });
     expect(
