@@ -447,7 +447,7 @@ export function createAccounting({
     const blocked = linkBlockReason(bill);
     openDrawer(
       "Link QuickBooks transaction",
-      `<p>${esc(bill.vendor_invoice_number)} · ${money(bill.amount)}</p><p class="note">This records a Bill or Purchase that already exists in QuickBooks. It does not create a bill and does not queue one. The lookup does not depend on the purchase order amount, whether that order is a draft or issued, a project QuickBooks customer, a vendor QuickBooks id, or a refreshed chart of accounts.</p><p class="msg" id="drawer-msg"></p><div id="ap-link-body"></div>`,
+      `<p>${esc(bill.vendor_invoice_number)} · ${money(bill.amount)}</p><p class="note">This records a Bill or Purchase that already exists in QuickBooks. It does not create a bill and does not queue one. The search uses a window around the bill date and an amount range that leaves room for tax and shipping. It does not depend on the purchase order amount, whether that order is a draft or issued, a project QuickBooks customer, a vendor QuickBooks id, or a refreshed chart of accounts.</p><p class="msg" id="drawer-msg"></p><div id="ap-link-body"></div>`,
     );
     if (blocked) {
       showLinkMessage(blocked, true);
@@ -455,28 +455,34 @@ export function createAccounting({
     }
     showLinkMessage("Looking up Bills and Purchases in QuickBooks…");
     try {
-      const found = await api(`/purchase-orders/${bill.po_id}/qbo-candidates`);
+      const found = await api(
+        `/purchase-orders/${bill.po_id}/qbo-candidates?bill_id=${encodeURIComponent(bill.id)}`,
+      );
       const txns = (found?.transactions || []).filter((txn) => txn && txn.id);
       const body = el("ap-link-body");
       if (!body) {
         showLinkMessage("The link dialog is not on this page.", true);
         return;
       }
+      const truncatedNote = found?.truncated
+        ? `<p class="note" id="ap-link-truncated">QuickBooks marked this list truncated. A matching charge may sit outside the rows shown.</p>`
+        : "";
       if (!txns.length) {
         showLinkMessage(
           "QuickBooks returned no Bill or Purchase. Nothing was linked and nothing was queued. This lookup does not use the stored chart of accounts.",
         );
-        body.innerHTML = `<button class="btn primary" id="ap-link-save" type="button" disabled>Link and do not send again</button>`;
+        body.innerHTML = `${truncatedNote}<button class="btn primary" id="ap-link-save" type="button" disabled>Link and do not send again</button>`;
         return;
       }
       showLinkMessage("A difference for tax or shipping can be linked. The project keeps the order amount, and the variance is shown.");
       const ranked = rankCharges(txns, bill);
-      body.innerHTML = `<label>Transaction<select id="ap-txn">${ranked
+      const options = ranked
         .map(
           (item, index) =>
             `<option value="${esc(item.txn.txn_type)}:${esc(item.txn.id)}">${index === 0 ? "Suggested · " : ""}${esc(item.txn.txn_type)} ${esc(item.txn.doc_number || item.txn.id)} · ${money(item.txn.total)} · ${esc(item.txn.txn_date || "")}${item.txn.vendor_name ? " · " + esc(item.txn.vendor_name) : ""} · ${esc(varianceText(item.variance))}</option>`,
         )
-        .join("")}</select></label><button class="btn primary" id="ap-link-save" type="button">Link and do not send again</button>`;
+        .join("");
+      body.innerHTML = `${truncatedNote}<label>Transaction<select id="ap-txn">${options}</select></label><button class="btn primary" id="ap-link-save" type="button">Link and do not send again</button>`;
       el("ap-link-save").onclick = async () => {
         const select = el("ap-txn");
         const value = select?.value || "";

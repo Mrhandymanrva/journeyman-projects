@@ -8,6 +8,7 @@ import { ApiError, notFound } from '../http/errors.js';
 import { can, requireCapability } from '../http/capabilities.js';
 import { staffExternalRoute, staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { grossFromPercent, roundMoney } from '../domain/poMath.js';
+import { payablesAmountBand, payablesAnchor, payablesWindow } from '../domain/payablesWindow.js';
 import { assertReadyToIssue, assertSubcontractCompliance } from '../domain/vendorCompliance.js';
 import {
   loadVisibleProject,
@@ -734,29 +735,9 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       async (prepared) => readBridge(accounting!, prepared),
       async (ctx, prepared, result) => {
         if (!result.ok) throw bridgeRejection(prepared.action, result.message);
-        const pending = await ctx.db.query<{
-          amount: string;
-          invoice_date: string | null;
-          vendor: string | null;
-        }>(
-          `SELECT b.amount::text AS amount, b.invoice_date::text AS invoice_date,
-                  COALESCE(v.legal_name, po.supplier_name) AS vendor
-             FROM projects.vendor_bills b
-             JOIN projects.purchase_orders po ON po.id = b.po_id
-             LEFT JOIN projects.vendors v ON v.id = po.vendor_id
-            WHERE b.po_id = $1 AND b.status = 'received' AND po.kind = 'material'
-            ORDER BY b.received_at DESC
-            LIMIT 1`,
-          [prepared.poId],
-        );
-        const bill = pending.rows[0];
         sendData(ctx.res, {
-          transactions: rankPayables(
-            normalizePayables(result.result),
-            bill
-              ? { amount: num(bill.amount) ?? 0, invoiceDate: bill.invoice_date, vendor: bill.vendor }
-              : null,
-          ),
+          truncated: Boolean(result.result?.truncated),
+          transactions: rankPayables(normalizePayables(result.result), prepared.bill ?? null),
         });
       },
     ),
@@ -1189,12 +1170,23 @@ async function planBillLines(
   };
 }
 
+interface PayableBill {
+  amount: number;
+  invoiceDate: string | null;
+  vendor: string | null;
+}
+
 interface QboRead {
   action: string;
   qboId?: string;
   realm: string | null;
   vendorQboId: string | null;
   poId?: string;
+  from?: string;
+  to?: string;
+  minAmount?: number;
+  maxAmount?: number;
+  bill?: PayableBill | null;
 }
 
 async function prepareQboRead(
@@ -1222,6 +1214,44 @@ async function prepareQboRead(
       'QuickBooks connector is configured for a different company than this login. Nothing was linked or queued.',
     );
   }
+  const requested = requestedBillId(ctx);
+  const pending = await ctx.db.query<{
+    id: string;
+    amount: string;
+    invoice_date: string | null;
+    received_date: string | null;
+    vendor: string | null;
+  }>(
+    `SELECT b.id, b.amount::text AS amount, b.invoice_date::text AS invoice_date,
+            (b.received_at AT TIME ZONE 'UTC')::date::text AS received_date,
+            COALESCE(v.legal_name, po.supplier_name) AS vendor
+       FROM projects.vendor_bills b
+       JOIN projects.purchase_orders po ON po.id = b.po_id
+       LEFT JOIN projects.vendors v ON v.id = po.vendor_id
+      WHERE b.po_id = $1 AND b.status = 'received' AND po.kind = 'material'
+        AND ($2::uuid IS NULL OR b.id = $2)
+      ORDER BY b.received_at DESC
+      LIMIT 1`,
+    [po.id, requested],
+  );
+  const row = pending.rows[0];
+  if (!row) {
+    throw new ApiError(
+      'conflict',
+      requested
+        ? 'That received material bill is not on this purchase order, so the QuickBooks lookup did not run. Nothing was linked or queued.'
+        : 'There is no received material bill to match, so the QuickBooks lookup did not run. Nothing was linked or queued.',
+    );
+  }
+  const anchor = payablesAnchor(row.invoice_date, row.received_date);
+  if (!anchor) {
+    throw new ApiError(
+      'conflict',
+      'This material bill has no invoice date or received date, so the QuickBooks lookup did not run. Nothing was linked or queued.',
+    );
+  }
+  const window = payablesWindow(anchor);
+  const band = payablesAmountBand(num(row.amount) ?? 0);
   let vendorQboId: string | null = null;
   if (po.vendor_id) {
     const vendor = await ctx.db.query<{ qbo_id: string | null }>(
@@ -1231,7 +1261,32 @@ async function prepareQboRead(
     vendorQboId = vendor.rows[0]?.qbo_id ?? null;
   }
   const config = await ctx.db.query<{ realm: string }>(`SELECT realm FROM projects.accounting_config`);
-  return { action: 'payables', realm: config.rows[0]?.realm ?? null, vendorQboId, poId: po.id };
+  return {
+    action: 'payables',
+    realm: config.rows[0]?.realm ?? null,
+    vendorQboId,
+    poId: po.id,
+    from: window.from,
+    to: window.to,
+    minAmount: band.minAmount,
+    maxAmount: band.maxAmount,
+    bill: { amount: num(row.amount) ?? 0, invoiceDate: anchor, vendor: row.vendor },
+  };
+}
+
+function requestedBillId(ctx: StaffContext): string | null {
+  const raw = ctx.req.query.bill_id;
+  if (raw == null || raw === '') return null;
+  if (typeof raw !== 'string') {
+    throw new ApiError('conflict', 'Pass one bill_id for the material bill being linked.');
+  }
+  return parseUuidParam(raw, 'Vendor bill');
+}
+
+function numericVendorId(value: string | null): number | undefined {
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : undefined;
 }
 
 async function readBridge(
@@ -1239,11 +1294,20 @@ async function readBridge(
   prepared: QboRead,
 ): Promise<{ ok: true; result: any; skipped?: boolean } | { ok: false; result?: any; message: string; skipped?: boolean }> {
   try {
+    const vendorId = numericVendorId(prepared.vendorQboId);
     const response = await accounting.call({
       action: prepared.action,
       ...(prepared.qboId ? { id: prepared.qboId } : {}),
-      ...(prepared.vendorQboId ? { vendorId: prepared.vendorQboId } : {}),
+      ...(vendorId != null ? { vendorId } : {}),
       ...(prepared.realm ? { expectedRealm: prepared.realm } : {}),
+      ...(prepared.action === 'payables'
+        ? {
+            from: prepared.from,
+            to: prepared.to,
+            minAmount: prepared.minAmount,
+            maxAmount: prepared.maxAmount,
+          }
+        : {}),
     });
     return { ok: true, result: response.result };
   } catch (error) {
@@ -1255,17 +1319,34 @@ async function readBridge(
 }
 
 function bridgeRejection(action: string, message: string): ApiError {
+  if (action === 'payables' && /invalid accounting request/i.test(message)) {
+    return new ApiError(
+      'conflict',
+      "The QuickBooks bridge rejected the read-only 'payables' lookup with Invalid accounting request. The purchase_orders bridge needs the matching update deployed before material charges can be listed. Nothing was linked or queued.",
+    );
+  }
   return new ApiError(
     'conflict',
     `The QuickBooks bridge rejected the read-only '${action}' lookup, so nothing was linked or changed. ${message}`,
   );
 }
 
+function txnList(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === 'object') return [value];
+  return [];
+}
+
 function normalizePayables(result: any) {
-  const take = (type: 'Bill' | 'Purchase') => {
-    const raw = result?.[type] ?? result?.QueryResponse?.[type] ?? [];
-    const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    return list.map((txn: any) => ({
+  const take = (type: 'Bill' | 'Purchase', bucket: 'bills' | 'purchases') => {
+    const nested = result?.[bucket];
+    const raw =
+      result?.[type]
+      ?? result?.QueryResponse?.[type]
+      ?? nested?.QueryResponse?.[type]
+      ?? nested?.[type]
+      ?? [];
+    return txnList(raw).map((txn: any) => ({
       id: txn.Id == null ? null : String(txn.Id),
       txn_type: type,
       doc_number: txn.DocNumber ?? null,
@@ -1275,7 +1356,7 @@ function normalizePayables(result: any) {
       vendor_name: txn.VendorRef?.name ?? txn.EntityRef?.name ?? null,
     }));
   };
-  return [...take('Bill'), ...take('Purchase')];
+  return [...take('Bill', 'bills'), ...take('Purchase', 'purchases')];
 }
 
 interface PayableCandidate {
