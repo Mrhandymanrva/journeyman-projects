@@ -336,16 +336,29 @@ export function createAccounting({
       },
     );
   }
+  function accountLeaf(name) {
+    const parts = String(name || "").split(":");
+    return (parts[parts.length - 1] || "").trim();
+  }
   function accountMappingCard(settings, catalog) {
     if (!can("manage_company_settings")) return "";
     const accounts = catalog.accounts || settings.catalog || [];
-    const select = (type, label) => {
+    const rows = [
+      ["L", "Labor"],
+      ["M", "Material"],
+      ["S", "Subcontract"],
+      ["O", "Other"],
+    ];
+    const row = ([type, label]) => {
       const saved = settings.accounts?.[type] || "";
-      const suggested = settings.suggestions?.[type] || "";
-      const suggestedName = accounts.find((account) => account.id === suggested)?.name;
-      return `<label>${label}<select id="ap-acct-${type}"><option value="">Use the account chosen on each bill</option>${options(accounts, saved)}</select></label><small>${saved ? "Saved for this cost type." : suggestedName ? `Suggested “${esc(suggestedName)}”. It is not selected and nothing is saved until you choose it and click Save.` : "No suggestion from the stored chart of accounts."}</small>`;
+      const suggestedId = settings.suggestions?.[type] || "";
+      const suggested = accounts.find((account) => String(account.id) === String(suggestedId));
+      const suggestion = suggested
+        ? `<span class="acct-leaf" title="${esc(suggested.name)}">${esc(accountLeaf(suggested.name))}</span><button class="btn sm" type="button" id="ap-use-${type}">Use</button>`
+        : `<span class="acct-none">No suggestion</span>`;
+      return `<div class="acct-row" role="row"><div class="acct-type" role="cell"><span class="lbl">Cost type</span><span>${label}</span>${saved ? '<span class="tag ok">Saved</span>' : ""}</div><div role="cell"><span class="lbl">QuickBooks account</span><select id="ap-acct-${type}"><option value="">Choose on each bill</option>${options(accounts, saved)}</select></div><div class="acct-suggest" role="cell"><span class="lbl">Suggestion</span>${suggestion}</div></div>`;
     };
-    return `<div class="card" style="margin:12px 0"><div class="card-h"><div><h3>Cost type accounts</h3><p>Map labor, material, subcontract, and other to QuickBooks expense accounts from the stored chart. An unmapped type uses the account chosen when that bill is approved. Suggestions use only the leaf name of a plausible expense or cost-of-goods account. Advertising, directories, income, and balance-sheet accounts are not suggested. Nothing is saved until you confirm it.</p></div></div><div class="card-b"><div class="two">${select("L", "Labor (L)")}${select("M", "Material (M)")}${select("S", "Subcontract (S)")}${select("O", "Other (O)")}</div><label>Days a subcontract may be issued with no signed agreement<input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"></label><p class="note">The default is 14 days from when the purchase order was created. Inside that window, issue is allowed and shows a warning. After it, issue is blocked until a signed vendor master agreement is attached. A per-PO subcontract is optional. Certificates of insurance and W-9 checks are unchanged.</p><button class="btn" id="ap-save-accounts" type="button">Save account mapping</button></div></div>`;
+    return `<div class="card acct-map"><div class="card-h"><div><h3>Cost type accounts</h3></div></div><div class="card-b"><p class="note">Map each cost type to a QuickBooks account from the stored chart. An empty row uses the account chosen when that bill is approved. Use copies a suggestion into that row. Nothing is saved until Save.</p><div class="acct-map-table" role="table"><div class="acct-head" role="row"><span role="columnheader">Cost type</span><span role="columnheader">QuickBooks account</span><span role="columnheader">Suggestion</span></div>${rows.map(row).join("")}</div><div class="acct-grace"><label for="ap-grace">Agreement grace days</label><input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"><p class="note">Days a subcontract can be issued before a signed master agreement is required. The default is 14.</p></div><button class="btn primary" id="ap-save-accounts" type="button">Save</button></div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(
@@ -528,6 +541,15 @@ export function createAccounting({
     ]);
     host.innerHTML = accountMappingCard(settings, catalog);
     if (!el("ap-save-accounts")) return;
+    for (const type of ["L", "M", "S", "O"]) {
+      const use = el(`ap-use-${type}`);
+      if (!use) continue;
+      use.onclick = () => {
+        const select = el(`ap-acct-${type}`);
+        const suggested = settings.suggestions?.[type];
+        if (select && suggested) select.value = String(suggested);
+      };
+    }
     el("ap-save-accounts").onclick = async () => {
       try {
         await api("/accounting/cost-type-accounts", {

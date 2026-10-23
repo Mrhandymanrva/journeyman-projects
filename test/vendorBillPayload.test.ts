@@ -25,10 +25,10 @@ describe('cost type expense accounts', () => {
       { id: '44', name: 'Overhead' },
       { id: '55', name: 'Subcontract materials' },
     ]);
-    expect(suggested).toEqual({ L: '11', M: '22', S: '33', O: '44' });
+    expect(suggested).toEqual({ L: '11', M: null, S: '33', O: null });
 
     const shared = suggestAccountMapping([{ id: '55', name: 'Subcontract materials' }]);
-    expect(shared).toEqual({ L: null, M: '55', S: null, O: null });
+    expect(shared).toEqual({ L: null, M: null, S: '55', O: null });
 
     const qualified = suggestAccountMapping([
       { id: '80', name: 'Cost of Goods Sold:Materials' },
@@ -45,6 +45,51 @@ describe('cost type expense accounts', () => {
       { id: '91', name: 'Job Materials', accountType: 'Cost of Goods Sold' },
     ]);
     expect(typed).toEqual({ L: null, M: '91', S: null, O: null });
+  });
+
+  it('suggests job-cost accounts and refuses van, office, and unmatched names', () => {
+    const chart = [
+      { id: 'sub', name: 'Cost of Goods Sold:Subcontractors', accountType: 'Cost of Goods Sold' },
+      { id: 'mat', name: 'Cost of Goods Sold:Job Materials', accountType: 'Cost of Goods Sold' },
+      { id: 'van', name: 'Van:Van Other:Van Miscellaneous', accountType: 'Expense' },
+      { id: 'office', name: 'Office Expenses:Supplies', accountType: 'Expense' },
+      { id: 'labor', name: 'Cost of Goods Sold:Field Labor', accountType: 'Cost of Goods Sold' },
+      { id: 'ads', name: 'Advertising:Print Advertising:Directories', accountType: 'Expense' },
+      { id: 'other', name: 'Cost of Goods Sold:Other Job Costs', accountType: 'Cost of Goods Sold' },
+      { id: 'loose', name: 'Job Materials', accountType: 'Expense' },
+    ];
+    expect(suggestAccountMapping(chart)).toEqual({
+      L: 'labor',
+      M: 'mat',
+      S: 'sub',
+      O: 'other',
+    });
+
+    expect(suggestAccountMapping([
+      { id: 'van', name: 'Van:Van Other:Van Miscellaneous', accountType: 'Expense' },
+      { id: 'other', name: 'Cost of Goods Sold:Other Job Costs', accountType: 'Cost of Goods Sold' },
+    ]).O).toBe('other');
+
+    expect(suggestAccountMapping([
+      { id: 'mat', name: 'Cost of Goods Sold:Job Materials', accountType: 'Cost of Goods Sold' },
+      { id: 'office', name: 'Office Expenses:Supplies', accountType: 'Expense' },
+    ]).M).toBe('mat');
+
+    expect(suggestAccountMapping([
+      { id: 'van', name: 'Van:Van Other:Van Miscellaneous', accountType: 'Expense' },
+    ])).toEqual({ L: null, M: null, S: null, O: null });
+
+    expect(suggestAccountMapping([
+      { id: 'office', name: 'Office Expenses:Supplies', accountType: 'Expense' },
+    ])).toEqual({ L: null, M: null, S: null, O: null });
+
+    expect(suggestAccountMapping([
+      { id: 'ask', name: 'Ask My Accountant', accountType: 'Expense' },
+    ])).toEqual({ L: null, M: null, S: null, O: null });
+
+    expect(suggestAccountMapping([
+      { id: 'one', name: 'Subcontractor', accountType: 'Cost of Goods Sold' },
+    ]).S).toBe('one');
   });
 
   it('uses the bill account when a cost type is unmapped, and combines lines on that account', () => {
