@@ -40,6 +40,12 @@ export async function prepareBillAccounting(
       "This bill is linked to an existing QuickBooks transaction and will not be sent again.",
     );
   }
+  if (b.kind === "material") {
+    throw new ApiError(
+      "conflict",
+      "A material bill is recorded by linking the QuickBooks transaction that already exists. It is not approved and it is not sent to QuickBooks.",
+    );
+  }
   if (
     b.status !== "received" &&
     !(
@@ -253,6 +259,7 @@ export function accountingRoutes(
   router.get(
     "/accounting/cost-type-accounts",
     staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_company_settings");
       sendData(ctx.res, await presentCostTypeAccounts(ctx));
     }),
   );

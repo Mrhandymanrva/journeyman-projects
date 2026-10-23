@@ -51,7 +51,20 @@ async function api(path, options = {}) {
     },
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : {};
+  let body = {};
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new ApiError(res.status, {
+        error: {
+          message: res.ok
+            ? "The server returned a response that was not JSON."
+            : `Request failed (${res.status}). The server did not return JSON.`,
+        },
+      });
+    }
+  }
   if (!res.ok) throw new ApiError(res.status, body);
   return body.data;
 }
@@ -166,6 +179,9 @@ async function boot() {
     el("signout").addEventListener("click", signOut);
 
     document.querySelector('[data-page="users"]').hidden = !can("manage_users");
+    document.querySelector('[data-page="settings"]').hidden = !can(
+      "manage_company_settings",
+    );
     projects = await loadProjects();
     if (projects.length === 0) {
       el("boot").textContent =
@@ -1214,12 +1230,19 @@ function renderPurchaseOrders(pos) {
 }
 
 async function issuePoDrawer() {
-  const [codes, vendors, accountSettings] = await Promise.all([
+  const [codes, vendors] = await Promise.all([
     api("/cost-codes"),
     api("/vendors?per_page=200"),
-    api("/accounting/cost-type-accounts"),
   ]);
-  const graceDays = Number(accountSettings?.agreement_grace_days ?? 14);
+  let graceDays = 14;
+  if (can("manage_company_settings")) {
+    try {
+      const accountSettings = await api("/accounting/cost-type-accounts");
+      graceDays = Number(accountSettings?.agreement_grace_days ?? 14);
+    } catch {
+      graceDays = 14;
+    }
+  }
   openDrawer(
     "Issue a purchase order",
     `${messageSlot}
