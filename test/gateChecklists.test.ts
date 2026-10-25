@@ -213,7 +213,7 @@ describe("gate 1 and gate 2 checklists", () => {
     });
 
     const sql = readFileSync(
-      path.join(repoRoot, "db/039_gate_checklist_defaults.sql"),
+      path.join(repoRoot, "db/038_gate_checklist_defaults.sql"),
       "utf8",
     );
     await h.db.asOwner(async (c) => {
@@ -268,7 +268,7 @@ describe("gate 1 and gate 2 checklists", () => {
       (project) => project.project_number === "G-FEED",
     );
     expect(row?.gates).toEqual({ gate_1: "approved", gate_2: "open" });
-    expect(SCHEMA_FILES.some((file) => file.endsWith("039_gate_checklist_defaults.sql"))).toBe(
+    expect(SCHEMA_FILES.some((file) => file.endsWith("038_gate_checklist_defaults.sql"))).toBe(
       true,
     );
   });
