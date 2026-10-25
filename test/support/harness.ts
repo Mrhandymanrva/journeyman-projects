@@ -47,6 +47,7 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/034_preconstruction_tasks.sql"),
   path.join(repoRoot, "db/035_field_start.sql"),
   path.join(repoRoot, "db/036_permit_offices.sql"),
+  path.join(repoRoot, "db/037_permit_office_seed.sql"),
 ];
 
 export interface TenantFixture {

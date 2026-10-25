@@ -4,8 +4,9 @@ import { seedDemoSources } from "../src/demo/sourceData.js";
  *
  *   pnpm dev
  *
- * Boots a real PostgreSQL in process (PGlite), applies db/001 and db/002,
- * seeds the demo account, and serves the console with dev sign-in on. Same
+ * Boots a real PostgreSQL in process (PGlite), applies the schema,
+ * seeds the demo account, loads the shipped permit offices once, and serves
+ * the console with dev sign-in on. Same
  * app, same handlers, same RLS — the only difference from production is where
  * the Postgres lives and that the data disappears when you stop it.
  *
@@ -18,6 +19,7 @@ import { assertDatabaseContract } from "../src/db/assertions.js";
 import { MemoryStaffSessions } from "../src/http/memoryStaffSessions.js";
 import { PgliteDatabase } from "../test/support/pgliteDatabase.js";
 import { seedDemoTenant } from "../src/demo/demoData.js";
+import { seedPermitOffices } from "../src/domain/permitOfficeSeed.js";
 
 const PORT = Number(process.env.PORT ?? 3200);
 
@@ -56,6 +58,7 @@ const db = await PgliteDatabase.create([
   "db/034_preconstruction_tasks.sql",
   "db/035_field_start.sql",
   "db/036_permit_offices.sql",
+  "db/037_permit_office_seed.sql",
 ]);
 
 await assertDatabaseContract(db);
@@ -68,6 +71,7 @@ await seedDemoTenant({
   privileged: (fn) => db.asOwner(fn),
   log: (m) => console.log("  " + m),
 });
+await seedPermitOffices(db, { log: (m) => console.log("  " + m) });
 
 const staffSessions = new MemoryStaffSessions();
 // Fixed and published in the banner below: this listens on localhost with
