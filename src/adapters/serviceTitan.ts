@@ -838,19 +838,33 @@ export class ServiceTitanReadAdapter {
     return people.sort((a, b) => a.name.localeCompare(b.name));
   }
   async readTechnicians(): Promise<
-    { id: string; name: string; active: boolean }[]
+    {
+      id: string;
+      name: string;
+      active: boolean;
+      hourlyRate: number | null;
+      burdenRate: number | null;
+    }[]
   > {
-    const rows: { id: string; name: string; active: boolean }[] = [];
-    const schema = z.object({
-      data: z.array(
-        z.object({
-          id: sourceId,
-          name: z.string().min(1),
-          active: z.boolean(),
-        }),
-      ),
-      hasMore: z.boolean(),
-    });
+    const rows: {
+      id: string;
+      name: string;
+      active: boolean;
+      hourlyRate: number | null;
+      burdenRate: number | null;
+    }[] = [];
+      const schema = z.object({
+        data: z.array(
+          z.object({
+            id: sourceId,
+            name: z.string().min(1),
+            active: z.boolean(),
+            hourlyRate: z.number().finite().nullish(),
+            burdenRate: z.number().finite().nullish(),
+          }),
+        ),
+        hasMore: z.boolean(),
+      });
     for (let page = 1; page <= 100; page++) {
       const result = schema.safeParse(
         await this.get(
@@ -867,7 +881,15 @@ export class ServiceTitanReadAdapter {
         throw new ServiceTitanReadError(
           "Unexpected technician directory response.",
         );
-      rows.push(...result.data.data);
+      rows.push(
+        ...result.data.data.map((person) => ({
+          id: person.id,
+          name: person.name,
+          active: person.active,
+          hourlyRate: person.hourlyRate ?? null,
+          burdenRate: person.burdenRate ?? null,
+        })),
+      );
       if (!result.data.hasMore) {
         if (new Set(rows.map((r) => r.id)).size !== rows.length)
           throw new ServiceTitanReadError("Duplicate technician IDs.");

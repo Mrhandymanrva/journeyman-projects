@@ -2,11 +2,15 @@ import { Router } from "express";
 import { z } from "zod";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import {
+  applyTechnicianDirectory,
+  listActiveRateGaps,
   portfolioLaborColumns,
   presentPortfolioLabor,
   readLaborJobs,
+  readTechnicianDirectory,
   stampLaborCodes,
   storeJobLabor,
+  type PricedTechnician,
 } from "../domain/laborActuals.js";
 import { can, requireCapability } from "../http/capabilities.js";
 import { sendData } from "../http/envelope.js";
@@ -20,7 +24,6 @@ import {
 import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from "./shared.js";
 
 const settingsSchema = z.object({
-  labor_burdened_hourly_rate: z.number().finite().nonnegative().nullable(),
   labor_cost_code_id: z.string().uuid().nullable(),
 });
 
@@ -49,9 +52,9 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       }
       await ctx.db.query(
         `UPDATE projects.tenant_settings
-            SET labor_burdened_hourly_rate = $2, labor_cost_code_id = $3
+            SET labor_cost_code_id = $2
           WHERE tenant_id = $1`,
-        [ctx.staff.tenantId, body.labor_burdened_hourly_rate, body.labor_cost_code_id],
+        [ctx.staff.tenantId, body.labor_cost_code_id],
       );
       await stampLaborCodes(ctx.db, ctx.staff.tenantId);
       sendData(ctx.res, await loadSettings(ctx));
@@ -112,18 +115,24 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           jobs: jobs.rows,
           readJobTimesheets: (jobId: string) => source.client.readJobTimesheets!(jobId),
           readJob: (jobId: string) => source.client.readJob(jobId),
+          readTechnicians: source.client.readTechnicians?.bind(source.client),
         };
       },
-      async (prepared) =>
-        readLaborJobs(
+      async (prepared) => {
+        const jobs = await readLaborJobs(
           prepared.jobs.map((job) => job.external_job_id),
           { readJobTimesheets: prepared.readJobTimesheets, readJob: prepared.readJob },
-        ),
-      async (ctx, prepared, results) => {
+        );
+        const directory = await readTechnicianDirectory({
+          readTechnicians: prepared.readTechnicians,
+        });
+        return { jobs, directory };
+      },
+      async (ctx, prepared, read) => {
         requireCapability(ctx.staff.role, "refresh_labor");
         await loadVisibleProject(ctx, prepared.projectId, "id");
         const observedAt = new Date();
-        for (const result of results) {
+        for (const result of read.jobs) {
           const link = prepared.jobs.find((job) => job.external_job_id === result.jobId);
           await storeJobLabor(ctx.db, {
             tenantId: ctx.staff.tenantId,
@@ -134,6 +143,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
             observedAt,
           });
         }
+        await applyTechnicianDirectory(ctx.db, ctx.staff.tenantId, read.directory, observedAt);
         await stampLaborCodes(ctx.db, ctx.staff.tenantId, prepared.projectId);
         sendData(ctx.res, await presentLabor(ctx, prepared.projectId));
       },
@@ -145,12 +155,11 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
 
 async function loadSettings(ctx: StaffContext) {
   const { rows } = await ctx.db.query<{
-    labor_burdened_hourly_rate: string | null;
     labor_cost_code_id: string | null;
     code: string | null;
     description: string | null;
   }>(
-    `SELECT s.labor_burdened_hourly_rate::text, s.labor_cost_code_id, c.code, c.description
+    `SELECT s.labor_cost_code_id, c.code, c.description
        FROM projects.tenant_settings s
        LEFT JOIN projects.cost_codes c ON c.id = s.labor_cost_code_id
       WHERE s.tenant_id = $1`,
@@ -158,16 +167,17 @@ async function loadSettings(ctx: StaffContext) {
   );
   const row = rows[0];
   return {
-    labor_burdened_hourly_rate: num(row?.labor_burdened_hourly_rate),
     labor_cost_code_id: row?.labor_cost_code_id ?? null,
     labor_cost_code: row?.code ?? null,
     labor_cost_code_description: row?.description ?? null,
+    rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId),
   };
 }
 
 async function presentLabor(ctx: StaffContext, projectId: string) {
   const summary = await ctx.db.query<Record<string, unknown>>(
     `SELECT ${portfolioLaborColumns("p")},
+            s.labor_rates_forbidden,
             COALESCE(p.labor_cost_code_id, s.labor_cost_code_id) AS effective_code_id,
             c.code AS effective_code, c.description AS effective_description
        FROM projects.projects p
@@ -179,6 +189,7 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
   );
   const labor = presentPortfolioLabor(summary.rows[0] ?? {});
   const showMoney = can(ctx.staff.role, "view_margin");
+  const showRates = can(ctx.staff.role, "view_labor_rates");
   const lines = await ctx.db.query<{
     id: string;
     work_date: string;
@@ -193,11 +204,21 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
     [projectId],
   );
   return {
-    hours: labor.hours,
+    hours: labor.labor_hours,
+    labor_hours: labor.labor_hours,
     uncoded_hours: labor.uncoded_hours,
     source: labor.source,
     observed_at: labor.observed_at,
-    ...(showMoney ? { amount: labor.amount, rate: num(summary.rows[0]?.labor_rate) } : {}),
+    missing: labor.missing,
+    rates_forbidden: summary.rows[0]?.labor_rates_forbidden === true,
+    ...(showMoney
+      ? {
+          labor_wage: labor.labor_wage,
+          labor_burden: labor.labor_burden,
+          total: labor.total,
+        }
+      : {}),
+    ...(showRates ? { rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId) } : {}),
     cost_code: summary.rows[0]?.effective_code
       ? {
           id: summary.rows[0]?.effective_code_id ?? null,
@@ -205,6 +226,7 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
           description: summary.rows[0]?.effective_description ?? null,
         }
       : null,
+    technicians: labor.technicians.map((tech) => presentTechnician(tech, showRates)),
     lines: lines.rows.map((line) => ({
       id: line.id,
       work_date: line.work_date,
@@ -214,4 +236,26 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
       external_job_id: line.external_job_id,
     })),
   };
+}
+
+function presentTechnician(tech: PricedTechnician, showRates: boolean) {
+  return {
+    external_technician_id: tech.external_technician_id,
+    technician_name: tech.technician_name,
+    hours: tech.hours,
+    missing: tech.missing,
+    ...(showRates
+      ? {
+          hourly_rate: tech.hourly_rate,
+          burden_rate: tech.burden_rate,
+          wage: tech.wage,
+          burden: tech.burden,
+          amount: tech.wage === null || tech.burden === null ? null : round2(tech.wage + tech.burden),
+        }
+      : {}),
+  };
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }

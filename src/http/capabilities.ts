@@ -62,6 +62,9 @@ export const CAPABILITIES = {
   refresh_ar: ['owner', 'manager', 'project_manager'],
   // Where in-house hours land. Allowed after the baseline is frozen. It does not change the budget.
   set_labor_cost_code: ['owner', 'manager'],
+  // A technician's ServiceTitan hourly rate and burden rate, and the list of
+  // active technicians whose rates are missing or zero.
+  view_labor_rates: ['owner', 'manager'],
   // Write today's portfolio health rows. The portfolio token cannot call it.
   run_health_snapshots: ['owner'],
   // Set or clear a manual field start. Clearing does not recompute it.

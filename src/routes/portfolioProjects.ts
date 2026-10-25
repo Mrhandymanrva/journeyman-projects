@@ -5,7 +5,7 @@ import type { Database } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
 import { portfolioGateColumns, presentPortfolioGates } from "../domain/gateReadiness.js";
-import { PORTFOLIO_LABOR_KEYS, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { PORTFOLIO_LABOR_KEYS, portfolioFeedLabor, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
 import { PORTFOLIO_AR_KEYS, portfolioArColumns, presentPortfolioAr } from "../domain/arMatch.js";
 import {
   PORTFOLIO_LOG_KEYS,
@@ -74,7 +74,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
           delete rest.gate_2_status;
           const changeOrders = presentPortfolioChangeOrders(rest);
           const closeout = presentPortfolioCloseout(rest);
-          const labor = presentPortfolioLabor(rest);
+          const labor = portfolioFeedLabor(presentPortfolioLabor(rest));
           const ar = presentPortfolioAr(rest);
           for (const key of PORTFOLIO_LOG_KEYS) delete rest[key];
           for (const key of PORTFOLIO_LABOR_KEYS) delete rest[key];

@@ -39,8 +39,11 @@ describe("portfolio project feed", () => {
     });
     expect(res.body.data.projects[0].closeout).toBeNull();
     expect(res.body.data.projects[0].labor).toEqual({
-      hours: 0,
-      amount: null,
+      labor_hours: 0,
+      labor_wage: 0,
+      labor_burden: 0,
+      total: 0,
+      missing: [],
       uncoded_hours: 0,
       source: null,
       observed_at: null,

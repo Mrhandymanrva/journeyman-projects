@@ -65,7 +65,7 @@ export function createWorkspace({
     users: ["Users", "Manage staff access and login credentials."],
     settings: [
       "Setup",
-      "Company settings for the labor rate, QuickBooks cost-type accounts, and the subcontract agreement window.",
+      "Company settings for the labor cost code, QuickBooks cost-type accounts, and the subcontract agreement window.",
     ],
     project: [
       "Project details & permits",

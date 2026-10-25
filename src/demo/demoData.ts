@@ -459,17 +459,29 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     const laborCode = ids.costCodes.get('210');
     await c.query(
       `UPDATE projects.tenant_settings
-          SET labor_cost_code_id = $2, labor_burdened_hourly_rate = 65
+          SET labor_cost_code_id = $2
         WHERE tenant_id = $1`,
       [TENANT_ID, laborCode],
+    );
+    await c.query(
+      `INSERT INTO projects.technician_labor_rates
+         (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
+       VALUES
+         ($1, 'tech-casey', 'Casey Nguyen', true, 40, 12),
+         ($1, 'tech-jordan', 'Jordan Hale', true, 36, 0),
+         ($1, 'tech-riley', 'Riley Cho', true, 0, 8)`,
+      [TENANT_ID],
     );
     await c.query(
       `INSERT INTO projects.labor_actuals
          (tenant_id, project_id, external_job_id, external_timesheet_id,
           external_technician_id, technician_name, work_date, hours, source,
           cost_code_id, observed_at)
-       VALUES ($1,$2,'demo-job','demo-ts-whitfield','tech-alex','Alex Rivera',
-               CURRENT_DATE - 2, 6.50, 'timesheet', $3, now())`,
+       VALUES
+         ($1,$2,'demo-job','demo-ts-casey','tech-casey','Casey Nguyen',
+          CURRENT_DATE - 2, 6.50, 'timesheet', $3, now()),
+         ($1,$2,'demo-job','demo-ts-jordan','tech-jordan','Jordan Hale',
+          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now())`,
       [TENANT_ID, whitfield, laborCode],
     );
     const system = await c.query<{ id: string }>(

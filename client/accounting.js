@@ -370,8 +370,16 @@ export function createAccounting({
           `<option value="${esc(code.id)}" ${code.id === labor.labor_cost_code_id ? "selected" : ""}>${esc(code.code)} ${esc(code.description)}</option>`,
       )
       .join("");
-    const rate = labor.labor_burdened_hourly_rate ?? "";
-    return `<div class="card"><div class="card-h"><h3>Labor rate</h3></div><div class="card-b"><p class="note">One burdened hourly rate for every technician. Hours stay on the project until both this rate and a labor cost code are set. ServiceTitan wages are not stored.</p><label>Burdened hourly rate<input id="labor-rate" type="number" min="0" step="0.01" value="${esc(rate)}"></label><label>Default labor cost code<select id="labor-code"><option value="">Uncoded until a code is chosen</option>${options}</select></label><button class="btn primary" id="labor-settings-save" type="button">Save labor settings</button></div></div>`;
+    const gaps = labor.rate_gaps || [];
+    const gapList = gaps.length
+      ? `<ul id="labor-rate-gaps">${gaps
+          .map(
+            (gap) =>
+              `<li>${esc(gap.technician_name)}: ${(gap.messages || []).map((line) => esc(line)).join(" ")}</li>`,
+          )
+          .join("")}</ul>`
+      : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`;
+    return `<div class="card"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. Hours hit the labor budget only after a labor cost code is set. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><label>Default labor cost code<select id="labor-code"><option value="">Uncoded until a code is chosen</option>${options}</select></label><button class="btn primary" id="labor-settings-save" type="button">Save labor settings</button><h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(
@@ -588,11 +596,9 @@ export function createAccounting({
     if (saveLabor) {
       saveLabor.onclick = async () => {
         try {
-          const rate = el("labor-rate").value.trim();
           await api("/settings/labor", {
             method: "PUT",
             body: JSON.stringify({
-              labor_burdened_hourly_rate: rate === "" ? null : Number(rate),
               labor_cost_code_id: el("labor-code").value || null,
             }),
           });
