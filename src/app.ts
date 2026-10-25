@@ -147,6 +147,24 @@ export function createApp(opts: AppOptions): Express {
     res.json({ data: { status: "ok" } });
   });
 
+  // A database ping for Railway restarts. Failure is a 503 and is not alerted.
+  app.get("/health/ready", (_req, res) => {
+    void opts.database
+      .withoutTenant(async (db) => {
+        await db.query("SELECT 1");
+      })
+      .then(() => {
+        if (!res.headersSent) res.json({ data: { status: "ok" } });
+      })
+      .catch(() => {
+        if (!res.headersSent) {
+          // eslint-disable-next-line no-console
+          console.error("[health] ready check failed");
+          res.status(503).json({ data: { status: "unavailable" } });
+        }
+      });
+  });
+
   if (opts.devLogin?.enabled) {
     if (opts.devLogin.nodeEnv === "production") {
       throw new Error(
