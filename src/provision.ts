@@ -182,7 +182,7 @@ for (const file of [
   "db/036_permit_offices.sql",
   "db/037_permit_office_seed.sql",
   "db/038_gate_checklist_defaults.sql",
-  "db/040_change_order_log_and_closeout.sql",
+  "db/039_change_order_log_and_closeout.sql",
 ]) {
   const full = path.join(repoRoot, file);
   const statements = splitSqlStatements(readFileSync(full, "utf8"));
