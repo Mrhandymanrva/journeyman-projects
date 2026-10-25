@@ -62,6 +62,47 @@ describe("portfolio feed", () => {
     expect(d.purchasing.open_purchase_orders).toEqual({ count: 0, amount: 0 });
   });
 
+  it("does not count archived vendors as blocked or expiring", async () => {
+    const owner = h.as(mine.staff.owner!.token);
+    const make = async (legal_name: string, email: string) => {
+      const res = await owner.post("/api/v1/projects/vendors").send({ legal_name, email });
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      return res.body.data.id as string;
+    };
+    const openBlocked = await make("Open Blocked Electric", "open-blocked@example.test");
+    const archivedBlocked = await make("Archived Blocked Tile", "archived-blocked@example.test");
+    const expiringActive = await make("Expiring Active Plumbing", "expiring-active@example.test");
+    const expiringArchived = await make("Expiring Archived HVAC", "expiring-archived@example.test");
+    for (const id of [expiringActive, expiringArchived]) {
+      const doc = await owner.post(`/api/v1/projects/vendors/${id}/documents`).send({
+        kind: "wc_insurance",
+        expires_on: "2027-06-01",
+        file_key: `k/${id}`,
+      });
+      expect(doc.status, JSON.stringify(doc.body)).toBe(201);
+      await h.db.withTenant(mine.id, async (db) => {
+        await db.query(
+          `UPDATE projects.vendor_documents SET expires_on = CURRENT_DATE + 10 WHERE vendor_id = $1 AND kind = 'wc_insurance'`,
+          [id],
+        );
+      });
+    }
+    for (const id of [archivedBlocked, expiringArchived]) {
+      const archived = await owner.patch(`/api/v1/projects/vendors/${id}`).send({ archived: true });
+      expect(archived.status, JSON.stringify(archived.body)).toBe(200);
+    }
+
+    const res = await feedApp().get("/api/v1/portfolio/summary").set("Authorization", `Bearer ${TOKEN}`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const blocked = res.body.data.exceptions.vendors_blocked.map((v: { name: string }) => v.name);
+    expect(blocked).toContain("Open Blocked Electric");
+    expect(blocked).toContain("Expiring Active Plumbing");
+    expect(blocked).not.toContain("Archived Blocked Tile");
+    expect(blocked).not.toContain("Expiring Archived HVAC");
+    expect(res.body.data.exceptions.vendors_expiring).toBe(1);
+    expect(openBlocked).toBeTruthy();
+  });
+
   it("reads config the way the other connectors do", () => {
     expect(portfolioFeedConfig({} as NodeJS.ProcessEnv)).toBeUndefined();
     expect(() => portfolioFeedConfig({ PM_PORTFOLIO_TENANT_ID: mine.id, PM_PORTFOLIO_TOKEN: "short" } as NodeJS.ProcessEnv)).toThrow(/24/);
