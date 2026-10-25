@@ -13,12 +13,14 @@ import type { StaffRole } from "../http/capabilities.js";
  *                                the client secret), finds or creates the staff member by email on the configured
  *                                tenant, opens a normal 12-hour session and redirects to `next`.
  *
- * Command Center owner → owner, office → office, bookkeeper → bookkeeper, csr → office; technicians are refused.
- * The tenant is fixed by configuration, never by the hand-off, the same posture as the portfolio feed. Codes are
- * single-use on Command Center's side, so nothing here has to remember what was used.
+ * Command Center owner → owner, manager → manager, office → office, bookkeeper → bookkeeper, csr → office;
+ * technicians are refused. The tenant is fixed by configuration, never by the hand-off, the same posture as the
+ * portfolio feed. Codes are single-use on Command Center's side, so nothing here has to remember what was used.
+ * Email is matched lowercased. A later sign-in sets an active, non-owner staff row to manager when Command Center
+ * sends manager. An owner is never changed. Any other Command Center role leaves the existing row as it is.
  */
 export interface SsoConfig { url: string; clientId: string; clientSecret: string; tenantId: string; fetch?: typeof fetch }
-const ROLE_MAP: Record<string, StaffRole | null> = { owner: "owner", office: "office", bookkeeper: "bookkeeper", csr: "office", technician: null };
+const ROLE_MAP: Record<string, StaffRole | null> = { owner: "owner", manager: "manager", office: "office", bookkeeper: "bookkeeper", csr: "office", technician: null };
 const STATE_COOKIE = "jp_sso_state";
 
 const safeNext = (v: unknown) => { const s = String(v ?? "").trim(); return s.startsWith("/") && !s.startsWith("//") && !/[\r\n]/.test(s) ? s.slice(0, 500) : "/"; };
@@ -53,16 +55,22 @@ export function ssoRoutes(database: Database, config: SsoConfig): Router {
       const role = ROLE_MAP[String(body.user.role ?? "")] ?? null;
       const email = String(body.user.email).trim().toLowerCase();
       const out = await database.withTenant(config.tenantId, async (db): Promise<{ error: string } | { token: string }> => {
-        const cur = (await db.query<{ id: string; active: boolean }>(`SELECT id, active FROM projects.staff WHERE email = $1`, [email])).rows[0];
+        const cur = (await db.query<{ id: string; active: boolean; role: string }>(`SELECT id, active, role::text AS role FROM projects.staff WHERE lower(email::text) = $1`, [email])).rows[0];
         if (cur && !cur.active) return { error: "This account is deactivated in Journeyman Projects." };
-        let staffId = cur?.id ?? null;
-        if (!staffId) {
+        let staffId: string;
+        if (!cur) {
           if (!role) return { error: "Your Command Center role does not include Journeyman Projects." };
           const ins = await db.query<{ id: string }>(`INSERT INTO projects.staff (tenant_id, email, full_name, role, login_bootstrap) VALUES ($1, $2, $3, $4::projects.staff_role, false) RETURNING id`, [config.tenantId, email, String(body.user.name ?? email).slice(0, 200), role]);
           staffId = ins.rows[0]!.id;
+        } else {
+          // Active non-owners become managers. The WHERE clause repeats that so an owner cannot be changed.
+          if (role === "manager" && cur.role !== "owner") {
+            await db.query(`UPDATE projects.staff SET role = 'manager'::projects.staff_role WHERE id = $1 AND active AND role <> 'owner'::projects.staff_role`, [cur.id]);
+          }
+          staffId = cur.id;
         }
         await db.query(`DELETE FROM projects.staff_login_tokens WHERE expires_at < now()`);
-        return { token: await mintLoginToken(db, config.tenantId, staffId!, "session") };
+        return { token: await mintLoginToken(db, config.tenantId, staffId, "session") };
       });
       if ("error" in out) { res.status(403).type("html").send(page("No access", out.error)); return; }
       res.cookie("jp_session", out.token, { httpOnly: true, secure: secure(req), sameSite: "strict", path: "/", maxAge: 12 * 60 * 60 * 1000 });
