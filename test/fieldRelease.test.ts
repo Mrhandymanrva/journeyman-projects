@@ -74,28 +74,55 @@ describe('field release', () => {
     expect(detail.status).toBe(200);
     expect(detail.body.data.scheduled_start).toBe('2026-10-30');
     expect(detail.body.data.field_release).toEqual({ ...UNRELEASED, history: [] });
+    expect(detail.body.data.field_start).toEqual({ date: null, source: null, observed_at: null });
+    expect(detail.body.data.field_start_source).toBeUndefined();
+    expect(detail.body.data.precon.open).toBe(7);
+    expect(detail.body.data.precon.tasks).toHaveLength(7);
 
     const list = await as('pm').get('/api/v1/projects/projects?per_page=200');
-    const row = (list.body.data as Array<{ id: string; scheduled_start: string; field_release: unknown }>).find(
-      (item) => item.id === created.id,
-    );
+    const row = (list.body.data as Array<{
+      id: string;
+      scheduled_start: string;
+      field_release: unknown;
+      field_start: { date: string | null; source: string | null; observed_at: string | null };
+      precon: { open: number; overdue: number; tasks?: unknown };
+    }>).find((item) => item.id === created.id);
     expect(row?.scheduled_start).toBe('2026-10-30');
     expect(row?.field_release).toEqual(UNRELEASED);
+    expect(row?.field_start).toEqual({ date: null, source: null, observed_at: null });
+    expect(row?.precon).toEqual({ open: 7, overdue: detail.body.data.precon.overdue });
+    expect(row?.precon?.tasks).toBeUndefined();
 
     const summary = await feed().get('/api/v1/portfolio/summary').set('Authorization', `Bearer ${token}`);
     expect(summary.status).toBe(200);
     const summaryRow = (
-      summary.body.data.projects as Array<{ id: string; scheduled_start: string; field_release: unknown }>
+      summary.body.data.projects as Array<{
+        id: string;
+        scheduled_start: string;
+        field_release: unknown;
+        field_start: { date: string | null; source: string | null; observed_at: string | null };
+        precon: { open: number; overdue: number };
+      }>
     ).find((item) => item.id === created.id);
     expect(summaryRow?.scheduled_start).toBe('2026-10-30');
     expect(summaryRow?.field_release).toEqual(UNRELEASED);
+    expect(summaryRow?.field_start).toEqual({ date: null, source: null, observed_at: null });
+    expect(summaryRow?.precon).toEqual({ open: 7, overdue: detail.body.data.precon.overdue });
 
     const portfolioProjects = await feed().get('/api/v1/portfolio/projects').set('Authorization', `Bearer ${token}`);
     const portfolioRow = (
-      portfolioProjects.body.data.projects as Array<{ id: string; scheduled_start: string; field_release: unknown }>
+      portfolioProjects.body.data.projects as Array<{
+        id: string;
+        scheduled_start: string;
+        field_release: unknown;
+        field_start: { date: string | null; source: string | null; observed_at: string | null };
+        precon: { open: number; overdue: number };
+      }>
     ).find((item) => item.id === created.id);
     expect(portfolioRow?.scheduled_start).toBe('2026-10-30');
     expect(portfolioRow?.field_release).toEqual(UNRELEASED);
+    expect(portfolioRow?.field_start).toEqual({ date: null, source: null, observed_at: null });
+    expect(portfolioRow?.precon).toEqual({ open: 7, overdue: detail.body.data.precon.overdue });
   });
 
   it('lets owner and manager release and undo, and keeps an append-only history', async () => {

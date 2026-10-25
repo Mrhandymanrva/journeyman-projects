@@ -4,8 +4,9 @@ import type { SqlClient } from '../db/database.js';
  * Current field-release flag for a project.
  *
  * `released_by` is the staff member's name. `scheduled_start` on the same
- * project payload is the committed start date (a calendar date). `actual_start`
- * is when work began. This flag does not block either one.
+ * project payload is the logged start (a calendar date). `field_start` is the
+ * ServiceTitan appointment day or a manual override. `actual_start` is when
+ * work began. This flag does not block any of them.
  */
 export interface FieldRelease {
   released: boolean;

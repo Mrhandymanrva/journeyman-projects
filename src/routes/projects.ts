@@ -1,5 +1,10 @@
 import { deleteLocalProject } from '../domain/deleteProject.js';
 import { presentFieldRelease, readFieldRelease } from '../domain/fieldRelease.js';
+import {
+  fieldStartColumns,
+  preconCountsFromRow,
+  presentFieldStart,
+} from '../domain/fieldStart.js';
 import type { SqlClient } from '../db/database.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -26,7 +31,7 @@ import {
   parseEstimatePayload,
 } from "../domain/estimateContract.js";
 import { seedDrawSchedule } from "../domain/drawSchedule.js";
-import { seedPreconTasks } from "../domain/preconTasks.js";
+import { listPreconTasks, preconCounts, seedPreconTasks } from "../domain/preconTasks.js";
 import {
   assertStageAdvanceAllowed,
   nextStage,
@@ -140,6 +145,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
                 p.pm_id, p.estimator_id, p.city, p.region,
                 p.contract_value, p.currency, p.target_margin,
                 p.scheduled_start, p.scheduled_end, p.updated_at,
+                ${fieldStartColumns("p")},
                 p.field_released_at, p.field_release_note,
                 rel.full_name AS field_released_by_name
            FROM projects.projects p
@@ -306,6 +312,8 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         "SELECT project_id FROM projects.st_project_connections WHERE project_id=$1",
         [id],
       );
+      // scheduled_start is the logged start and stays editable here.
+      // scheduled_end still follows ServiceTitan.
       if (
         connected.rows.length &&
         [
@@ -315,7 +323,6 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           "city",
           "region",
           "postal_code",
-          "scheduled_start",
           "scheduled_end",
           "actual_end",
           "external_system_id",
@@ -405,6 +412,45 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       );
       if (!rows[0]) throw notFound("Project not found");
       sendData(ctx.res, await projectPayload(ctx.db, id, rows[0]));
+    }),
+  );
+
+  // --------------------------------------------------------- field start ---
+  router.put(
+    "/projects/:id/field-start",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "set_field_start");
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
+      const body = parseBody(
+        z.object({ date: z.string().date().nullable() }).strict(),
+        ctx.req.body,
+      );
+      if (body.date === null) {
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET field_start = NULL,
+                  field_start_source = NULL,
+                  field_start_appointment_id = NULL,
+                  field_start_observed_at = NULL,
+                  field_start_set_by = NULL
+            WHERE id = $1`,
+          [id],
+        );
+      } else {
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET field_start = $2,
+                  field_start_source = 'manual',
+                  field_start_appointment_id = NULL,
+                  field_start_observed_at = now(),
+                  field_start_set_by = $3
+            WHERE id = $1`,
+          [id, body.date, ctx.staff.staffId],
+        );
+      }
+      const row = await loadVisibleProject<Record<string, unknown>>(ctx, id);
+      sendData(ctx.res, { field_start: presentFieldStart(row) });
     }),
   );
 
@@ -585,7 +631,9 @@ export async function createProject(
         external_customer_id, estimate_import_id, name, address_line1, city, region,
         postal_code, jurisdiction_id, pm_id, estimator_id, contract_value, currency,
         target_margin, license_scope_note, scheduled_start, scheduled_end)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+             CASE WHEN $22::boolean THEN (now() AT TIME ZONE 'America/New_York')::date ELSE $20::date END,
+             $21)
      RETURNING *`,
     [
       ctx.staff.tenantId,
@@ -609,6 +657,7 @@ export async function createProject(
       body.license_scope_note ?? null,
       body.scheduled_start ?? null,
       body.scheduled_end ?? null,
+      body.scheduled_start === undefined,
     ],
   );
   const project = rows[0]!;
@@ -712,6 +761,15 @@ function serialiseProject(row: Record<string, unknown>) {
   delete rest.field_released_at;
   delete rest.field_release_note;
   delete rest.field_released_by_name;
+  const fieldStart = presentFieldStart(rest);
+  delete rest.field_start;
+  delete rest.field_start_source;
+  delete rest.field_start_appointment_id;
+  delete rest.field_start_observed_at;
+  delete rest.field_start_set_by;
+  const precon = preconCountsFromRow(rest);
+  delete rest.precon_open;
+  delete rest.precon_overdue;
   return {
     ...rest,
     contract_value: num(row.contract_value),
@@ -721,6 +779,8 @@ function serialiseProject(row: Record<string, unknown>) {
       released_by: typeof releasedByName === 'string' ? releasedByName : null,
       note,
     }),
+    field_start: fieldStart,
+    ...(precon ? { precon } : {}),
   };
 }
 
@@ -730,8 +790,16 @@ async function projectPayload(
   row: Record<string, unknown>,
   withHistory = false,
 ) {
+  const base = serialiseProject(row);
+  const counts =
+    base.precon ?? (await preconCounts(db, projectId));
   return {
-    ...serialiseProject(row),
+    ...base,
     field_release: await readFieldRelease(db, projectId, withHistory),
+    precon: {
+      open: counts.open,
+      overdue: counts.overdue,
+      tasks: await listPreconTasks(db, projectId),
+    },
   };
 }

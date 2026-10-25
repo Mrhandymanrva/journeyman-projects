@@ -281,9 +281,11 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
         `INSERT INTO projects.projects
            (tenant_id, project_number, business_unit_id, jurisdiction_id, name,
             address_line1, city, region, pm_id, contract_value, target_margin, stage,
-            actual_start, scheduled_end, external_job_id)
+            actual_start, scheduled_start, scheduled_end, external_job_id)
          VALUES ($1,$2,$3,$4,$5,$6,$7,'VA',$8,$9,$10,$11::projects.project_stage,
-                 CURRENT_DATE - $12::int, CURRENT_DATE - $12::int + $13::int, $14)
+                 CURRENT_DATE - $12::int,
+                 (now() AT TIME ZONE 'America/New_York')::date,
+                 CURRENT_DATE - $12::int + $13::int, $14)
          RETURNING id`,
         [
           TENANT_ID,

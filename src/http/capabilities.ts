@@ -48,6 +48,11 @@ export const CAPABILITIES = {
   // Preconstruction checklist. Project Coordinator is project_manager.
   // Estimator, office, and bookkeeper can read tasks and cannot edit them.
   manage_precon_tasks: ['owner', 'manager', 'project_manager'],
+  // Recompute field start from ServiceTitan appointments. The call is a read.
+  // A manual field start is left as it is.
+  refresh_field_start: ['owner', 'manager', 'project_manager'],
+  // Set or clear a manual field start. Clearing does not recompute it.
+  set_field_start: ['owner', 'manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

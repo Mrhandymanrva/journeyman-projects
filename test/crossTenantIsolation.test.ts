@@ -989,6 +989,17 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/precon-inspections/:id`,
     path: (f) => `${BASE}/precon-inspections/${f.inspectionId}`,
   },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-start/refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-start/refresh`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/field-start`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-start`,
+    body: () => ({ date: "2026-11-03" }),
+  },
 ];
 
 /**
