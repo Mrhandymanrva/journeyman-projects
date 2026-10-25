@@ -64,6 +64,8 @@ body{
 
 /* ---------- project head ---------- */
 .head{padding:26px 0 20px;display:flex;gap:34px;align-items:flex-end;flex-wrap:wrap}
+.project-kicker{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.bname .tag{margin-left:8px;vertical-align:1px}
 .head h1{
   font-size:27px;line-height:1.12;margin:6px 0 4px;font-weight:700;letter-spacing:-.015em;
 }
