@@ -137,13 +137,22 @@ async function buildSummary(db: SqlClient, tenantId: string) {
          FROM projects.v_unapplied_invoices`,
     )
   )[0];
+  // Eligibility views still include archived companies so scheduling and the
+  // directory stay the same. These portfolio counts must not: an archived
+  // vendor is not a blocked or expiring company.
   const vendors = await q<{ legal_name: string; expired_count: string; missing_count: string; next_expiry: string | null }>(
-    `SELECT legal_name, expired_count::text, missing_count::text, next_expiry::text
-       FROM projects.v_vendor_eligibility WHERE NOT schedulable ORDER BY legal_name`,
+    `SELECT e.legal_name, e.expired_count::text, e.missing_count::text, e.next_expiry::text
+       FROM projects.v_vendor_eligibility e
+       JOIN projects.vendors v ON v.id = e.vendor_id
+      WHERE NOT e.schedulable AND NOT v.archived
+      ORDER BY e.legal_name`,
   );
   const expiring = (
     await q<{ n: string }>(
-      `SELECT count(DISTINCT vendor_id)::text AS n FROM projects.v_vendor_compliance WHERE state = 'expiring'`,
+      `SELECT count(DISTINCT c.vendor_id)::text AS n
+         FROM projects.v_vendor_compliance c
+         JOIN projects.vendors v ON v.id = c.vendor_id
+        WHERE c.state = 'expiring' AND NOT v.archived`,
     )
   )[0];
 
