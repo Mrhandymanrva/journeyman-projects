@@ -65,7 +65,7 @@ export function createWorkspace({
     users: ["Users", "Manage staff access and login credentials."],
     settings: [
       "Setup",
-      "Company settings for QuickBooks cost-type accounts and the subcontract agreement window.",
+      "Company settings for the labor rate, QuickBooks cost-type accounts, and the subcontract agreement window.",
     ],
     project: [
       "Project details & permits",
@@ -191,6 +191,7 @@ export function createWorkspace({
   move("notice", "financials");
   move("logs", "logs", true);
   for (const id of ["stagebar", "gates"]) move(id, "project");
+  move("labor", "project", true);
   move("permits", "project", true);
   el("page-project").insertAdjacentHTML(
     "afterbegin",

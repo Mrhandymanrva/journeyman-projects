@@ -21,6 +21,7 @@ export interface SourceConnections {
           | "recordReceipts"
           | "projectNoteReceipt"
           | "publishProjectNote"
+          | "readJobTimesheets"
         >
       >;
   };

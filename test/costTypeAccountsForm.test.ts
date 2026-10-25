@@ -54,6 +54,19 @@ describe('cost type account form', () => {
             catalog: [],
           };
         }
+        if (path === '/settings/labor') {
+          return {
+            labor_burdened_hourly_rate: 65,
+            labor_cost_code_id: 'code-210',
+            labor_cost_code: '210',
+          };
+        }
+        if (path === '/cost-codes') {
+          return [
+            { id: 'code-210', code: '210', description: 'Interior demolition', default_cost_type: 'L' },
+            { id: 'code-120', code: '120', description: 'Cabinets', default_cost_type: 'M' },
+          ];
+        }
         throw new Error(`unexpected ${path}`);
       },
       el: (id: string) => nodes.get(id) ?? null,
@@ -82,6 +95,12 @@ describe('cost type account form', () => {
     expect(html).toContain('>Subcontractors</span>');
     expect(html).toContain('id="ap-grace"');
     expect(html).toContain('Agreement grace days');
+    expect(html).toContain('Labor rate');
+    expect(html).toContain('id="labor-rate"');
+    expect(html).toContain('value="65"');
+    expect(html).toContain('value="code-210" selected');
+    expect(html).toContain('210 Interior demolition');
+    expect(html).not.toContain('Cabinets');
     expect(nodes.get('ap-acct-L')).toBeTruthy();
     expect(nodes.get('ap-acct-M')).toBeTruthy();
     expect(nodes.get('ap-acct-S')).toBeTruthy();

@@ -454,6 +454,25 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
 
+  await db.withTenant(TENANT_ID, async (c) => {
+    const laborCode = ids.costCodes.get('210');
+    await c.query(
+      `UPDATE projects.tenant_settings
+          SET labor_cost_code_id = $2, labor_burdened_hourly_rate = 65
+        WHERE tenant_id = $1`,
+      [TENANT_ID, laborCode],
+    );
+    await c.query(
+      `INSERT INTO projects.labor_actuals
+         (tenant_id, project_id, external_job_id, external_timesheet_id,
+          external_technician_id, technician_name, work_date, hours, source,
+          cost_code_id, observed_at)
+       VALUES ($1,$2,'demo-job','demo-ts-whitfield','tech-alex','Alex Rivera',
+               CURRENT_DATE - 2, 6.50, 'timesheet', $3, now())`,
+      [TENANT_ID, whitfield, laborCode],
+    );
+  });
+
   // --- Okonkwo: preconstruction, permit review overdue
   const okonkwoBudget: BudgetSpec[] = [
     { code: '110', budget: 1150, billed: 1150, committed: 0 },

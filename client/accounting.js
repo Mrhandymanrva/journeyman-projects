@@ -360,6 +360,19 @@ export function createAccounting({
     };
     return `<div class="card acct-map"><div class="card-h"><div><h3>Cost type accounts</h3></div></div><div class="card-b"><p class="note">Map each cost type to a QuickBooks account from the stored chart. An empty row uses the account chosen when that bill is approved. Use copies a suggestion into that row. Nothing is saved until Save.</p><div class="acct-map-table" role="table"><div class="acct-head" role="row"><span role="columnheader">Cost type</span><span role="columnheader">QuickBooks account</span><span role="columnheader">Suggestion</span></div>${rows.map(row).join("")}</div><div class="acct-grace"><label for="ap-grace">Agreement grace days</label><input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"><p class="note">Days a subcontract can be issued before a signed master agreement is required. The default is 14.</p></div><button class="btn primary" id="ap-save-accounts" type="button">Save</button></div></div>`;
   }
+  function laborSettingsCard(labor, codes) {
+    const choices = (codes || []).filter(
+      (code) => code.default_cost_type === "L" || code.id === labor.labor_cost_code_id,
+    );
+    const options = choices
+      .map(
+        (code) =>
+          `<option value="${esc(code.id)}" ${code.id === labor.labor_cost_code_id ? "selected" : ""}>${esc(code.code)} ${esc(code.description)}</option>`,
+      )
+      .join("");
+    const rate = labor.labor_burdened_hourly_rate ?? "";
+    return `<div class="card"><div class="card-h"><h3>Labor rate</h3></div><div class="card-b"><p class="note">One burdened hourly rate for every technician. Hours stay on the project until both this rate and a labor cost code are set. ServiceTitan wages are not stored.</p><label>Burdened hourly rate<input id="labor-rate" type="number" min="0" step="0.01" value="${esc(rate)}"></label><label>Default labor cost code<select id="labor-code"><option value="">Uncoded until a code is chosen</option>${options}</select></label><button class="btn primary" id="labor-settings-save" type="button">Save labor settings</button></div></div>`;
+  }
   async function movePurchaseOrder(poId) {
     openDrawer(
       "Move purchase order",
@@ -535,11 +548,13 @@ export function createAccounting({
       host.innerHTML = "<p>Company settings are available to an owner or a manager.</p>";
       return;
     }
-    const [catalog, settings] = await Promise.all([
+    const [catalog, settings, labor, codes] = await Promise.all([
       api("/accounting/catalog"),
       api("/accounting/cost-type-accounts"),
+      api("/settings/labor"),
+      api("/cost-codes"),
     ]);
-    host.innerHTML = accountMappingCard(settings, catalog);
+    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor, codes);
     if (!el("ap-save-accounts")) return;
     for (const type of ["L", "M", "S", "O"]) {
       const use = el(`ap-use-${type}`);
@@ -569,6 +584,24 @@ export function createAccounting({
         error(e);
       }
     };
+    const saveLabor = el("labor-settings-save");
+    if (saveLabor) {
+      saveLabor.onclick = async () => {
+        try {
+          const rate = el("labor-rate").value.trim();
+          await api("/settings/labor", {
+            method: "PUT",
+            body: JSON.stringify({
+              labor_burdened_hourly_rate: rate === "" ? null : Number(rate),
+              labor_cost_code_id: el("labor-code").value || null,
+            }),
+          });
+          await renderSettings();
+        } catch (e) {
+          error(e);
+        }
+      };
+    }
   }
   return { render, renderSettings };
 }

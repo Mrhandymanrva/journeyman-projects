@@ -878,6 +878,23 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/projects/${f.projectId}/closeout`,
     body: () => ({ punch_done: true }),
   },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/labor`,
+    path: (f) => `${BASE}/projects/${f.projectId}/labor`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/labor-cost-code`,
+    path: (f) => `${BASE}/projects/${f.projectId}/labor-cost-code`,
+    body: () => ({ cost_code_id: null }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/labor/refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/labor/refresh`,
+    body: () => ({}),
+  },
 
   // --- phase 4: draws -----------------------------------------------------
   {

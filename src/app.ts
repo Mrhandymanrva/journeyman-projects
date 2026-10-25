@@ -43,6 +43,7 @@ import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
 import { vendorRoutes } from "./routes/vendors.js";
 import { changeOrderRoutes } from "./routes/changeOrders.js";
 import { closeoutRoutes } from "./routes/closeout.js";
+import { laborRoutes } from "./routes/labor.js";
 import { drawRoutes } from "./routes/draws.js";
 import { statementRoutes } from "./routes/statement.js";
 import { externalInvoiceRoutes } from "./routes/externalInvoices.js";
@@ -196,6 +197,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(bidRequestRoutes(deps, opts.bidMail ?? bidMailConfig()));
   staff.use(changeOrderRoutes(deps));
   staff.use(closeoutRoutes(deps));
+  staff.use(laborRoutes(deps, opts.sources ?? {}));
   staff.use(drawRoutes(deps));
   staff.use(statementRoutes(deps));
   staff.use(externalInvoiceRoutes(deps));
