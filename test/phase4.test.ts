@@ -174,7 +174,7 @@ describe('permits', () => {
   async function jurisdiction() {
     const res = await owner()
       .post('/api/v1/projects/jurisdictions')
-      .send({ name: `County ${Math.random().toString(36).slice(2, 7)}`, typical_review_days: 12 });
+      .send({ name: `County ${Math.random().toString(36).slice(2, 7)}`, state: 'VA', typical_review_days: 12 });
     expect(res.status).toBe(201);
     return res.body.data.id as string;
   }

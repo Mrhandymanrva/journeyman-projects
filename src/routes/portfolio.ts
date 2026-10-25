@@ -3,6 +3,7 @@ import { Router } from "express";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
+import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -77,10 +78,13 @@ async function buildSummary(db: SqlClient, tenantId: string) {
     revised_contract: string | null; committed_cost: string | null; projected_cost: string | null;
     gates_awaiting: string; draws_waiting: string;
     field_released_at: unknown; field_release_note: string | null; field_released_by_name: string | null;
+    field_start: string | null; field_start_source: string | null; field_start_observed_at: unknown;
+    precon_open: string; precon_overdue: string;
   }>(
     `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.city, p.region,
             p.contract_value::text, p.target_margin::text,
             p.scheduled_start::text, p.scheduled_end::text, p.actual_start::text, p.updated_at::text,
+            ${fieldStartColumns("p")},
             s.full_name AS pm,
             m.revised_contract::text, m.committed_cost::text, m.projected_cost::text,
             (SELECT count(*) FROM projects.stage_gates g WHERE g.project_id = p.id AND g.status = 'submitted')::text AS gates_awaiting,
@@ -210,6 +214,8 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         projected_cost: proj,
         projected_margin_pct: proj === null || revised <= 0 ? null : (revised - proj) / revised,
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
+        field_start: presentFieldStart(p),
+        precon: { open: Number(p.precon_open ?? 0), overdue: Number(p.precon_overdue ?? 0) },
         field_release: presentFieldRelease({
           released_at: p.field_released_at,
           released_by: p.field_released_by_name,

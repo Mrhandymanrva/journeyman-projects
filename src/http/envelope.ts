@@ -131,6 +131,13 @@ function mapDatabaseError(
   if (pgCode === '23514' && /purchase order line/i.test(message)) {
     return { status: 409, code: 'conflict', message };
   }
+  if (pgCode === '23514' && message.startsWith('Preconstruction:')) {
+    return {
+      status: 409,
+      code: 'conflict',
+      message: message.slice('Preconstruction: '.length),
+    };
+  }
   if (pgCode === '23505') {
     return { status: 409, code: 'conflict', message: 'That record already exists.' };
   }

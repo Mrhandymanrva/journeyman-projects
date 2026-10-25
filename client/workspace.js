@@ -1,3 +1,5 @@
+import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
+import { createPermitOffices } from "./permitOffices.js";
 import {openProjectDeletion} from "./projectDeletion.js";
 import {createAccounting} from "./accounting.js";
 import { createProjectControls } from "./projectControls.js";
@@ -15,7 +17,15 @@ export function createWorkspace({
   closeDrawer,
   field,
   onProjectDeleted,
+  reload,
 }) {
+  const offices = createPermitOffices({
+    api,
+    esc,
+    can,
+    openDrawer,
+    closeDrawer,
+  });
   const accounting=createAccounting({api,el,esc,can,current,openDrawer,closeDrawer});
   const users = createUsers({ api, el, esc, openDrawer, closeDrawer, can });
   const controls = createProjectControls({
@@ -59,7 +69,11 @@ export function createWorkspace({
     ],
     project: [
       "Project details & permits",
-      "ServiceTitan information, project stages and permit milestones.",
+      "ServiceTitan information, logged start, field start, and permit milestones.",
+    ],
+    offices: [
+      "Permit offices",
+      "Municipality offices, contacts, and how to file.",
     ],
   };
   const icons = {
@@ -75,6 +89,7 @@ export function createWorkspace({
     financials: "＄",
     logs: "▧",
     project: "⌂",
+    offices: "▣",
   };
   let active = "dashboard",
     data = null,
@@ -180,6 +195,10 @@ export function createWorkspace({
   el("page-project").insertAdjacentHTML(
     "afterbegin",
     '<div class="card" id="project-facts"></div>',
+  );
+  el("project-facts").insertAdjacentHTML(
+    "afterend",
+    '<div class="card" id="precon"></div>',
   );
   const toolbar = document.createElement("div");
   toolbar.className = "workspace-resource-tabs";
@@ -291,6 +310,10 @@ export function createWorkspace({
         void controls.dashboard("dashboard-controls");
       else if (active === "resources") await mountedSubs().directory();
       else if (active === "bids") await mountedSubs().bidList();
+      else if (active === "offices") {
+        const ticket = epoch;
+        await offices.render(el("page-offices"), () => ticket === epoch);
+      }
     } catch (error) {
       el(
         active === "plan"
@@ -486,7 +509,7 @@ export function createWorkspace({
         ],
         ["ST status", p.source_project_status],
         ["Project manager", p.pm_name],
-        ["Start", nice(p.scheduled_start)],
+        ["Logged start", nice(p.scheduled_start)],
         ["Target completion", nice(p.scheduled_end)],
       ]
         .map(
@@ -494,7 +517,25 @@ export function createWorkspace({
         )
         .join(
           "",
-        )}</dl>${p.source_project_summary ? `<p class="project-summary">${esc(p.source_project_summary.replace(/<[^>]*>/g, " "))}</p>` : ""}`;
+        )}</dl>${fieldStartHtml({
+        fieldStart: p.field_start,
+        canRefresh: can("refresh_field_start"),
+        canOverride: can("set_field_start"),
+        esc,
+      })}${p.source_project_summary ? `<p class="project-summary">${esc(p.source_project_summary.replace(/<[^>]*>/g, " "))}</p>` : ""}`;
+    bindFieldStart(el("project-facts"), {
+      onRefresh: async () => {
+        await api(`/projects/${p.id}/field-start/refresh`, { method: "POST" });
+        if (reload) await reload();
+      },
+      onOverride: async (date) => {
+        await api(`/projects/${p.id}/field-start`, {
+          method: "PUT",
+          body: JSON.stringify({ date }),
+        });
+        if (reload) await reload();
+      },
+    });
     el("project-source").onclick = () => el("st-project-open").click();
     if (el("project-delete")) el("project-delete").onclick = () => openProjectDeletion(p,{api,el,esc,openDrawer,closeDrawer,onProjectDeleted});
     void enter(active);

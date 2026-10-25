@@ -19,6 +19,11 @@ import {
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { createProject } from "./projects.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
+import {
+  pickFieldStart,
+  presentFieldStart,
+  storeComputedFieldStart,
+} from "../domain/fieldStart.js";
 type Details = Awaited<
   ReturnType<ServiceTitanReadAdapter["readProjectDetails"]>
 >;
@@ -120,7 +125,7 @@ export function stProjectRoutes(
 
     const a = result.location.address;
     await ctx.db.query(
-      `UPDATE projects.projects SET project_number=$2,name=$3,address_line1=$4,city=$5,region=$6,postal_code=$7,external_system_id=$8,external_customer_id=$9,scheduled_start=$10,scheduled_end=$11,source_customer_name=$12,source_location_name=$13,source_project_status=$14,source_project_summary=$15 WHERE id=$1`,
+      `UPDATE projects.projects SET project_number=$2,name=$3,address_line1=$4,city=$5,region=$6,postal_code=$7,external_system_id=$8,external_customer_id=$9,scheduled_end=$10,source_customer_name=$11,source_location_name=$12,source_project_status=$13,source_project_summary=$14 WHERE id=$1`,
       [
         id,
         result.project.number,
@@ -131,7 +136,6 @@ export function stProjectRoutes(
         a.zip,
         c.externalSystemId,
         result.customer.id,
-        result.project.startDate?.slice(0, 10) || null,
         result.project.targetCompletionDate?.slice(0, 10) || null,
         result.customer.name,
         result.location.name,
@@ -191,9 +195,33 @@ export function stProjectRoutes(
           b.business_unit_id,
           "business_unit_id",
         );
-        return { b, c: await binding(ctx) };
+        const c = await binding(ctx);
+        const existing = await ctx.db.query<{ field_start_source: string | null }>(
+          `SELECT p.field_start_source
+             FROM projects.st_project_connections s
+             JOIN projects.projects p ON p.id = s.project_id
+            WHERE s.external_system_id = $1 AND s.external_project_id = $2`,
+          [c.externalSystemId, b.external_project_id],
+        );
+        return {
+          b,
+          c,
+          manual: existing.rows[0]?.field_start_source === "manual",
+        };
       },
-      (p) => p.c.client.readProjectDetails!(p.b.external_project_id),
+      async (p) => {
+        const details = await p.c.client.readProjectDetails!(
+          p.b.external_project_id,
+        );
+        const fieldStart = p.manual
+          ? null
+          : await pickFieldStart(
+              details.jobs.map((job) => job.id),
+              (id) => p.c.client.readJob(id),
+              details.project.id,
+            );
+        return { details, fieldStart };
+      },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
         if(ctx.settings.enforceBusinessUnitScoping&&!p.b.business_unit_id)throw new ApiError("validation_failed","Choose a business unit for this project.");
@@ -214,21 +242,21 @@ export function stProjectRoutes(
         );
         const existing = await ctx.db.query<{ project_id: string }>(
           "SELECT project_id FROM projects.st_project_connections WHERE external_system_id=$1 AND external_project_id=$2",
-          [c.externalSystemId, result.project.id],
+          [c.externalSystemId, result.details.project.id],
         );
         let id = existing.rows[0]?.project_id;
         if (id) await loadVisibleProject(ctx, id, "id");
         else {
-          const a = result.location.address;
+          const a = result.details.location.address;
           const created = await createProject(ctx, {
-            project_number: result.project.number,
-            name: result.project.name || "ST project " + result.project.number,
+            project_number: result.details.project.number,
+            name: result.details.project.name || "ST project " + result.details.project.number,
             address_line1: [a.street, a.unit].filter(Boolean).join(" "),
             city: a.city,
             region: a.state,
             postal_code: a.zip,
             external_system_id: c.externalSystemId,
-            external_customer_id: result.customer.id,
+            external_customer_id: result.details.customer.id,
             business_unit_id: p.b.business_unit_id ?? null,
             contract_value: null,
             target_margin: null,
@@ -237,10 +265,13 @@ export function stProjectRoutes(
           });
           id = created.id as string;
         }
-        await applySource(ctx, id, c, result);
+        await applySource(ctx, id, c, result.details);
+        if (!p.manual) {
+          await storeComputedFieldStart(ctx.db, id, result.fieldStart);
+        }
         sendData(
           ctx.res,
-          { id, project: result.project, linkedJobs: result.jobs.length },
+          { id, project: result.details.project, linkedJobs: result.details.jobs.length },
           undefined,
           existing.rows.length ? 200 : 201,
         );
@@ -303,15 +334,34 @@ export function stProjectRoutes(
       async (ctx) => {
         requireCapability(ctx.staff.role, "advance_stage");
         const id = parseUuidParam(ctx.req.params.id, "Project");
-        await loadVisibleProject(ctx, id, "id");
+        const project = await loadVisibleProject<{
+          field_start_source: string | null;
+        }>(ctx, id, "id, field_start_source");
         const b = parseBody(
           z.object({ external_project_id: z.string().regex(/^\d+$/) }).strict(),
           ctx.req.body,
         );
         const c = await binding(ctx);
-        return { id, b, c };
+        return {
+          id,
+          b,
+          c,
+          manual: project.field_start_source === "manual",
+        };
       },
-      (p) => p.c.client.readProjectDetails!(p.b.external_project_id),
+      async (p) => {
+        const details = await p.c.client.readProjectDetails!(
+          p.b.external_project_id,
+        );
+        const fieldStart = p.manual
+          ? null
+          : await pickFieldStart(
+              details.jobs.map((job) => job.id),
+              (id) => p.c.client.readJob(id),
+              details.project.id,
+            );
+        return { details, fieldStart };
+      },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
         await loadVisibleProject(ctx, p.id, "id");
@@ -321,12 +371,99 @@ export function stProjectRoutes(
             "conflict",
             "ServiceTitan connection changed; refresh before linking.",
           );
-        await applySource(ctx, p.id, c, result);
+        await applySource(ctx, p.id, c, result.details);
+        if (!p.manual) {
+          await storeComputedFieldStart(ctx.db, p.id, result.fieldStart);
+        }
         sendData(ctx.res, {
-          project: result.project,
-          observedAt: result.observedAt,
-          linkedJobs: result.project.jobIds.length,
+          project: result.details.project,
+          observedAt: result.details.observedAt,
+          linkedJobs: result.details.project.jobIds.length,
         });
+      },
+    ),
+  );
+  router.post(
+    "/projects/:id/field-start/refresh",
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        requireCapability(ctx.staff.role, "refresh_field_start");
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        const project = await loadVisibleProject<{
+          field_start_source: string | null;
+        }>(ctx, id, "id, field_start_source");
+        if (project.field_start_source === "manual") {
+          return {
+            id,
+            manual: true,
+            jobIds: [] as string[],
+            externalProjectId: null as string | null,
+            readJob: null as
+              | ((jobId: string) => Promise<Awaited<ReturnType<ServiceTitanReadAdapter["readJob"]>>>)
+              | null,
+          };
+        }
+        const c = await binding(ctx);
+        const linked = await ctx.db.query<{
+          connection_key: string | null;
+          external_project_id: string;
+        }>(
+          `SELECT connection_key, external_project_id
+             FROM projects.st_project_connections
+            WHERE project_id = $1 AND external_system_id = $2`,
+          [id, c.externalSystemId],
+        );
+        if (
+          linked.rows[0]?.connection_key &&
+          linked.rows[0].connection_key !== c.key
+        ) {
+          throw new ApiError(
+            "conflict",
+            "The ST account changed. Reconnect the project before refreshing field start.",
+          );
+        }
+        const jobs = await ctx.db.query<{ external_job_id: string }>(
+          `SELECT external_job_id
+             FROM projects.project_job_links
+            WHERE project_id = $1 AND external_system_id = $2 AND source_active
+            ORDER BY external_job_id`,
+          [id, c.externalSystemId],
+        );
+        return {
+          id,
+          manual: false,
+          jobIds: jobs.rows.map((row) => row.external_job_id),
+          externalProjectId: linked.rows[0]?.external_project_id ?? null,
+          readJob: (jobId: string) => c.client.readJob(jobId),
+        };
+      },
+      async (prepared) => {
+        if (prepared.manual || !prepared.readJob) return null;
+        return pickFieldStart(
+          prepared.jobIds,
+          prepared.readJob,
+          prepared.externalProjectId,
+        );
+      },
+      async (ctx, prepared, picked) => {
+        requireCapability(ctx.staff.role, "refresh_field_start");
+        await loadVisibleProject(ctx, prepared.id, "id");
+        if (!prepared.manual) {
+          const c = await binding(ctx);
+          if (!sources.serviceTitan || c.key !== sources.serviceTitan.key) {
+            throw new ApiError(
+              "conflict",
+              "ServiceTitan connection changed; refresh before linking.",
+            );
+          }
+          await storeComputedFieldStart(ctx.db, prepared.id, picked);
+        }
+        const row = await loadVisibleProject<Record<string, unknown>>(
+          ctx,
+          prepared.id,
+        );
+        sendData(ctx.res, { field_start: presentFieldStart(row) });
       },
     ),
   );

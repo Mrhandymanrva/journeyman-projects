@@ -75,7 +75,21 @@ beforeAll(async () => {
     externalSystemId: source,
     key: "st:production:10",
     client: {
-      readJob: vi.fn(),
+      readJob: vi.fn(async (id: string) => ({
+        job: {
+          id,
+          jobNumber: "J-" + id,
+          projectId: null,
+          customerId: "300",
+          locationId: "400",
+          jobStatus: "Scheduled",
+          modifiedOn: "2026-09-15T00:00:00Z",
+          summary: null,
+        },
+        appointments: [],
+        assignments: [],
+        observedAt: "2026-09-15T00:00:00.000Z",
+      })),
       listProjects,
       readProject,
       readProjectDetails: readProject,
@@ -116,6 +130,14 @@ it("connects an ST project and its jobs without replacing PM plans or budgets; r
   expect(after.address_line1).toBe("100 ST Street");
   expect(after.source_customer_name).toBe("ST Customer");
   expect(after.contract_value).toBe(before.contract_value);
+  expect(after.scheduled_start).toBe(before.scheduled_start);
+  expect(after.scheduled_start).not.toBe(st.startDate);
+  expect(after.scheduled_end).toBe("2026-10-10");
+  expect(after.field_start).toEqual({
+    date: null,
+    source: null,
+    observed_at: null,
+  });
   expect(
     (await owner().get(base + "/projects/" + pm + "/jobs")).body.data,
   ).toHaveLength(2);

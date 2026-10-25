@@ -44,6 +44,10 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/031_material_bill_cost.sql"),
   path.join(repoRoot, "db/032_vendor_document_notes.sql"),
   path.join(repoRoot, "db/033_field_release.sql"),
+  path.join(repoRoot, "db/034_preconstruction_tasks.sql"),
+  path.join(repoRoot, "db/035_field_start.sql"),
+  path.join(repoRoot, "db/036_permit_offices.sql"),
+  path.join(repoRoot, "db/037_permit_office_seed.sql"),
 ];
 
 export interface TenantFixture {
@@ -89,7 +93,19 @@ export async function startHarness(
     bidMail,
     accounting,
   });
-  const request = supertest(app);
+  // supertest(app) binds every method to one http.Server and closes it when
+  // the last request settles. The next call can run while that close is still
+  // finishing, and formatServerUrl then reads a null address. A new server
+  // per call keeps the requests independent.
+  const http = () => supertest(app);
+  const request = {
+    get: (url: string) => http().get(url),
+    post: (url: string) => http().post(url),
+    put: (url: string) => http().put(url),
+    patch: (url: string) => http().patch(url),
+    delete: (url: string) => http().delete(url),
+    del: (url: string) => http().delete(url),
+  } as unknown as supertest.Agent;
 
   return {
     app,

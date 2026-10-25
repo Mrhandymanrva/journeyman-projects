@@ -32,6 +32,7 @@ import {
 } from "./db/assertions.js";
 import { PgDatabase } from "./db/pgDatabase.js";
 import type { SqlClient } from "./db/database.js";
+import { seedPermitOffices } from "./domain/permitOfficeSeed.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -176,6 +177,10 @@ for (const file of [
   "db/031_material_bill_cost.sql",
   "db/032_vendor_document_notes.sql",
   "db/033_field_release.sql",
+  "db/034_preconstruction_tasks.sql",
+  "db/035_field_start.sql",
+  "db/036_permit_offices.sql",
+  "db/037_permit_office_seed.sql",
 ]) {
   const full = path.join(repoRoot, file);
   const statements = splitSqlStatements(readFileSync(full, "utf8"));
@@ -354,6 +359,29 @@ if (process.env.PM_ST_TENANT_ID && process.env.PM_ST_EXTERNAL_SYSTEM_ID) {
     await connectorDb.close();
   }
 }
+// Same load the application runs at boot. Doing it here means a deploy that
+// finishes provisioning already has the offices, and the following boot sees
+// the marker and does not write again. DATABASE_URL is jp_app, so the insert
+// goes through the same RLS path as POST /jurisdictions/import.
+if (process.env.DATABASE_URL) {
+  const seedDb = new PgDatabase({ connectionString: process.env.DATABASE_URL });
+  try {
+    await seedPermitOffices(seedDb);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`\npermit offices seed failed\n  ${message}`);
+    await seedDb.close().catch(() => {});
+    await owner.end();
+    await admin.end();
+    process.exit(1);
+  }
+  await seedDb.close();
+} else {
+  console.log(
+    "permit offices seed: DATABASE_URL is not set, so application boot will load the offices.",
+  );
+}
+
 await owner.end();
 await admin.end();
 

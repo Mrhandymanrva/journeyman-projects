@@ -1,4 +1,11 @@
 import { bindFieldRelease, fieldReleaseHtml } from "./fieldRelease.js";
+import {
+  INSPECTION_RESULTS,
+  PRECON_STATUSES,
+  PRECON_TYPES,
+  bindPrecon,
+  preconHtml,
+} from "./precon.js";
 import { createWorkspace } from "./workspace.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { createPlanning } from "./planning.js";
@@ -399,6 +406,7 @@ function render(d) {
   renderPermits(d.permits);
   renderDraws(d.drawData);
   workspace.render(d);
+  renderPrecon(d.detail);
 }
 
 function addressLine(p) {
@@ -510,6 +518,7 @@ function renderGates(project) {
     canRelease: can("record_field_release"),
     esc,
     items: gate2?.checklist || [],
+    fieldStart: project.field_start,
   });
   const gate2Node = el("gates").querySelector('.gate[data-gate="2"]');
   if (gate2Node) gate2Node.insertAdjacentHTML("afterend", releasePanel);
@@ -747,6 +756,134 @@ function renderBlockers(exceptions, schedule, drawData) {
   const b2 = el("btag2");
   b2.textContent = nb ? `${nb} open` : "Clear";
   b2.className = "tag " + (nb ? "bad" : "ok");
+}
+
+function renderPrecon(project) {
+  const root = el("precon");
+  if (!root || !project) return;
+  const tasks = project.precon?.tasks || [];
+  root.innerHTML = preconHtml({
+    precon: project.precon,
+    canEdit: can("manage_precon_tasks"),
+    esc,
+  });
+  bindPrecon(root, {
+    onApply: () =>
+      api(`/projects/${project.id}/precon-tasks/apply-template`, { method: "POST" }).then(
+        () => select(project.id),
+      ),
+    onStatus: (id, status) =>
+      api(`/precon-tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }).then(() => select(project.id)),
+    onAdd: () => preconTaskDrawer(project, null),
+    onEdit: (id) => preconTaskDrawer(project, tasks.find((task) => task.id === id)),
+    onInspect: (id) => inspectionDrawer(tasks.find((task) => task.id === id)),
+  });
+}
+
+async function preconTaskDrawer(project, task) {
+  let offices = [];
+  try {
+    offices = await api("/jurisdictions");
+  } catch (err) {
+    offices = [];
+  }
+  const value = task || {};
+  const typeOptions = PRECON_TYPES.map(
+    ([id, label]) =>
+      `<option value="${id}"${value.type === id ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+  const statusOptions = PRECON_STATUSES.map(
+    ([id, label]) =>
+      `<option value="${id}"${(value.status || "not_started") === id ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+  const roles = ["owner", "manager", "project_manager", "estimator", "office", "bookkeeper"];
+  openDrawer(
+    task ? "Edit preconstruction task" : "Add preconstruction task",
+    `<form id="precon-form">
+      ${field("Type", `<select id="precon-type">${typeOptions}</select>`)}
+      ${field("Title", `<input id="precon-title" maxlength="200" required value="${esc(value.title || "")}">`)}
+      ${field("Owner", `<select id="precon-owner">${roles.map((role) => `<option value="${role}"${value.owner_role === role ? " selected" : ""}>${esc(role.replace(/_/g, " "))}</option>`).join("")}</select>`)}
+      ${field("Due", `<input id="precon-due" type="date" value="${esc(String(value.due_on || "").slice(0, 10))}">`)}
+      ${field("Status", `<select id="precon-status">${statusOptions}</select>`)}
+      ${field("Permit office", `<select id="precon-office"><option value="">None</option>${offices.map((office) => `<option value="${office.id}"${value.jurisdiction_id === office.id ? " selected" : ""}>${esc(office.name)}, ${esc(office.state)}</option>`).join("")}</select>`)}
+      ${field("Notes", `<textarea id="precon-notes" maxlength="2000" rows="3">${esc(value.notes || "")}</textarea>`)}
+      <p class="err" id="precon-error" role="alert"></p>
+      <button class="btn primary" type="submit">Save task</button>
+    </form>`,
+    () => {
+      el("precon-form").onsubmit = async (event) => {
+        event.preventDefault();
+        const error = el("precon-error");
+        error.textContent = "";
+        const button = event.target.querySelector("button");
+        button.disabled = true;
+        const body = {
+          type: el("precon-type").value,
+          title: el("precon-title").value.trim(),
+          owner_role: el("precon-owner").value,
+          due_on: el("precon-due").value || null,
+          status: el("precon-status").value,
+          jurisdiction_id: el("precon-office").value || null,
+          notes: el("precon-notes").value.trim() || null,
+        };
+        try {
+          await api(task ? `/precon-tasks/${task.id}` : `/projects/${project.id}/precon-tasks`, {
+            method: task ? "PATCH" : "POST",
+            body: JSON.stringify(body),
+          });
+          closeDrawer();
+          await select(project.id);
+        } catch (err) {
+          error.textContent = err.message;
+          button.disabled = false;
+        }
+      };
+    },
+  );
+}
+
+function inspectionDrawer(task) {
+  if (!task) return;
+  openDrawer(
+    "Add inspection",
+    `<form id="inspection-form">
+      <p>${esc(task.title)}</p>
+      ${field("Scheduled", `<input id="inspection-scheduled" type="date">`)}
+      ${field("Occurred", `<input id="inspection-occurred" type="date">`)}
+      ${field("Result", `<select id="inspection-result">${INSPECTION_RESULTS.map(([id, label]) => `<option value="${id}">${esc(label)}</option>`).join("")}</select>`)}
+      ${field("Notes", `<textarea id="inspection-notes" maxlength="2000" rows="3"></textarea>`)}
+      <p class="err" id="inspection-error" role="alert"></p>
+      <button class="btn primary" type="submit">Save inspection</button>
+    </form>`,
+    () => {
+      el("inspection-form").onsubmit = async (event) => {
+        event.preventDefault();
+        const error = el("inspection-error");
+        error.textContent = "";
+        const button = event.target.querySelector("button");
+        button.disabled = true;
+        try {
+          await api(`/precon-tasks/${task.id}/inspections`, {
+            method: "POST",
+            body: JSON.stringify({
+              scheduled_on: el("inspection-scheduled").value || null,
+              occurred_on: el("inspection-occurred").value || null,
+              result: el("inspection-result").value,
+              notes: el("inspection-notes").value.trim() || null,
+            }),
+          });
+          closeDrawer();
+          await select(current.id);
+        } catch (err) {
+          error.textContent = err.message;
+          button.disabled = false;
+        }
+      };
+    },
+  );
 }
 
 function renderPermits(permits) {
@@ -1074,6 +1211,7 @@ function gateDrawer(gate) {
              canRelease: can("record_field_release"),
              esc,
              showItems: false,
+             fieldStart: current?.field_start,
            })
          : ""
      }
@@ -2116,6 +2254,7 @@ const workspace = createWorkspace({
   openDrawer,
   closeDrawer,
   field,
+  reload: () => select(current.id),
   onProjectDeleted: async () => {
     ++selectionRevision;
     current=null;
