@@ -130,8 +130,8 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       ['Henrico County', 9],
     ] as const) {
       const { rows } = await c.query<{ id: string }>(
-        `INSERT INTO projects.jurisdictions (tenant_id, name, typical_review_days)
-         VALUES ($1,$2,$3) RETURNING id`,
+        `INSERT INTO projects.jurisdictions (tenant_id, name, state, typical_review_days)
+         VALUES ($1,$2,'VA',$3) RETURNING id`,
         [TENANT_ID, name, days],
       );
       jurisdictions[name] = rows[0]!.id;

@@ -73,6 +73,7 @@ export const TENANT_SCOPED_TABLES = [
   'project_invoices',
   'draws',
   'jurisdictions',
+  'jurisdiction_contacts',
   'permits',
   'permit_milestone_templates',
   'permit_milestones',

@@ -99,6 +99,13 @@ export function createApp(opts: AppOptions): Express {
     "/api/v1/projects/projects/:id/controls/:recordId/file",
     express.json({ limit: "12mb" }),
   );
+  app.use(
+    "/api/v1/projects/jurisdictions/import",
+    express.text({
+      type: ["text/csv", "text/plain", "application/csv"],
+      limit: "2mb",
+    }),
+  );
   app.use(express.json({ limit: "2mb" }));
   app.use("/api/v1/bid-response", bidResponseRoutes(opts.database));
 

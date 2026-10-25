@@ -51,9 +51,19 @@ export interface PreconInspectionView {
 
 export interface PreconOfficeView {
   name: string;
+  office_name: string | null;
   main_phone: string | null;
+  website_url: string | null;
   portal_url: string | null;
+  inspection_method: string | null;
+  inspection_phone: string | null;
+  inspection_url: string | null;
   typical_review_days: number | null;
+  last_verified: string | null;
+  work_requiring_permit: string | null;
+  required_documents: string | null;
+  plan_requirements: string | null;
+  fee_notes: string | null;
 }
 
 export interface PreconTaskView {
@@ -93,9 +103,19 @@ interface TaskRow {
   purchase_order_id: string | null;
   overdue: boolean;
   jurisdiction_name: string | null;
+  office_name: string | null;
   portal_url: string | null;
+  website_url: string | null;
   contact_phone: string | null;
+  inspection_method: string | null;
+  inspection_phone: string | null;
+  inspection_url: string | null;
   typical_review_days: number | null;
+  last_verified: string | null;
+  work_requiring_permit: string | null;
+  required_documents: string | null;
+  plan_requirements: string | null;
+  fee_notes: string | null;
   permit_number: string | null;
   po_number: string | null;
   po_amount: string | null;
@@ -169,9 +189,19 @@ export async function listPreconTasks(
             t.jurisdiction_id, t.permit_id, t.purchase_order_id,
             ${preconOverdueSql("t")} AS overdue,
             j.name AS jurisdiction_name,
+            j.office_name,
             j.portal_url,
+            j.website_url,
             j.contact_phone,
+            j.inspection_method,
+            j.inspection_phone,
+            j.inspection_url,
             j.typical_review_days,
+            j.last_verified::text AS last_verified,
+            j.work_requiring_permit,
+            j.required_documents,
+            j.plan_requirements,
+            j.fee_notes,
             pr.permit_number,
             po.po_number,
             po.amount::text AS po_amount,
@@ -235,9 +265,19 @@ function presentTask(
   const office = row.jurisdiction_id
     ? {
         name: row.jurisdiction_name ?? "",
+        office_name: row.office_name,
         main_phone: row.contact_phone,
+        website_url: row.website_url,
         portal_url: row.portal_url,
+        inspection_method: row.inspection_method,
+        inspection_phone: row.inspection_phone,
+        inspection_url: row.inspection_url,
         typical_review_days: row.typical_review_days,
+        last_verified: row.last_verified,
+        work_requiring_permit: row.work_requiring_permit,
+        required_documents: row.required_documents,
+        plan_requirements: row.plan_requirements,
+        fee_notes: row.fee_notes,
       }
     : null;
   return {

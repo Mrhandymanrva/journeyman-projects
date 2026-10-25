@@ -331,10 +331,11 @@ describe("preconstruction tasks", () => {
       .post("/api/v1/projects/projects")
       .send(projectBody({ project_number: "PRE-INSP", name: "Inspections" }));
     const projectId = created.body.data.id as string;
-    const jurisdiction = await as("office")
+    const jurisdiction = await as("owner")
       .post("/api/v1/projects/jurisdictions")
       .send({
         name: "Precon County",
+        state: "VA",
         portal_url: "https://permits.example.test",
         contact_phone: "804-555-0100",
         typical_review_days: 12,

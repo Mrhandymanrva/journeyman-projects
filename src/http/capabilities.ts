@@ -53,6 +53,9 @@ export const CAPABILITIES = {
   refresh_field_start: ['owner', 'manager', 'project_manager'],
   // Set or clear a manual field start. Clearing does not recompute it.
   set_field_start: ['owner', 'manager'],
+  // Permit office directory. Project Coordinator is project_manager.
+  // Office can read the directory and cannot create or import offices.
+  manage_permit_offices: ['owner', 'manager', 'project_manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

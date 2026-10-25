@@ -44,6 +44,7 @@ interface ForeignIds {
   billId: string;
   drawId: string;
   jurisdictionId: string;
+  contactId: string;
   permitId: string;
   milestoneId: string;
   scheduleItemId: string;
@@ -172,8 +173,16 @@ beforeAll(async () => {
 
   const jurisdictionRes = await b
     .post("/api/v1/projects/jurisdictions")
-    .send({ name: "Tenant B County", typical_review_days: 10 });
+    .send({ name: "Tenant B County", state: "VA", typical_review_days: 10 });
   expect(jurisdictionRes.status).toBe(201);
+  const contactRes = await b
+    .post(`/api/v1/projects/jurisdictions/${jurisdictionRes.body.data.id}/contacts`)
+    .send({
+      name: "Tenant B reviewer",
+      title: "Plan reviewer",
+      notes: "call before 10am",
+    });
+  expect(contactRes.status, JSON.stringify(contactRes.body)).toBe(201);
 
   const permitRes = await b
     .post(`/api/v1/projects/projects/${projectId}/permits`)
@@ -245,6 +254,7 @@ beforeAll(async () => {
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
+    contactId: contactRes.body.data.id,
     permitId: permitRes.body.data.id,
     milestoneId,
     scheduleItemId: scheduleRes.body.data.id,
@@ -901,6 +911,34 @@ const ROUTES: RouteCase[] = [
       jurisdiction_id: f.jurisdictionId,
       permit_type: "Building",
     }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/jurisdictions/:id`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}`,
+  },
+  {
+    method: "patch",
+    template: `${BASE}/jurisdictions/:id`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}`,
+    body: () => ({ notes: "stolen" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/jurisdictions/:id/contacts`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}/contacts`,
+    body: () => ({ name: "Stolen contact" }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/jurisdiction-contacts/:id`,
+    path: (f) => `${BASE}/jurisdiction-contacts/${f.contactId}`,
+    body: () => ({ title: "Stolen" }),
+  },
+  {
+    method: "delete",
+    template: `${BASE}/jurisdiction-contacts/:id`,
+    path: (f) => `${BASE}/jurisdiction-contacts/${f.contactId}`,
   },
   {
     method: "patch",
