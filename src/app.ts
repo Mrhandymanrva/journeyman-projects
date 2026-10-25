@@ -6,7 +6,10 @@ import { PasswordSessions, passwordAuthRoutes } from "./http/passwordAuth.js";
 import { userRoutes } from "./routes/users.js";
 import { stScheduleRoutes } from "./routes/stSchedule.js";
 import { stProjectRoutes } from "./routes/stProjects.js";
-import { vendorIntakeRoutes } from "./routes/vendorIntake.js";
+import {
+  serviceVendorDocumentUpload,
+  vendorIntakeRoutes,
+} from "./routes/vendorIntake.js";
 import { bidRequestRoutes, bidResponseRoutes } from "./routes/bidRequests.js";
 import { bidMailConfig, type BidMailConfig } from "./adapters/bidMail.js";
 import { scheduleChangeRoutes } from "./routes/scheduleChanges.js";
@@ -15,7 +18,7 @@ import { sourceRoutes } from "./routes/sources.js";
 import { portfolioVendorRoutes } from "./routes/portfolioVendors.js";
 import { portfolioProjectRoutes } from "./routes/portfolioProjects.js";
 import { ssoRoutes, type SsoConfig } from "./routes/sso.js";
-import { portfolioRoutes } from "./routes/portfolio.js";
+import { bearerMatchesToken, portfolioRoutes } from "./routes/portfolio.js";
 import type { PortfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import type { SourceConnections } from "./adapters/sourceConnections.js";
 import path from "node:path";
@@ -109,9 +112,25 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.portfolio) {
-    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, opts.portfolio));
-    app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, opts.portfolio));
-    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, opts.portfolio));
+    const portfolio = opts.portfolio;
+    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, portfolio));
+    app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, portfolio));
+    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, portfolio));
+    // This bearer already reads documents and writes vendors on /portfolio.
+    // It may upload a vendor document here and nowhere else under /projects.
+    // Any other Authorization value falls through to staff login, unchanged.
+    app.post(
+      "/api/v1/projects/vendors/:id/documents/upload",
+      (req, res, next) => {
+        if (!bearerMatchesToken(req.get("authorization"), portfolio.token)) {
+          next();
+          return;
+        }
+        serviceVendorDocumentUpload(opts.database, portfolio, req, res).catch(
+          next,
+        );
+      },
+    );
   }
 
   if (opts.sso) app.use(ssoRoutes(opts.database, opts.sso));

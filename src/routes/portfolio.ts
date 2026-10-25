@@ -20,18 +20,29 @@ import { ApiError } from "../http/errors.js";
 const sha = (s: string) => createHash("sha256").update(s).digest();
 const num = (v: unknown) => (v === null || v === undefined ? 0 : Number(v));
 
+/** Timing-safe bearer check for the portfolio service token (PM_PORTFOLIO_TOKEN). */
+export function bearerMatchesToken(
+  authorization: string | undefined,
+  token: string,
+): boolean {
+  const match = /^Bearer\s+(.+)$/i.exec((authorization ?? "").trim());
+  if (!match) return false;
+  const presented = sha(match[1]!);
+  const expected = sha(token);
+  return (
+    presented.length === expected.length && timingSafeEqual(presented, expected)
+  );
+}
+
 export function portfolioRoutes(
   database: Database,
   config: PortfolioFeedConfig,
 ): Router {
   const router = Router();
-  const expected = sha(config.token);
 
   router.use((req, res, next) => {
     res.set("Cache-Control", "no-store");
-    const header = req.get("authorization") ?? "";
-    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    if (!match || !timingSafeEqual(sha(match[1]!), expected)) {
+    if (!bearerMatchesToken(req.get("authorization"), config.token)) {
       next(new ApiError("unauthenticated", "A portfolio feed token is required."));
       return;
     }
