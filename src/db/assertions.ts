@@ -53,6 +53,7 @@ export const TENANT_SCOPED_TABLES = [
   'vendor_documents',
   'compliance_requirements',
   'projects',
+  'field_release_events',
   'gate_templates',
   'stage_gates',
   'budget_lines',
