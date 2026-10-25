@@ -184,7 +184,7 @@ for (const file of [
   "db/038_gate_checklist_defaults.sql",
   "db/039_change_order_log_and_closeout.sql",
   "db/040_labor_actuals.sql",
-  "db/038_st_ar_observations.sql",
+  "db/041_st_ar_observations.sql",
 ]) {
   const full = path.join(repoRoot, file);
   const statements = splitSqlStatements(readFileSync(full, "utf8"));

@@ -51,7 +51,7 @@ const FILES = [
   path.join(repoRoot, "db/038_gate_checklist_defaults.sql"),
   path.join(repoRoot, "db/039_change_order_log_and_closeout.sql"),
   path.join(repoRoot, "db/040_labor_actuals.sql"),
-  path.join(repoRoot, "db/038_st_ar_observations.sql"),
+  path.join(repoRoot, "db/041_st_ar_observations.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');

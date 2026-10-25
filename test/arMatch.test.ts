@@ -145,7 +145,7 @@ describe("draw matching", () => {
       db.query<{ n: string }>(`SELECT count(*)::text AS n FROM projects.external_invoices`),
     );
     expect(discovered.rows[0]?.n).toBe("0");
-    expect(SCHEMA_FILES.some((file) => file.endsWith("038_st_ar_observations.sql"))).toBe(true);
+    expect(SCHEMA_FILES.some((file) => file.endsWith("041_st_ar_observations.sql"))).toBe(true);
   });
 
   it("keeps the previous observations when ServiceTitan refuses the read", async () => {
