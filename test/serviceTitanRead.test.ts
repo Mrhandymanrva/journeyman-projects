@@ -360,3 +360,56 @@ it("reads project service address, customer and real job details atomically", as
     "did not match",
   );
 });
+
+describe("job timesheets", () => {
+  it("reads timesheets with GET and drops wage fields", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: [
+          {
+            id: 9,
+            jobId: 1,
+            appointmentId: 4,
+            technicianId: 6,
+            technicianName: "Alex",
+            arrivedOn: "2026-09-15T12:00:00Z",
+            doneOn: "2026-09-15T15:00:00Z",
+            canceledOn: null,
+            hourlyRate: 42,
+            grossPay: 126,
+          },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const read = await client.readJobTimesheets("1");
+    expect(read.forbidden).toBe(false);
+    expect(read.timesheets).toEqual([
+      {
+        id: "9",
+        appointmentId: "4",
+        technicianId: "6",
+        technicianName: "Alex",
+        arrivedOn: "2026-09-15T12:00:00Z",
+        dispatchedOn: null,
+        doneOn: "2026-09-15T15:00:00Z",
+        canceledOn: null,
+      },
+    ]);
+    expect(read.timesheets[0]).not.toHaveProperty("hourlyRate");
+    const sheetCalls = fetcher.mock.calls.filter((call) =>
+      String(call[0]).includes("/payroll/"),
+    );
+    expect(sheetCalls.length).toBeGreaterThan(0);
+    expect(sheetCalls.every((call) => call[1]?.method === "GET")).toBe(true);
+    expect(fetcher.mock.calls.some((call) => call[1]?.method === "PUT" || call[1]?.method === "PATCH")).toBe(
+      false,
+    );
+  });
+
+  it("returns forbidden on payroll 403 instead of throwing", async () => {
+    const { client } = setup([json({ secret: "must not escape" }, 403)]);
+    const read = await client.readJobTimesheets("1");
+    expect(read).toEqual({ jobId: "1", forbidden: true, timesheets: [] });
+  });
+});

@@ -4,6 +4,7 @@ import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
+import { portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -85,6 +86,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
             p.contract_value::text, p.target_margin::text,
             p.scheduled_start::text, p.scheduled_end::text, p.actual_start::text, p.updated_at::text,
             ${fieldStartColumns("p")},
+            ${portfolioLaborColumns("p")},
             s.full_name AS pm,
             m.revised_contract::text, m.committed_cost::text, m.projected_cost::text,
             (SELECT count(*) FROM projects.stage_gates g WHERE g.project_id = p.id AND g.status = 'submitted')::text AS gates_awaiting,
@@ -215,6 +217,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         projected_margin_pct: proj === null || revised <= 0 ? null : (revised - proj) / revised,
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
         field_start: presentFieldStart(p),
+        labor: presentPortfolioLabor(p as unknown as Record<string, unknown>),
         precon: { open: Number(p.precon_open ?? 0), overdue: Number(p.precon_overdue ?? 0) },
         field_release: presentFieldRelease({
           released_at: p.field_released_at,

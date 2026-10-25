@@ -326,6 +326,7 @@ async function select(projectId) {
       logs,
       cos,
       closeout,
+      labor,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -339,6 +340,7 @@ async function select(projectId) {
       api(`/projects/${projectId}/daily-logs`),
       api(`/projects/${projectId}/change-orders`),
       api(`/projects/${projectId}/closeout`),
+      api(`/projects/${projectId}/labor`),
     ]);
 
     if (revision !== selectionRevision) return;
@@ -360,6 +362,7 @@ async function select(projectId) {
       logs,
       cos,
       closeout,
+      labor,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -403,6 +406,7 @@ function render(d) {
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
   renderCloseout(d.closeout);
+  renderLabor(d.labor);
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
@@ -2190,6 +2194,59 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
       );
     },
   );
+}
+
+function renderLabor(row) {
+  const data = row || { hours: 0, uncoded_hours: 0, source: null, lines: [], cost_code: null };
+  const refresh = el("labor-refresh");
+  if (refresh) refresh.hidden = !can("refresh_labor");
+  if (el("labortag")) {
+    el("labortag").textContent = data.source
+      ? String(data.source).replaceAll("_", " ")
+      : "none";
+  }
+  if (!el("labor")) return;
+  const moneyLine =
+    data.amount === undefined || data.amount === null
+      ? ""
+      : `<div class="row-m">Labor cost ${money(data.amount)}${
+          data.rate != null ? ` at ${money(data.rate)} an hour` : ""
+        }</div>`;
+  el("labor").innerHTML = `
+    <p class="note">Hours come from ServiceTitan timesheets. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan, and no wage is stored.</p>
+    <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
+      ${moneyLine}
+      <div class="row-m">${
+        data.observed_at ? `Last refresh ${stamp(data.observed_at)}` : "Not refreshed yet."
+      }${
+        data.cost_code
+          ? ` · ${esc(data.cost_code.code)} ${esc(data.cost_code.description || "")}`
+          : " · no labor cost code"
+      }</div></div></div>
+    ${
+      Number(data.uncoded_hours) > 0
+        ? `<p class="msg"> ${Number(data.uncoded_hours).toLocaleString("en-US")} hours are uncoded. Set a labor cost code and a burdened rate before they hit the budget.</p>`
+        : ""
+    }
+    ${(data.lines || [])
+      .map(
+        (line) => `<div class="row"><div class="row-b"><div class="row-t">${esc(
+          line.technician_name || "Technician",
+        )}</div><div class="row-m">${esc(line.work_date)} · ${esc(
+          String(line.source || "").replaceAll("_", " "),
+        )}</div></div><div class="row-r">${esc(line.hours)} h</div></div>`,
+      )
+      .join("")}`;
+  refresh?.addEventListener("click", async () => {
+    refresh.disabled = true;
+    try {
+      await api(`/projects/${current.id}/labor/refresh`, { method: "POST" });
+      await select(current.id);
+    } catch (err) {
+      refresh.disabled = false;
+      window.alert(err.message);
+    }
+  });
 }
 
 function renderCloseout(row) {

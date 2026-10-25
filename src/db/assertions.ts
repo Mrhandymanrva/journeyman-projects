@@ -68,6 +68,7 @@ export const TENANT_SCOPED_TABLES = [
   'change_orders',
   'change_order_lines',
   'project_closeout',
+  'labor_actuals',
   'draw_templates',
   'external_invoices',
   'draw_invoice_applications',

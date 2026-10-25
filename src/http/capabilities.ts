@@ -56,6 +56,10 @@ export const CAPABILITIES = {
   // Recompute field start from ServiceTitan appointments. The call is a read.
   // A manual field start is left as it is.
   refresh_field_start: ['owner', 'manager', 'project_manager'],
+  // Read ServiceTitan timesheets or appointment windows. The call does not write to ServiceTitan.
+  refresh_labor: ['owner', 'manager', 'project_manager'],
+  // Where in-house hours land. Allowed after the baseline is frozen. It does not change the budget.
+  set_labor_cost_code: ['owner', 'manager'],
   // Set or clear a manual field start. Clearing does not recompute it.
   set_field_start: ['owner', 'manager'],
   // Permit office directory. Project Coordinator is project_manager.

@@ -142,7 +142,7 @@ export class ServiceTitanReadAdapter {
     }
   }
   private async get(
-    family: "jpm" | "dispatch" | "settings" | "crm" | "forms",
+    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll",
     resource: string,
     query?: URLSearchParams,
   ) {
@@ -923,5 +923,76 @@ export class ServiceTitanReadAdapter {
       assignments,
       observedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Payroll timesheets for one job. GET only. A 403 is returned as forbidden
+   * so the caller can keep the last timesheet rows and use appointment windows.
+   * Wage fields on the payload are stripped and never returned.
+   */
+  async readJobTimesheets(jobId: string): Promise<{
+    jobId: string;
+    forbidden: boolean;
+    timesheets: Array<{
+      id: string;
+      appointmentId: string | null;
+      technicianId: string | null;
+      technicianName: string | null;
+      arrivedOn: string | null;
+      dispatchedOn: string | null;
+      doneOn: string | null;
+      canceledOn: string | null;
+    }>;
+  }> {
+    if (!/^\d+$/.test(jobId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
+    const timesheetSchema = z
+      .object({
+        id: sourceId,
+        appointmentId: sourceId.nullish(),
+        technicianId: sourceId.nullish(),
+        technicianName: z.string().nullish(),
+        arrivedOn: z.string().nullish(),
+        dispatchedOn: z.string().nullish(),
+        doneOn: z.string().nullish(),
+        canceledOn: z.string().nullish(),
+      })
+      .strip();
+    try {
+      const rows: Array<z.infer<typeof timesheetSchema>> = [];
+      for (let page = 1; page <= 100; page++) {
+        const raw = await this.get(
+          "payroll",
+          `jobs/${jobId}/timesheets`,
+          new URLSearchParams({ page: String(page), pageSize: "200" }),
+        );
+        const parsed = z
+          .object({ data: z.array(timesheetSchema), hasMore: z.boolean() })
+          .safeParse(raw);
+        if (!parsed.success)
+          throw new ServiceTitanReadError("Unexpected timesheet response.");
+        rows.push(...parsed.data.data);
+        if (!parsed.data.hasMore) break;
+      }
+      return {
+        jobId,
+        forbidden: false,
+        timesheets: rows.map((row) => ({
+          id: row.id,
+          appointmentId: row.appointmentId ?? null,
+          technicianId: row.technicianId ?? null,
+          technicianName: row.technicianName ?? null,
+          arrivedOn: row.arrivedOn ?? null,
+          dispatchedOn: row.dispatchedOn ?? null,
+          doneOn: row.doneOn ?? null,
+          canceledOn: row.canceledOn ?? null,
+        })),
+      };
+    } catch (err) {
+      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
+        return { jobId, forbidden: true, timesheets: [] };
+      }
+      throw err;
+    }
   }
 }

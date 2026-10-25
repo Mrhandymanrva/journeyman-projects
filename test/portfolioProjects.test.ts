@@ -38,6 +38,13 @@ describe("portfolio project feed", () => {
       unsigned: 0,
     });
     expect(res.body.data.projects[0].closeout).toBeNull();
+    expect(res.body.data.projects[0].labor).toEqual({
+      hours: 0,
+      amount: null,
+      uncoded_hours: 0,
+      source: null,
+      observed_at: null,
+    });
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 
