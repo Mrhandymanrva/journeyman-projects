@@ -5,6 +5,7 @@ import { ApiError, notFound } from '../http/errors.js';
 import { can, requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from './shared.js';
+import { loadProjectEstimates } from '../domain/arMatch.js';
 import { applyApprovedChangeOrder, applyChangeOrderToPurchaseOrders } from '../domain/changeOrders.js';
 import { serviceTitanOwnsRevenue } from '../domain/localInvoices.js';
 
@@ -75,18 +76,44 @@ export function changeOrderRoutes(deps: StaffRouterDeps): Router {
       );
 
       const settings = await threshold(ctx);
+      const estimates = await loadProjectEstimates(ctx.db, projectId);
+      const approved = new Set(
+        rows.filter((row) => row.status === 'approved').map((row) => String(row.id)),
+      );
+      const waiting = estimates.filter(
+        (row) => row.classification === 'change_order' && (!row.change_order_id || !approved.has(row.change_order_id)),
+      );
+      const byChangeOrder = new Map(
+        estimates.filter((row) => row.change_order_id).map((row) => [row.change_order_id, row]),
+      );
 
       sendData(ctx.res, {
         approval_threshold: settings,
         local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
-        change_orders: rows.map((co) => ({
-          ...co,
-          customer_amount: num(co.customer_amount),
-          cost_amount: num(co.cost_amount),
-          lines: lines.rows
-            .filter((l) => l.change_order_id === co.id)
-            .map((l) => ({ ...l, amount: num(l.amount) })),
-        })),
+        pending_estimate_revisions: Math.round(waiting.reduce((sum, row) => sum + row.customer_amount, 0) * 100) / 100,
+        unmatched_sold_estimates: waiting,
+        change_orders: rows.map((co) => {
+          const linked = byChangeOrder.get(String(co.id));
+          return {
+            ...co,
+            customer_amount: num(co.customer_amount),
+            cost_amount: num(co.cost_amount),
+            ...(linked
+              ? {
+                  st_estimate: {
+                    id: linked.id,
+                    name: linked.name,
+                    sold_on: linked.sold_on,
+                    customer_amount: linked.customer_amount,
+                    classification: linked.classification,
+                  },
+                }
+              : {}),
+            lines: lines.rows
+              .filter((l) => l.change_order_id === co.id)
+              .map((l) => ({ ...l, amount: num(l.amount) })),
+          };
+        }),
       });
     }),
   );

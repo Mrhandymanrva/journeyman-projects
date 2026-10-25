@@ -413,3 +413,93 @@ describe("job timesheets", () => {
     expect(read).toEqual({ jobId: "1", forbidden: true, timesheets: [] });
   });
 });
+
+describe("accounting and sales reads", () => {
+  it("reads invoices, payments, and estimates with GET only", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: [
+          {
+            id: 44,
+            referenceNumber: " ST-4401 ",
+            total: "2400.00",
+            balance: "2400.00",
+            invoiceDate: "2026-10-20",
+            job: { id: 900184 },
+            customerBalance: 999,
+          },
+        ],
+        hasMore: false,
+      },
+      {
+        data: [
+          {
+            id: 7,
+            date: "2026-10-12",
+            memo: "secret",
+            appliedTo: [{ appliedTo: 44, appliedAmount: "12540.00" }],
+          },
+        ],
+        hasMore: false,
+      },
+      {
+        data: [
+          {
+            id: 9,
+            name: "Tile upgrade",
+            jobId: 900184,
+            status: { name: "Sold" },
+            soldOn: "2026-10-18",
+            subtotal: "2400.00",
+            soldBy: "hidden",
+          },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const invoices = await client.readInvoices(null);
+    const payments = await client.readPayments("2026-10-01T00:00:00Z");
+    const estimates = await client.readEstimates(null);
+    expect(invoices.forbidden).toBe(false);
+    expect(invoices.invoices[0]).toEqual({
+      externalInvoiceId: "44",
+      invoiceNumber: "ST-4401",
+      externalJobId: "900184",
+      total: 2400,
+      balance: 2400,
+      invoicedOn: "2026-10-20",
+      paidOn: null,
+    });
+    expect(invoices.invoices[0]).not.toHaveProperty("customerBalance");
+    expect(payments.payments).toEqual([
+      {
+        externalPaymentId: "7",
+        externalInvoiceId: "44",
+        amount: 12540,
+        paidOn: "2026-10-12",
+      },
+    ]);
+    expect(estimates.estimates[0]).toMatchObject({
+      externalEstimateId: "9",
+      name: "Tile upgrade",
+      status: "Sold",
+      customerAmount: 2400,
+    });
+    expect(estimates.estimates[0]).not.toHaveProperty("soldBy");
+    const reads = fetcher.mock.calls.filter((call) => call[1]?.method === "GET");
+    expect(reads.map((call) => String(call[0]))).toEqual([
+      expect.stringContaining("/accounting/v2/tenant/10/invoices?"),
+      expect.stringContaining("/accounting/v2/tenant/10/payments?"),
+      expect.stringContaining("/sales/v2/tenant/10/estimates?"),
+    ]);
+    expect(String(reads[1]?.[0])).toContain("modifiedOnOrAfter=2026-10-01");
+    expect(fetcher.mock.calls.some((call) => call[1]?.method && call[1].method !== "GET" && call[1].method !== "POST")).toBe(
+      false,
+    );
+  });
+
+  it("returns forbidden on an accounting 403 instead of throwing", async () => {
+    const { client } = setup([json({ title: "Forbidden" }, 403)]);
+    await expect(client.readInvoices(null)).resolves.toEqual({ forbidden: true, invoices: [] });
+  });
+});

@@ -66,12 +66,18 @@ describe('recording what exists over there', () => {
     expect(inv.warning).toBeNull();
   });
 
-  it('a project manager cannot record one', async () => {
+  it('a project coordinator can record one, and an estimator cannot', async () => {
     const res = await h
       .as(t.staff.pm!.token)
       .post('/api/v1/projects/external-invoices')
       .send({ external_invoice_number: 'X', amount: 1 });
-    expect(res.status).toBe(403);
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.data.external_invoice_number).toBe('X');
+    const estimator = await h
+      .as(t.staff.estimator!.token)
+      .post('/api/v1/projects/external-invoices')
+      .send({ external_invoice_number: 'EST', amount: 1 });
+    expect(estimator.status).toBe(403);
   });
 });
 

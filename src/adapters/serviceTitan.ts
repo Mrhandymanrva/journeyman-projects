@@ -142,7 +142,7 @@ export class ServiceTitanReadAdapter {
     }
   }
   private async get(
-    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll",
+    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll" | "accounting" | "sales",
     resource: string,
     query?: URLSearchParams,
   ) {
@@ -991,6 +991,164 @@ export class ServiceTitanReadAdapter {
     } catch (err) {
       if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
         return { jobId, forbidden: true, timesheets: [] };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Accounting and sales reads. GET only. A 403 is returned as forbidden so
+   * the caller can keep the last observations. Rows are not filtered here;
+   * the caller keeps the ones whose job is linked and active.
+   */
+  async readInvoices(modifiedSince: string | null): Promise<{
+    forbidden: boolean;
+    invoices: Array<{
+      externalInvoiceId: string;
+      invoiceNumber: string;
+      externalJobId: string | null;
+      total: number;
+      balance: number;
+      invoicedOn: string | null;
+      paidOn: string | null;
+    }>;
+  }> {
+    const schema = z
+      .object({
+        id: sourceId,
+        referenceNumber: z.string().nullish(),
+        invoiceNumber: z.string().nullish(),
+        total: z.coerce.number().nullish(),
+        balance: z.coerce.number().nullish(),
+        invoiceDate: z.string().nullish(),
+        paidOn: z.string().nullish(),
+        jobId: sourceId.nullish(),
+        job: z.object({ id: sourceId }).nullish(),
+      })
+      .strip();
+    const page = await this.collect("accounting", "invoices", schema, modifiedSince);
+    return {
+      forbidden: page.forbidden,
+      invoices: page.rows.map((row) => ({
+        externalInvoiceId: row.id,
+        invoiceNumber: (row.referenceNumber ?? row.invoiceNumber ?? "").trim(),
+        externalJobId: row.job?.id ?? row.jobId ?? null,
+        total: row.total ?? 0,
+        balance: row.balance ?? 0,
+        invoicedOn: row.invoiceDate ?? null,
+        paidOn: row.paidOn ?? null,
+      })),
+    };
+  }
+
+  async readPayments(modifiedSince: string | null): Promise<{
+    forbidden: boolean;
+    payments: Array<{
+      externalPaymentId: string;
+      externalInvoiceId: string;
+      amount: number;
+      paidOn: string | null;
+    }>;
+  }> {
+    const schema = z
+      .object({
+        id: sourceId,
+        date: z.string().nullish(),
+        paidOn: z.string().nullish(),
+        appliedTo: z
+          .array(
+            z
+              .object({
+                appliedTo: sourceId.nullish(),
+                invoiceId: sourceId.nullish(),
+                appliedAmount: z.coerce.number().nullish(),
+                amount: z.coerce.number().nullish(),
+              })
+              .strip(),
+          )
+          .nullish(),
+      })
+      .strip();
+    const page = await this.collect("accounting", "payments", schema, modifiedSince);
+    const payments = page.rows.flatMap((row) =>
+      (row.appliedTo ?? []).flatMap((applied) => {
+        const invoiceId = applied.invoiceId ?? applied.appliedTo;
+        if (!invoiceId) return [];
+        return [
+          {
+            externalPaymentId: row.id,
+            externalInvoiceId: invoiceId,
+            amount: applied.appliedAmount ?? applied.amount ?? 0,
+            paidOn: row.paidOn ?? row.date ?? null,
+          },
+        ];
+      }),
+    );
+    return { forbidden: page.forbidden, payments };
+  }
+
+  async readEstimates(modifiedSince: string | null): Promise<{
+    forbidden: boolean;
+    estimates: Array<{
+      externalEstimateId: string;
+      name: string | null;
+      externalJobId: string | null;
+      status: string;
+      soldOn: string | null;
+      customerAmount: number;
+    }>;
+  }> {
+    const schema = z
+      .object({
+        id: sourceId,
+        name: z.string().nullish(),
+        jobId: sourceId.nullish(),
+        job: z.object({ id: sourceId }).nullish(),
+        status: z.union([z.string(), z.object({ name: z.string() }).strip()]).nullish(),
+        soldOn: z.string().nullish(),
+        subtotal: z.coerce.number().nullish(),
+        total: z.coerce.number().nullish(),
+      })
+      .strip();
+    const page = await this.collect("sales", "estimates", schema, modifiedSince);
+    return {
+      forbidden: page.forbidden,
+      estimates: page.rows.map((row) => ({
+        externalEstimateId: row.id,
+        name: row.name ?? null,
+        externalJobId: row.job?.id ?? row.jobId ?? null,
+        status: typeof row.status === "string" ? row.status : row.status?.name ?? "",
+        soldOn: row.soldOn ?? null,
+        customerAmount: row.subtotal ?? row.total ?? 0,
+      })),
+    };
+  }
+
+  private async collect<T>(
+    family: "accounting" | "sales",
+    resource: string,
+    schema: z.ZodType<T, z.ZodTypeDef, unknown>,
+    modifiedSince: string | null,
+  ): Promise<{ forbidden: boolean; rows: T[] }> {
+    try {
+      const rows: T[] = [];
+      for (let page = 1; page <= 100; page++) {
+        const query = new URLSearchParams({ page: String(page), pageSize: "200" });
+        if (modifiedSince) query.set("modifiedOnOrAfter", modifiedSince);
+        const raw = await this.get(family, resource, query);
+        const parsed = z.object({ data: z.array(schema), hasMore: z.boolean() }).safeParse(raw);
+        if (!parsed.success) {
+          throw new ServiceTitanReadError(`Unexpected ServiceTitan ${resource} response.`);
+        }
+        rows.push(...parsed.data.data);
+        if (!parsed.data.hasMore) return { forbidden: false, rows };
+      }
+      throw new ServiceTitanReadError(
+        "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
+      );
+    } catch (err) {
+      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
+        return { forbidden: true, rows: [] };
       }
       throw err;
     }

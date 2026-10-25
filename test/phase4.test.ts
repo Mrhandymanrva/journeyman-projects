@@ -109,15 +109,23 @@ describe('draws — the revenue control', () => {
     expect(again.body.error.code).toBe('draw_already_invoiced');
   });
 
-  it('a project manager cannot record an invoice number', async () => {
-    const [deposit] = await schedule();
+  it('a project coordinator can record an invoice number, and an estimator cannot', async () => {
+    const [deposit, next] = await schedule();
     await owner().post(`/api/v1/projects/draws/${deposit!.id}/earn`);
     await owner().post(`/api/v1/projects/draws/${deposit!.id}/approve`);
     const res = await h
       .as(t.staff.pm!.token)
       .post(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
       .send({ external_invoice_number: 'X-1' });
-    expect(res.status).toBe(403);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.data.external_invoice_number).toBe('X-1');
+    await owner().post(`/api/v1/projects/draws/${next!.id}/earn`);
+    await owner().post(`/api/v1/projects/draws/${next!.id}/approve`);
+    const estimator = await h
+      .as(t.staff.estimator!.token)
+      .post(`/api/v1/projects/draws/${next!.id}/external-invoice`)
+      .send({ external_invoice_number: 'EST-1' });
+    expect(estimator.status).toBe(403);
   });
 
   it('the manual adapter reports verification unavailable rather than pretending', async () => {
@@ -439,7 +447,14 @@ it('records a ServiceTitan invoice number on the draw without a local invoice', 
     .as(t.staff.pm!.token)
     .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
     .send({ external_invoice_number: 'PM-1' });
-  expect(pm.status).toBe(403);
+  expect(pm.status, JSON.stringify(pm.body)).toBe(200);
+  expect(pm.body.data.external_invoice_number).toBe('PM-1');
+
+  const estimator = await h
+    .as(t.staff.estimator!.token)
+    .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)
+    .send({ external_invoice_number: 'EST-1' });
+  expect(estimator.status).toBe(403);
 
   const cleared = await owner()
     .patch(`/api/v1/projects/draws/${deposit!.id}/external-invoice`)

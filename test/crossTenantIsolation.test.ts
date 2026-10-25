@@ -895,6 +895,12 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/projects/${f.projectId}/labor/refresh`,
     body: () => ({}),
   },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/servicetitan/ar-refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/servicetitan/ar-refresh`,
+    body: () => ({}),
+  },
 
   // --- phase 4: draws -----------------------------------------------------
   {

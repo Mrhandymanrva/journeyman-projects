@@ -59,6 +59,7 @@ describe("portfolio feed", () => {
     expect(d.totals.backlog_contract).toBe(50_000);
     expect(d.draws.approved_not_invoiced).toEqual([]);
     expect(d.exceptions.budget).toEqual([]);
+    expect(d.exceptions.unmatched_job_invoices).toEqual([]);
     expect(d.purchasing.open_purchase_orders).toEqual({ count: 0, amount: 0 });
   });
 

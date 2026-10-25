@@ -45,6 +45,13 @@ describe("portfolio project feed", () => {
       source: null,
       observed_at: null,
     });
+    expect(res.body.data.projects[0].ar).toEqual({
+      draws_matched: 0,
+      draws_suggested: 0,
+      unmatched_invoices: 0,
+      unpaid_amount: 0,
+      pending_estimate_revisions: 0,
+    });
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 
