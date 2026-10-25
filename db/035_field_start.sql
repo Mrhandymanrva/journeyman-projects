@@ -1,16 +1,15 @@
 -- Field start is the earliest ServiceTitan appointment, or a manual override.
 -- scheduled_start stays the logged start.
 --
--- One-time reset of existing logged starts. Run this read-only check first
--- and keep the result; after this file applies, scheduled_start already
--- equals the created date, so the two columns match.
---
---   SELECT id,
---          name,
---          scheduled_start AS scheduled_start_before,
---          (created_at AT TIME ZONE 'America/New_York')::date AS created_date_after
---     FROM projects.projects
---    ORDER BY name;
+-- This file does not write scheduled_start. A project that already exists
+-- keeps the date it has. In the live book that includes:
+--   320012949  2026-09-01
+--   321293715  2026-10-05
+--   321586598  2026-10-19
+--   321612166  2026-09-17
+-- A project created after this change defaults an omitted logged start to
+-- the America/New_York calendar date of created_at. A ServiceTitan refresh
+-- still does not overwrite scheduled_start.
 
 SET search_path = projects, public;
 
@@ -65,31 +64,3 @@ COMMENT ON COLUMN projects.field_start_observed_at IS
   'When the winning appointment was read, or when a manual override was saved.';
 COMMENT ON COLUMN projects.field_start_set_by IS
   'Staff member who saved a manual field start. Null unless the source is manual.';
-
--- Provision re-applies every statement. The marker table is what keeps this
--- copy from running on the next deploy. The table owner is NOSUPERUSER
--- NOBYPASSRLS, and FORCE RLS hides a lapsed tenant even with app.tenant_id
--- set, so the copy turns RLS off and back on inside this one transaction.
--- projects_touch would move updated_at, which the 90-day completed total
--- reads, so that trigger is off for the same statement.
-DO $reset$
-BEGIN
-  IF to_regclass('projects.scheduled_start_origin_reset') IS NOT NULL THEN
-    RETURN;
-  END IF;
-
-  CREATE TABLE projects.scheduled_start_origin_reset (
-    applied_at timestamptz NOT NULL DEFAULT now()
-  );
-  COMMENT ON TABLE projects.scheduled_start_origin_reset IS
-    'One row recording that migration 035 copied each project created date into scheduled_start. Not tenant data, so it has no row level security.';
-  INSERT INTO projects.scheduled_start_origin_reset DEFAULT VALUES;
-
-  ALTER TABLE projects.projects DISABLE ROW LEVEL SECURITY;
-  ALTER TABLE projects.projects DISABLE TRIGGER projects_touch;
-  UPDATE projects SET scheduled_start = (created_at AT TIME ZONE 'America/New_York')::date;
-  ALTER TABLE projects.projects ENABLE TRIGGER projects_touch;
-  ALTER TABLE projects.projects ENABLE ROW LEVEL SECURITY;
-  ALTER TABLE projects.projects FORCE ROW LEVEL SECURITY;
-END
-$reset$;
