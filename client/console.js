@@ -325,6 +325,7 @@ async function select(projectId) {
       pos,
       logs,
       cos,
+      closeout,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -337,6 +338,7 @@ async function select(projectId) {
       api(`/projects/${projectId}/purchase-orders`),
       api(`/projects/${projectId}/daily-logs`),
       api(`/projects/${projectId}/change-orders`),
+      api(`/projects/${projectId}/closeout`),
     ]);
 
     if (revision !== selectionRevision) return;
@@ -357,6 +359,7 @@ async function select(projectId) {
       pos,
       logs,
       cos,
+      closeout,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -399,6 +402,7 @@ function render(d) {
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
+  renderCloseout(d.closeout);
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
@@ -1164,6 +1168,14 @@ async function submit(button, fn) {
 
 const field = (label, html) =>
   `<label><span class="lbl">${label}</span>${html}</label>`;
+const stamp = (value) => {
+  if (!value) return "Not recorded";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return esc(value);
+  return esc(
+    parsed.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }),
+  );
+};
 const messageSlot = '<p class="msg" id="drawer-msg"></p>';
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -2020,6 +2032,48 @@ function renderChangeOrders(data) {
   );
 }
 
+function changeOrderLog(co) {
+  const open = co.status !== "void" && co.status !== "rejected";
+  const mayEnter = open && can("record_change_order_entered");
+  const maySign = open && can("record_change_order_signed");
+  return `<span class="lbl">Log</span>
+    <p class="note">Found, priced, entered in ServiceTitan, and signed record what already happened. Send and Approve, further down, are a different pair. Send marks that it went to the customer. Approve is the step that posts the budget.</p>
+    <div class="row"><div class="row-b"><div class="row-t">Found</div><div class="row-m">${stamp(co.found_at)}</div></div></div>
+    <div class="row"><div class="row-b"><div class="row-t">Priced</div><div class="row-m">${
+      co.priced_at
+        ? stamp(co.priced_at)
+        : "Not priced yet. Owner or manager records the customer amount and the cost lines."
+    }</div></div></div>
+    <div class="row"><div class="row-b"><div class="row-t">Entered in ServiceTitan</div><div class="row-m">${
+      co.entered_st_at
+        ? `${stamp(co.entered_st_at)} · estimate ${esc(co.st_estimate_number)}`
+        : "Not entered in ServiceTitan yet. Recording the number here does not write to ServiceTitan."
+    }</div></div></div>
+    ${
+      mayEnter
+        ? `${field(
+            "ServiceTitan estimate number",
+            `<input id="co-st-number" maxlength="80" value="${esc(co.st_estimate_number || "")}">`,
+          )}
+          <div class="actions"><button class="btn sm" id="co-entered" type="button">Record entered in ServiceTitan</button></div>`
+        : ""
+    }
+    <div class="row"><div class="row-b"><div class="row-t">Signed</div><div class="row-m">The tech collected the signature. This screen records it. It does not send anything and it does not post the budget.${
+      co.signed_at
+        ? `<br>${stamp(co.signed_at)}${co.signature_note ? ` · ${esc(co.signature_note)}` : ""}`
+        : ""
+    }</div></div></div>
+    ${
+      maySign
+        ? `${field(
+            "Signature note",
+            `<textarea id="co-sign-note" maxlength="2000">${esc(co.signature_note || "")}</textarea>`,
+          )}
+          <div class="actions"><button class="btn sm" id="co-signed" type="button">Record the signature</button></div>`
+        : ""
+    }`;
+}
+
 function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   const overThreshold = co.customer_amount > threshold;
   const mayApproveThis = overThreshold
@@ -2044,6 +2098,8 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
            : ""
        }
      </p>
+     ${changeOrderLog(co)}
+     <span class="lbl">Send and approve</span>
      ${
        co.lines.length
          ? `<span class="lbl">Cost lines</span>${co.lines
@@ -2114,12 +2170,86 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
           api(`/change-orders/${co.id}/reject`, { method: "POST" }),
         ),
       );
+      el("co-entered")?.addEventListener("click", (e) =>
+        submit(e.target, () =>
+          api(`/change-orders/${co.id}/entered`, {
+            method: "POST",
+            body: JSON.stringify({
+              st_estimate_number: el("co-st-number").value.trim(),
+            }),
+          }),
+        ),
+      );
+      el("co-signed")?.addEventListener("click", (e) =>
+        submit(e.target, () =>
+          api(`/change-orders/${co.id}/signed`, {
+            method: "POST",
+            body: JSON.stringify({ note: el("co-sign-note").value.trim() }),
+          }),
+        ),
+      );
     },
   );
 }
 
+function renderCloseout(row) {
+  const c = row || {};
+  const may = can("manage_project_controls");
+  const disabled = may ? "" : "disabled";
+  el("closetag").textContent = c.warranty_start_on
+    ? `warranty ${c.warranty_start_on}`
+    : "open";
+  el("closeout").innerHTML = `
+    <p class="note">Punch, photos, the final draw invoice, the warranty date, and the review request live on this card. Nothing here emails the customer or writes to ServiceTitan. Photos stay in the photos folder. Gate 4 is still ticked by a person.</p>
+    <label><input id="cl-punch" type="checkbox" ${c.punch_done_at ? "checked" : ""} ${disabled}> Punch list complete</label>
+    ${field("Punch note", `<input id="cl-punch-note" value="${esc(c.punch_note || "")}" ${disabled}>`)}
+    <label><input id="cl-photos" type="checkbox" ${c.photos_done_at ? "checked" : ""} ${disabled}> Final photos filed</label>
+    ${field("Photo note", `<input id="cl-photos-note" value="${esc(c.photos_note || "")}" ${disabled}>`)}
+    ${field(
+      "Final draw invoice number",
+      `<input id="cl-invoice" value="${esc(c.final_draw_invoice_number || "")}" maxlength="80" ${disabled}>`,
+    )}
+    ${field(
+      "Warranty start",
+      `<input id="cl-warranty" type="date" value="${esc(c.warranty_start_on || "")}" ${disabled}>`,
+    )}
+    ${field(
+      "Review request",
+      `<textarea id="cl-review" maxlength="2000" ${disabled}>${esc(c.review_request_note || "")}</textarea>`,
+    )}
+    <p class="note">The review request is a note on this project. Nobody is emailed.</p>
+    ${
+      may
+        ? `<div class="actions"><button class="btn sm primary" id="cl-save" type="button">Save closeout</button></div>`
+        : `<p class="note">Owner, manager, or the project coordinator records closeout.</p>`
+    }`;
+  el("cl-save")?.addEventListener("click", async (event) => {
+    const button = event.target;
+    button.disabled = true;
+    try {
+      await api(`/projects/${current.id}/closeout`, {
+        method: "PUT",
+        body: JSON.stringify({
+          punch_done: el("cl-punch").checked,
+          punch_note: el("cl-punch-note").value,
+          photos_done: el("cl-photos").checked,
+          photos_note: el("cl-photos-note").value,
+          final_draw_invoice_number: el("cl-invoice").value.trim() || null,
+          warranty_start_on: el("cl-warranty").value || null,
+          review_request_note: el("cl-review").value,
+        }),
+      });
+      await select(current.id);
+    } catch (err) {
+      button.disabled = false;
+      window.alert(err.message);
+    }
+  });
+}
+
 async function raiseChangeOrderDrawer() {
-  const codes = await api("/cost-codes");
+  const mayPrice = can("price_change_order");
+  const codes = mayPrice ? await api("/cost-codes") : [];
   coLines = [];
 
   openDrawer(
@@ -2132,12 +2262,17 @@ async function raiseChangeOrderDrawer() {
      rather than a note beside it.</p>
      ${field("Description", '<textarea id="co-desc" placeholder="Customer upgraded the tile selection"></textarea>')}
      <div class="two">
-       ${field("Customer amount", '<input id="co-amount" type="number" step="0.01" value="0">')}
+       ${
+         mayPrice
+           ? field("Customer amount", '<input id="co-amount" type="number" step="0.01" value="0">')
+           : `<p class="note">Owner or manager records the customer amount and the cost lines. You can describe the change and raise the draft.</p>`
+       }
        ${field("Schedule impact, days", '<input id="co-days" type="number" step="1" value="0">')}
      </div>
      ${field("Reference in the revenue system", '<input id="co-ref" placeholder="optional">')}
-
-     <span class="lbl">Cost lines</span>
+     ${
+       mayPrice
+         ? `<span class="lbl">Cost lines</span>
      <p class="note">Negative amounts are allowed — a change order that removes
      scope is still a change order, and a credit that cannot be recorded is a
      credit somebody argues about later.</p>
@@ -2148,13 +2283,16 @@ async function raiseChangeOrderDrawer() {
      </div>
      <div class="actions">
        <button class="btn sm" id="co-add-line" type="button">Add cost line</button>
-     </div>
+     </div>`
+         : ""
+     }
 
      <div class="actions right">
        <button class="btn primary" id="co-save" type="button">Raise change order</button>
      </div>`,
     () => {
       const redraw = () => {
+        if (!el("co-line-list")) return;
         el("co-line-list").innerHTML = coLines.length
           ? coLines
               .map(
@@ -2175,7 +2313,7 @@ async function raiseChangeOrderDrawer() {
       };
       redraw();
 
-      el("co-add-line").addEventListener("click", () => {
+      el("co-add-line")?.addEventListener("click", () => {
         const chosen = codes.find((c) => c.id === el("co-code").value);
         const amount = Number(el("co-line-amount").value);
         if (!chosen || !amount) {
@@ -2203,14 +2341,16 @@ async function raiseChangeOrderDrawer() {
             method: "POST",
             body: JSON.stringify({
               description: el("co-desc").value.trim(),
-              customer_amount: Number(el("co-amount").value),
+              customer_amount: mayPrice ? Number(el("co-amount").value) : 0,
               schedule_impact_days: Number(el("co-days").value),
               external_estimate_ref: el("co-ref").value.trim() || null,
-              lines: coLines.map(({ cost_code_id, cost_type, amount }) => ({
-                cost_code_id,
-                cost_type,
-                amount,
-              })),
+              lines: mayPrice
+                ? coLines.map(({ cost_code_id, cost_type, amount }) => ({
+                    cost_code_id,
+                    cost_type,
+                    amount,
+                  }))
+                : [],
             }),
           }),
         ),

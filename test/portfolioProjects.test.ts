@@ -31,6 +31,13 @@ describe("portfolio project feed", () => {
     expect(res.body.data.projects.map((p: { project_number: string }) => p.project_number)).toEqual(["P-300"]);
     expect(res.body.data.projects[0].qbo_customer_id).toBeNull();
     expect(res.body.data.projects[0].gates).toEqual({ gate_1: "open", gate_2: "open" });
+    expect(res.body.data.projects[0].change_orders).toEqual({
+      open: 0,
+      unpriced: 0,
+      not_in_servicetitan: 0,
+      unsigned: 0,
+    });
+    expect(res.body.data.projects[0].closeout).toBeNull();
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 
