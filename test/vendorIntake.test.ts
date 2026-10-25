@@ -86,6 +86,13 @@ it("keeps s and S in contact names at the start, middle, and end", async () => {
   expect(edited.status, JSON.stringify(edited.body)).toBe(200);
   expect(edited.body.data.primary_contact).toBe("ChriS");
   expect((await owner().get(base + "/vendors/" + ids[2])).body.data.primary_contact).toBe("ChriS");
+  for (const id of ids) {
+    const archived = await owner().patch(base + "/vendors/" + id).send({ archived: true });
+    expect(archived.status, JSON.stringify(archived.body)).toBe(200);
+    expect(archived.body.data.primary_contact).toBe(
+      id === ids[2] ? "ChriS" : samples[ids.indexOf(id)],
+    );
+  }
 });
 
 it("persists full intake and sorts/filter trades without losing specialties on partial edits", async () => {
