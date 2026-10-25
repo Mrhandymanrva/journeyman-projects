@@ -36,8 +36,15 @@ const FILES = [
   path.join(repoRoot, "db/021_coi_coverage.sql"),
   path.join(repoRoot, "db/022_vendor_sync.sql"),
   path.join(repoRoot, "db/023_agreement_advisory.sql"),
+  path.join(repoRoot, "db/024_po_lines.sql"),
+  path.join(repoRoot, "db/025_bid_request_lines.sql"),
+  path.join(repoRoot, "db/026_bill_lines.sql"),
+  path.join(repoRoot, "db/029_tenant_accounting_settings.sql"),
+  path.join(repoRoot, "db/030_draw_external_invoice_number.sql"),
+  path.join(repoRoot, "db/031_material_bill_cost.sql"),
   path.join(repoRoot, "db/032_vendor_document_notes.sql"),
   path.join(repoRoot, "db/033_field_release.sql"),
+  path.join(repoRoot, "db/034_preconstruction_tasks.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');

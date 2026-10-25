@@ -45,6 +45,9 @@ export const CAPABILITIES = {
   // There is no Office GM or Project Coordinator role: manager is the
   // leadership seat next to owner, and office is the view-only office seat.
   record_field_release: ['owner', 'manager'],
+  // Preconstruction checklist. Project Coordinator is project_manager.
+  // Estimator, office, and bookkeeper can read tasks and cannot edit them.
+  manage_precon_tasks: ['owner', 'manager', 'project_manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

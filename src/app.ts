@@ -37,6 +37,7 @@ import { referenceRoutes } from "./routes/reference.js";
 import { projectRoutes } from "./routes/projects.js";
 import { gateRoutes } from "./routes/gates.js";
 import { fieldReleaseRoutes } from "./routes/fieldRelease.js";
+import { preconTaskRoutes } from "./routes/preconTasks.js";
 import { budgetRoutes } from "./routes/budget.js";
 import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
 import { vendorRoutes } from "./routes/vendors.js";
@@ -178,6 +179,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(recordExportRoutes(deps, opts.sources));
   staff.use(gateRoutes(deps));
   staff.use(fieldReleaseRoutes(deps));
+  staff.use(preconTaskRoutes(deps));
   staff.use(budgetRoutes(deps));
   staff.use(accountingRoutes(deps,opts.accounting));
   staff.use(purchaseOrderRoutes(deps,opts.accounting));

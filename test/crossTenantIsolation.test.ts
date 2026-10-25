@@ -50,6 +50,8 @@ interface ForeignIds {
   changeOrderId: string;
   externalInvoiceId: string;
   projectInvoiceId: string;
+  preconTaskId: string;
+  inspectionId: string;
 }
 let foreign: ForeignIds;
 
@@ -80,6 +82,17 @@ beforeAll(async () => {
 
   const projectId = projectRes.body.data.id as string;
   const b = h.as(B.staff.owner!.token);
+
+  const precon = await b.get(`/api/v1/projects/projects/${projectId}/precon-tasks`);
+  expect(precon.status, JSON.stringify(precon.body)).toBe(200);
+  const permitTask = (precon.body.data as Array<{ id: string; type: string }>).find(
+    (task) => task.type === "permit",
+  );
+  expect(permitTask).toBeTruthy();
+  const inspection = await b
+    .post(`/api/v1/projects/precon-tasks/${permitTask!.id}/inspections`)
+    .send({ notes: "Rough-in" });
+  expect(inspection.status, JSON.stringify(inspection.body)).toBe(201);
 
   // A vendor with every required document, so it can hold a purchase order.
   const vendorRes = await b.post("/api/v1/projects/vendors").send({
@@ -227,6 +240,8 @@ beforeAll(async () => {
     changeOrderId: coRes.body.data.id,
     externalInvoiceId: invRes.body.data.id,
     projectInvoiceId: piRes.body.data.id,
+    preconTaskId: permitTask!.id,
+    inspectionId: inspection.body.data.id,
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
@@ -933,6 +948,46 @@ const ROUTES: RouteCase[] = [
       log_date: "2026-09-01",
       work_completed: "Written into another tenant",
     }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/precon-tasks`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/precon-tasks`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks`,
+    body: () => ({ type: "other", title: "Foreign task", owner_role: "owner" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/precon-tasks/apply-template`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks/apply-template`,
+    body: () => ({}),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/precon-tasks/:id`,
+    path: (f) => `${BASE}/precon-tasks/${f.preconTaskId}`,
+    body: () => ({ status: "done" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/precon-tasks/:id/inspections`,
+    path: (f) => `${BASE}/precon-tasks/${f.preconTaskId}/inspections`,
+    body: () => ({ result: "passed" }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/precon-inspections/:id`,
+    path: (f) => `${BASE}/precon-inspections/${f.inspectionId}`,
+    body: () => ({ result: "cancelled" }),
+  },
+  {
+    method: "delete",
+    template: `${BASE}/precon-inspections/:id`,
+    path: (f) => `${BASE}/precon-inspections/${f.inspectionId}`,
   },
 ];
 

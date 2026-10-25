@@ -26,6 +26,7 @@ import {
   parseEstimatePayload,
 } from "../domain/estimateContract.js";
 import { seedDrawSchedule } from "../domain/drawSchedule.js";
+import { seedPreconTasks } from "../domain/preconTasks.js";
 import {
   assertStageAdvanceAllowed,
   nextStage,
@@ -673,12 +674,20 @@ export async function createProject(
           body.contract_value,
         );
 
+  const tasksCreated = await seedPreconTasks(
+    ctx.db,
+    ctx.staff.tenantId,
+    projectId,
+    (project.scheduled_start as string | null) ?? null,
+  );
+
   return {
     ...(await projectPayload(ctx.db, projectId, project)),
     id: projectId,
     gates_created: gates.rowCount || gates.rows.length,
     budget_lines_created: budgetLineCount,
     draws_created: drawsCreated,
+    tasks_created: tasksCreated,
   };
 }
 
