@@ -484,6 +484,13 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
           CURRENT_DATE - 1, 2.00, 'timesheet', $3, now())`,
       [TENANT_ID, whitfield, laborCode],
     );
+    await c.query(
+      `UPDATE projects.projects
+          SET labor_refreshed_at = now() - interval '25 minutes',
+              labor_refresh_source = 'auto-hourly'
+        WHERE id = $1`,
+      [whitfield],
+    );
     const system = await c.query<{ id: string }>(
       `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
     );

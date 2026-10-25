@@ -201,6 +201,7 @@ describe("readiness", () => {
           return client.query(text, params);
         },
       })),
+      tryAdvisoryLock: async () => null,
       close: () => h.db.close(),
     };
     const request = supertest(createApp({ database, staffSessions: new MemoryStaffSessions(), serveConsole: false }));
@@ -216,6 +217,7 @@ describe("readiness", () => {
     const down: Database = {
       withTenant: async () => { throw new Error("down"); },
       withoutTenant: async () => { throw new Error("SELECT secret FROM staff WHERE id = $1"); },
+      tryAdvisoryLock: async () => null,
       close: async () => {},
     };
     const shallow = await supertest(createApp({ database: down, staffSessions: new MemoryStaffSessions(), serveConsole: false })).get("/health");

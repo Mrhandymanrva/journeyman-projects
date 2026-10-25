@@ -46,6 +46,7 @@ describe("portfolio project feed", () => {
       missing: [],
       uncoded_hours: 0,
       source: null,
+      hours_source: null,
       observed_at: null,
     });
     expect(res.body.data.projects[0].ar).toEqual({

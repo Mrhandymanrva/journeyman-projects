@@ -2,14 +2,13 @@ import { Router } from "express";
 import { z } from "zod";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import {
-  applyTechnicianDirectory,
   listActiveRateGaps,
   portfolioLaborColumns,
   presentPortfolioLabor,
   readLaborJobs,
   readTechnicianDirectory,
+  saveLaborRefresh,
   stampLaborCodes,
-  storeJobLabor,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
 import { can, requireCapability } from "../http/capabilities.js";
@@ -131,20 +130,15 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       async (ctx, prepared, read) => {
         requireCapability(ctx.staff.role, "refresh_labor");
         await loadVisibleProject(ctx, prepared.projectId, "id");
-        const observedAt = new Date();
-        for (const result of read.jobs) {
-          const link = prepared.jobs.find((job) => job.external_job_id === result.jobId);
-          await storeJobLabor(ctx.db, {
-            tenantId: ctx.staff.tenantId,
-            projectId: prepared.projectId,
-            jobId: result.jobId,
-            jobLinkId: link?.id ?? null,
-            result,
-            observedAt,
-          });
-        }
-        await applyTechnicianDirectory(ctx.db, ctx.staff.tenantId, read.directory, observedAt);
-        await stampLaborCodes(ctx.db, ctx.staff.tenantId, prepared.projectId);
+        await saveLaborRefresh(ctx.db, {
+          tenantId: ctx.staff.tenantId,
+          projectId: prepared.projectId,
+          jobs: prepared.jobs,
+          results: read.jobs,
+          directory: read.directory,
+          source: "manual",
+          observedAt: new Date(),
+        });
         sendData(ctx.res, await presentLabor(ctx, prepared.projectId));
       },
     ),
@@ -208,6 +202,7 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
     labor_hours: labor.labor_hours,
     uncoded_hours: labor.uncoded_hours,
     source: labor.source,
+    hours_source: labor.hours_source,
     observed_at: labor.observed_at,
     missing: labor.missing,
     rates_forbidden: summary.rows[0]?.labor_rates_forbidden === true,

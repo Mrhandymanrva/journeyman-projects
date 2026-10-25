@@ -276,6 +276,8 @@ export interface PricedTechnician {
   missing: string[];
 }
 
+export type LaborRefreshSource = "manual" | "auto-hourly";
+
 export interface PortfolioLabor {
   labor_hours: number;
   labor_wage: number;
@@ -284,7 +286,11 @@ export interface PortfolioLabor {
   missing: string[];
   technicians: PricedTechnician[];
   uncoded_hours: number;
-  source: "timesheet" | "appointment_window" | "mixed" | null;
+  /** Who last refreshed this project. Null until a refresh is recorded. */
+  source: LaborRefreshSource | null;
+  /** Where the stored hours came from. */
+  hours_source: "timesheet" | "appointment_window" | "mixed" | null;
+  /** When the last refresh finished. Null until a refresh is recorded. */
   observed_at: string | null;
 }
 
@@ -322,7 +328,9 @@ export function portfolioLaborColumns(alias = "p"): string {
                   AND r.external_technician_id = a.external_technician_id
                 WHERE a.project_id = ${alias}.id
                 GROUP BY a.external_technician_id
-             ) g) AS labor_techs`;
+             ) g) AS labor_techs,
+          ${alias}.labor_refreshed_at AS labor_refreshed_at,
+          ${alias}.labor_refresh_source AS labor_refresh_source`;
 }
 
 export const PORTFOLIO_LABOR_KEYS = [
@@ -332,6 +340,8 @@ export const PORTFOLIO_LABOR_KEYS = [
   "labor_window_rows",
   "labor_observed_at",
   "labor_techs",
+  "labor_refreshed_at",
+  "labor_refresh_source",
 ] as const;
 
 export function roundMoney(value: number): number {
@@ -408,11 +418,10 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
   const uncoded = Number(row.labor_uncoded_hours ?? 0);
   const timesheets = Number(row.labor_timesheet_rows ?? 0);
   const windows = Number(row.labor_window_rows ?? 0);
-  const observed = row.labor_observed_at;
-  let source: PortfolioLabor["source"] = null;
-  if (timesheets > 0 && windows > 0) source = "mixed";
-  else if (timesheets > 0) source = "timesheet";
-  else if (windows > 0) source = "appointment_window";
+  let hours_source: PortfolioLabor["hours_source"] = null;
+  if (timesheets > 0 && windows > 0) hours_source = "mixed";
+  else if (timesheets > 0) hours_source = "timesheet";
+  else if (windows > 0) hours_source = "appointment_window";
   const technicians = asTechs(row.labor_techs)
     .map((tech) => {
       const id = tech.technician_id == null ? null : String(tech.technician_id);
@@ -444,9 +453,23 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     missing: technicians.flatMap((tech) => tech.missing),
     technicians,
     uncoded_hours: uncoded,
-    source,
-    observed_at: observed instanceof Date ? observed.toISOString() : typeof observed === "string" ? observed : null,
+    source: refreshStamp(row.labor_refresh_source),
+    hours_source,
+    observed_at: isoStamp(row.labor_refreshed_at),
   };
+}
+
+function refreshStamp(value: unknown): LaborRefreshSource | null {
+  return value === "manual" || value === "auto-hourly" ? value : null;
+}
+
+function isoStamp(value: unknown): string | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString();
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  }
+  return null;
 }
 
 export async function readTechnicianDirectory(client: {
@@ -516,6 +539,41 @@ export async function applyTechnicianDirectory(
   }
   await storeTechnicianRates(db, tenantId, directory.technicians, observedAt);
   await markTechnicianRead(db, tenantId, false);
+}
+
+/** Stores hours, technician rates, and the refresh stamp. Call only after the read succeeds. */
+export async function saveLaborRefresh(
+  db: SqlClient,
+  input: {
+    tenantId: string;
+    projectId: string;
+    jobs: Array<{ id: string; external_job_id: string }>;
+    results: LaborJobResult[];
+    directory: TechnicianDirectory;
+    source: LaborRefreshSource;
+    observedAt: Date;
+  },
+): Promise<void> {
+  for (const result of input.results) {
+    const link = input.jobs.find((job) => job.external_job_id === result.jobId);
+    await storeJobLabor(db, {
+      tenantId: input.tenantId,
+      projectId: input.projectId,
+      jobId: result.jobId,
+      jobLinkId: link?.id ?? null,
+      result,
+      observedAt: input.observedAt,
+    });
+  }
+  await applyTechnicianDirectory(db, input.tenantId, input.directory, input.observedAt);
+  await stampLaborCodes(db, input.tenantId, input.projectId);
+  await db.query(
+    `UPDATE projects.projects
+        SET labor_refreshed_at = $2,
+            labor_refresh_source = $3
+      WHERE id = $1`,
+    [input.projectId, input.observedAt, input.source],
+  );
 }
 
 export async function markTechnicianRead(

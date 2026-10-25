@@ -60,6 +60,27 @@ export interface ServiceTitanConfig {
   clientSecret: string;
   appKey: string;
 }
+const RETRY_AFTER_CAP_MS = 60_000;
+const RETRY_AFTER_DEFAULT_MS = 1_000;
+
+/**
+ * Retry-After is seconds, or an HTTP date. A missing or unreadable header
+ * waits one second. Nothing waits longer than a minute. Zero is a real wait
+ * of zero, which is how a polite limit can be honored without sleeping.
+ */
+export function retryAfterMs(header: string | null, now = Date.now()): number {
+  if (header == null || header.trim() === "") return RETRY_AFTER_DEFAULT_MS;
+  const trimmed = header.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    return Math.min(Math.max(0, Number(trimmed) * 1000), RETRY_AFTER_CAP_MS);
+  }
+  const when = Date.parse(trimmed);
+  if (Number.isFinite(when)) {
+    return Math.min(Math.max(0, when - now), RETRY_AFTER_CAP_MS);
+  }
+  return RETRY_AFTER_DEFAULT_MS;
+}
+
 export class ServiceTitanReadError extends Error {}
 export class ServiceTitanWriteUncertainError extends ServiceTitanReadError {}
 
@@ -78,6 +99,10 @@ export class ServiceTitanReadAdapter {
   constructor(
     private readonly config: ServiceTitanConfig,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly sleep: (ms: number) => Promise<void> = (ms) =>
+      new Promise((resolve) => {
+        setTimeout(resolve, ms);
+      }),
   ) {
     if (
       !["production", "integration"].includes(config.environment) ||
@@ -146,13 +171,14 @@ export class ServiceTitanReadAdapter {
     resource: string,
     query?: URLSearchParams,
   ) {
-    const token = await this.accessToken();
     const path = `/${family}/v2/tenant/${this.config.tenantId}/${resource}`;
-    let response: Response;
-    try {
-      response = await this.fetcher(
-        this.apiHost + path + (query ? "?" + query.toString() : ""),
-        {
+    const url = this.apiHost + path + (query ? "?" + query.toString() : "");
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const token = await this.accessToken();
+      let response: Response;
+      try {
+        response = await this.fetcher(url, {
           method: "GET",
           redirect: "error",
           signal: AbortSignal.timeout(20000),
@@ -161,20 +187,25 @@ export class ServiceTitanReadAdapter {
             Authorization: `Bearer ${token}`,
             "ST-App-Key": this.config.appKey,
           },
-        },
-      );
-    } catch {
-      throw new ServiceTitanReadError(
-        "ServiceTitan read could not complete. The previous snapshot should be retained.",
-      );
-    }
-    if (!response.ok) {
+        });
+      } catch {
+        throw new ServiceTitanReadError(
+          "ServiceTitan read could not complete. The previous snapshot should be retained.",
+        );
+      }
       if (response.status === 401) this.token = undefined;
-      throw new ServiceTitanReadError(
-        `ServiceTitan read failed (HTTP ${response.status}).`,
-      );
+      if (response.status === 429 && attempt < maxAttempts) {
+        await this.sleep(retryAfterMs(response.headers.get("Retry-After")));
+        continue;
+      }
+      if (!response.ok) {
+        throw new ServiceTitanReadError(
+          `ServiceTitan read failed (HTTP ${response.status}).`,
+        );
+      }
+      return response.json() as Promise<unknown>;
     }
-    return response.json() as Promise<unknown>;
+    throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 429).");
   }
   private async pages<T>(
     family: "jpm" | "dispatch" | "settings",

@@ -14,6 +14,11 @@ export interface SqlClient {
   ): Promise<{ rows: R[]; rowCount: number }>;
 }
 
+/** A session advisory lock held on one database connection until release. */
+export interface AdvisoryLock {
+  release(): Promise<void>;
+}
+
 export interface Database {
   /**
    * BEGIN; select set_config('app.tenant_id', $1, true); ...; COMMIT.
@@ -32,6 +37,13 @@ export interface Database {
    * (tenants, entitlements) and health checks, not for serving requests.
    */
   withoutTenant<T>(fn: (client: SqlClient) => Promise<T>): Promise<T>;
+
+  /**
+   * Session advisory lock. The same connection acquires and releases it, so
+   * the lock can cover several transactions and the network calls between
+   * them. Null means another session already holds the key.
+   */
+  tryAdvisoryLock(key: string): Promise<AdvisoryLock | null>;
 
   close(): Promise<void>;
 }
