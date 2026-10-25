@@ -56,6 +56,7 @@ const db = await PgliteDatabase.create([
   "db/034_preconstruction_tasks.sql",
   "db/035_field_start.sql",
   "db/036_permit_offices.sql",
+  "db/039_gate_checklist_defaults.sql",
 ]);
 
 await assertDatabaseContract(db);

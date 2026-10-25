@@ -1169,6 +1169,13 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 // ------------------------------------------------------------------- gates
 
+function gateHint(item) {
+  if (!item || item.key === "site_ready" || typeof item.ready !== "boolean") return "";
+  return item.ready
+    ? `<div class="m">Ready in the project record. A person still ticks this.</div>`
+    : `<div class="m">Not ready in the project record.</div>`;
+}
+
 function gateDrawer(gate) {
   const checklist = gate.checklist || [];
   const open = gate.status !== "approved";
@@ -1199,6 +1206,7 @@ function gateDrawer(gate) {
                         ${item.done ? "checked" : ""} ${open ? "" : "disabled"}>
                  <div class="t"><label for="chk-${i}">${esc(item.label)}</label>
                  ${item.done_at ? `<div class="m">ticked ${esc(item.done_at.slice(0, 10))}</div>` : ""}
+                 ${gateHint(item)}
                  </div></div>`,
              )
              .join("")}</div>`

@@ -4,6 +4,7 @@ import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
+import { portfolioGateColumns, presentPortfolioGates } from "../domain/gateReadiness.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -23,6 +24,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
         `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.source_customer_name, p.external_customer_id, p.qbo_customer_id,
                 p.city, p.region, p.contract_value, p.scheduled_start::text AS scheduled_start, p.actual_end::text AS actual_end, p.updated_at,
                 ${fieldStartColumns("p")},
+                ${portfolioGateColumns("p")},
                 p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
            FROM projects.projects p
            LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
@@ -47,11 +49,15 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
           delete rest.field_start_observed_at;
           delete rest.precon_open;
           delete rest.precon_overdue;
+          const gates = presentPortfolioGates(rest);
+          delete rest.gate_1_status;
+          delete rest.gate_2_status;
           return {
             ...rest,
             field_release: presentFieldRelease({ released_at: releasedAt, released_by: releasedBy, note }),
             field_start: fieldStart,
             precon,
+            gates,
           };
         }),
       }))

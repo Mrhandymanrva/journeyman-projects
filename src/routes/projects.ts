@@ -31,7 +31,9 @@ import {
   parseEstimatePayload,
 } from "../domain/estimateContract.js";
 import { seedDrawSchedule } from "../domain/drawSchedule.js";
+import { gateReadiness } from "../domain/gateReadiness.js";
 import { listPreconTasks, preconCounts, seedPreconTasks } from "../domain/preconTasks.js";
+import { annotateChecklist } from "./gates.js";
 import {
   assertStageAdvanceAllowed,
   nextStage,
@@ -238,6 +240,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           WHERE g.project_id = $1 ORDER BY g.gate_number`,
         [id],
       );
+      const ready = await gateReadiness(ctx.db, id);
       const draws = await ctx.db.query<{
         status: string;
         n: string;
@@ -276,7 +279,13 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
         pm_name: nameOf(project.pm_id),
         estimator_name: nameOf(project.estimator_id),
-        gates: gates.rows,
+        gates: gates.rows.map((row) => ({
+          ...row,
+          checklist: annotateChecklist(
+            (row as { checklist: unknown }).checklist,
+            ready,
+          ),
+        })),
         draw_summary: draws.rows.map((d) => ({
           status: d.status,
           count: Number(d.n),

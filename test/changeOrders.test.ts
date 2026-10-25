@@ -7,6 +7,7 @@ import {
   type Harness,
   type TenantFixture,
 } from './support/harness.js';
+import { tickGate } from './support/tickGate.js';
 
 let h: Harness;
 let t: TenantFixture;
@@ -63,6 +64,7 @@ async function raise(body: Record<string, unknown> = {}) {
 
 async function freeze() {
   await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+  await tickGate(owner(), projectId, 1);
   await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
 }
 

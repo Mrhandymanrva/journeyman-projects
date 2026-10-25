@@ -12,6 +12,7 @@ import {
   type Harness,
   type TenantFixture,
 } from './support/harness.js';
+import { tickGate } from './support/tickGate.js';
 
 const UNRELEASED = {
   released: false,
@@ -274,6 +275,7 @@ describe('field release', () => {
     });
     expect(before.status, JSON.stringify(before.body)).toBe(201);
 
+    await tickGate(as('pm'), created.id, 2);
     const gate = await as('pm').post(`/api/v1/projects/projects/${created.id}/gates/2/approve`);
     expect(gate.status, JSON.stringify(gate.body)).toBe(200);
     expect(gate.body.data.status).toBe('approved');

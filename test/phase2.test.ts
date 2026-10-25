@@ -7,6 +7,7 @@ import {
   type Harness,
   type TenantFixture,
 } from './support/harness.js';
+import { tickGate } from './support/tickGate.js';
 
 let h: Harness;
 let t: TenantFixture;
@@ -97,6 +98,7 @@ describe('budget and the baseline freeze', () => {
   it('editing after the freeze gate is 409 baseline_frozen', async () => {
     const { projectId, lines } = await projectWithBudget();
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+    await tickGate(owner(), projectId, 1);
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
 
     const edit = await owner()
@@ -114,6 +116,7 @@ describe('budget and the baseline freeze', () => {
     // variance no matter what is spent against it.
     const { projectId, lines } = await projectWithBudget();
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+    await tickGate(owner(), projectId, 1);
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
 
     const add = await owner()
@@ -129,6 +132,7 @@ describe('budget and the baseline freeze', () => {
     expect(before.body.data.baseline_frozen).toBe(false);
 
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+    await tickGate(owner(), projectId, 1);
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
 
     const after = await owner().get(`/api/v1/projects/projects/${projectId}/budget`);
@@ -148,12 +152,14 @@ describe('budget and the baseline freeze', () => {
     const { projectId, lines } = await projectWithBudget();
 
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+    await tickGate(owner(), projectId, 1);
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
     const stillOpen = await owner()
       .patch(`/api/v1/projects/projects/${projectId}/budget/${lines[0]!.id}`)
       .send({ budget_amount: 1 });
     expect(stillOpen.status).toBe(200);
 
+    await tickGate(h.as(t.staff.pm!.token), projectId, 2);
     await h
       .as(t.staff.pm!.token)
       .post(`/api/v1/projects/projects/${projectId}/gates/2/approve`);
@@ -621,6 +627,7 @@ describe('project exceptions', () => {
   it('reports a budget line committed more than 10 percent over baseline', async () => {
     const { projectId, lines } = await projectWithBudget();
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
+    await tickGate(owner(), projectId, 1);
     await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
 
     const vendorId = await compliantVendor('Over Co');

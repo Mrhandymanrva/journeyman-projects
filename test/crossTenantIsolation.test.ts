@@ -555,6 +555,12 @@ const ROUTES: RouteCase[] = [
   },
   {
     method: "post",
+    template: `${BASE}/projects/:id/gates/apply-template`,
+    path: (f) => `${BASE}/projects/${f.projectId}/gates/apply-template`,
+    body: () => ({}),
+  },
+  {
+    method: "post",
     template: `${BASE}/projects/:id/field-release`,
     path: (f) => `${BASE}/projects/${f.projectId}/field-release`,
     body: () => ({ note: "not this tenant" }),

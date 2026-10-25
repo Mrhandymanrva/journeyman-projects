@@ -18,6 +18,7 @@
  */
 import type { Database, SqlClient } from '../db/database.js';
 import { activateModule, writePlatformRows } from '../db/activation.js';
+import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
 
 export const DEMO_SLUG = 'demo';
@@ -65,16 +66,8 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       { key: 'deposit', label: 'Deposit received' },
       { key: 'scope', label: 'Scope of work agreed with the customer' },
     ],
-    1: [
-      { key: 'budget', label: 'Budget built from the sold estimate' },
-      { key: 'selections', label: 'Customer selections locked' },
-      { key: 'permit', label: 'Permit requirement determined' },
-    ],
-    2: [
-      { key: 'subs', label: 'Trade partners booked and compliant' },
-      { key: 'materials', label: 'Long-lead materials ordered' },
-      { key: 'site', label: 'Site protection and access arranged' },
-    ],
+    1: [...GATE_CHECKLISTS[1]!],
+    2: [...GATE_CHECKLISTS[2]!],
     3: [
       { key: 'punch', label: 'Punch list walked with the customer' },
       { key: 'inspections', label: 'All inspections passed' },
