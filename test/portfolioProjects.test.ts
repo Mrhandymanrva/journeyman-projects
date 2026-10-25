@@ -52,6 +52,9 @@ describe("portfolio project feed", () => {
       unpaid_amount: 0,
       pending_estimate_revisions: 0,
     });
+    expect(res.body.data.projects[0].projected_margin_pct).toBeNull();
+    expect(res.body.data.projects[0].billing).toEqual({ position: "even", amount: 0 });
+    expect(res.body.data.projects[0].health).toEqual({ score: 100, band: "green", reasons: [] });
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 
