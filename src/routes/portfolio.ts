@@ -3,8 +3,9 @@ import { Router } from "express";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
-import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
+import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
 import { portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -203,6 +204,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       projected_cost: projected,
       projected_margin_pct: budgetedContract > 0 ? (budgetedContract - budgetedProjected) / budgetedContract : null,
       completed_90d: { count: num(closed?.n), contract_value: num(closed?.value) },
+      health: await activeHealth(db, projects.map((p) => p.id)),
     },
     projects: projects.map((p) => {
       const revised = num(p.revised_contract ?? p.contract_value);
@@ -283,6 +285,17 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       change_orders_awaiting_customer: money(cos),
     },
   };
+}
+
+async function activeHealth(db: SqlClient, activeIds: string[]) {
+  const counts = { red: 0, yellow: 0, green: 0 };
+  const active = new Set(activeIds);
+  const today = newYorkDate(new Date().toISOString());
+  for (const row of await loadProjectHealth(db, today)) {
+    if (!active.has(row.project_id)) continue;
+    counts[row.health.band] += 1;
+  }
+  return counts;
 }
 
 function drawRow(d: { project_number: string; project_name: string; label: string; amount: string; earned_at: string | null; approved_at: string | null; external_invoice_number: string | null }) {

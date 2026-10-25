@@ -1,4 +1,5 @@
 import {accountingGateway,startAccountingWorker} from "./adapters/quickbooks.js";
+import { startHealthSnapshotScheduler } from "./workers/healthSnapshot.js";
 import { readSourceConnections } from "./adapters/sourceConnections.js";
 import { portfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import { createApp } from "./app.js";
@@ -72,12 +73,14 @@ if (!accounting) {
   );
 }
 startAccountingWorker(database,accounting);
+const portfolio = portfolioFeedConfig();
+startHealthSnapshotScheduler(database, portfolio?.tenantId);
 const app = createApp({
   accounting,
   database,
   staffSessions,
   sources: readSourceConnections(),
-  portfolio: portfolioFeedConfig(),
+  portfolio,
   sso: env.sso,
   devLogin: {
     enabled: env.devLogin,

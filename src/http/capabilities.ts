@@ -62,6 +62,8 @@ export const CAPABILITIES = {
   refresh_ar: ['owner', 'manager', 'project_manager'],
   // Where in-house hours land. Allowed after the baseline is frozen. It does not change the budget.
   set_labor_cost_code: ['owner', 'manager'],
+  // Write today's portfolio health rows. The portfolio token cannot call it.
+  run_health_snapshots: ['owner'],
   // Set or clear a manual field start. Clearing does not recompute it.
   set_field_start: ['owner', 'manager'],
   // Permit office directory. Project Coordinator is project_manager.

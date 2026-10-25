@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
-import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
+import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
 import { portfolioGateColumns, presentPortfolioGates } from "../domain/gateReadiness.js";
 import { PORTFOLIO_LABOR_KEYS, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
 import { PORTFOLIO_AR_KEYS, portfolioArColumns, presentPortfolioAr } from "../domain/arMatch.js";
@@ -14,6 +14,7 @@ import {
   presentPortfolioChangeOrders,
   presentPortfolioCloseout,
 } from "../domain/closeout.js";
+import { feedHealth, loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -29,7 +30,8 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
 
   router.get("/projects", (_req, res, next) => {
     database
-      .withTenant(config.tenantId, async (db) => (await db.query<Record<string, unknown>>(
+      .withTenant(config.tenantId, async (db) => {
+        const rows = (await db.query<Record<string, unknown>>(
         `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.source_customer_name, p.external_customer_id, p.qbo_customer_id,
                 p.city, p.region, p.contract_value, p.scheduled_start::text AS scheduled_start, p.actual_end::text AS actual_end, p.updated_at,
                 ${fieldStartColumns("p")},
@@ -41,8 +43,13 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
                 p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
            FROM projects.projects p
            LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
-          ORDER BY p.project_number`)).rows)
-      .then((rows) => sendData(res, {
+          ORDER BY p.project_number`)).rows;
+        const health = new Map(
+          (await loadProjectHealth(db, newYorkDate(new Date().toISOString()))).map((row) => [row.project_id, row]),
+        );
+        return { rows, health };
+      })
+      .then(({ rows, health }) => sendData(res, {
         generated_at: new Date().toISOString(),
         projects: rows.map((row) => {
           const releasedAt = row.field_released_at;
@@ -72,6 +79,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
           for (const key of PORTFOLIO_LOG_KEYS) delete rest[key];
           for (const key of PORTFOLIO_LABOR_KEYS) delete rest[key];
           for (const key of PORTFOLIO_AR_KEYS) delete rest[key];
+          const assessed = feedHealth(health.get(String(row.id)));
           return {
             ...rest,
             field_release: presentFieldRelease({ released_at: releasedAt, released_by: releasedBy, note }),
@@ -82,9 +90,76 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
             closeout,
             labor,
             ar,
+            projected_margin_pct: assessed.projected_margin_pct,
+            billing: assessed.billing,
+            health: assessed.health,
           };
         }),
       }))
+      .catch(next);
+  });
+
+  router.get("/projects/:id/snapshots", (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) {
+      next(new ApiError("not_found", "Project not found."));
+      return;
+    }
+    const days = z.coerce.number().int().min(1).max(366).safeParse(req.query.days ?? 90);
+    if (!days.success) {
+      next(new ApiError("validation_failed", "days must be a whole number from 1 to 366."));
+      return;
+    }
+    const today = newYorkDate(new Date().toISOString());
+    database
+      .withTenant(config.tenantId, async (db) => {
+        const project = (await db.query<{ id: string }>(
+          `SELECT id FROM projects.projects WHERE id = $1`,
+          [id.data],
+        )).rows[0];
+        if (!project) throw new ApiError("not_found", "Project not found.");
+        const rows = (await db.query<{
+          snapshot_on: string;
+          score: number;
+          band: string;
+          reasons: unknown;
+          projected_margin_pct: string | null;
+          billing_position: "over" | "under" | "even";
+          billing_amount: string;
+          revised_contract: string | null;
+          committed_cost: string | null;
+          projected_cost: string | null;
+        }>(
+          `SELECT snapshot_on::text AS snapshot_on, score, band, reasons,
+                  projected_margin_pct::text AS projected_margin_pct,
+                  billing_position, billing_amount::text AS billing_amount,
+                  revised_contract::text AS revised_contract,
+                  committed_cost::text AS committed_cost,
+                  projected_cost::text AS projected_cost
+             FROM projects.project_health_snapshots
+            WHERE project_id = $1
+              AND snapshot_on >= $2::date - $3::int
+              AND snapshot_on <= $2::date
+            ORDER BY snapshot_on`,
+          [id.data, today, days.data],
+        )).rows;
+        return {
+          project_id: id.data,
+          days: days.data,
+          snapshots: rows.map((row) => ({
+            snapshot_on: row.snapshot_on,
+            score: Number(row.score),
+            band: row.band,
+            reasons: row.reasons,
+            projected_margin_pct: row.projected_margin_pct === null ? null : Number(row.projected_margin_pct),
+            billing: { position: row.billing_position, amount: Number(row.billing_amount) },
+            revised_contract: row.revised_contract === null ? null : Number(row.revised_contract),
+            committed_cost: row.committed_cost === null ? null : Number(row.committed_cost),
+            projected_cost: row.projected_cost === null ? null : Number(row.projected_cost),
+          })),
+        };
+      })
+      .then((body) => sendData(res, body))
       .catch(next);
   });
 
