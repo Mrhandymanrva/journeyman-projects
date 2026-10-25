@@ -57,6 +57,7 @@ const db = await PgliteDatabase.create([
   "db/035_field_start.sql",
   "db/036_permit_offices.sql",
   "db/037_labor_actuals.sql",
+  "db/038_st_ar_observations.sql",
   "db/039_gate_checklist_defaults.sql",
   "db/040_change_order_log_and_closeout.sql",
 ]);

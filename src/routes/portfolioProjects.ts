@@ -6,6 +6,7 @@ import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, presentFieldStart } from "../domain/fieldStart.js";
 import { portfolioGateColumns, presentPortfolioGates } from "../domain/gateReadiness.js";
 import { PORTFOLIO_LABOR_KEYS, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { PORTFOLIO_AR_KEYS, portfolioArColumns, presentPortfolioAr } from "../domain/arMatch.js";
 import {
   PORTFOLIO_LOG_KEYS,
   portfolioChangeOrderColumns,
@@ -36,6 +37,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
                 ${portfolioChangeOrderColumns("p")},
                 ${portfolioCloseoutColumns("p")},
                 ${portfolioLaborColumns("p")},
+                ${portfolioArColumns("p")},
                 p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
            FROM projects.projects p
            LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
@@ -66,8 +68,10 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
           const changeOrders = presentPortfolioChangeOrders(rest);
           const closeout = presentPortfolioCloseout(rest);
           const labor = presentPortfolioLabor(rest);
+          const ar = presentPortfolioAr(rest);
           for (const key of PORTFOLIO_LOG_KEYS) delete rest[key];
           for (const key of PORTFOLIO_LABOR_KEYS) delete rest[key];
+          for (const key of PORTFOLIO_AR_KEYS) delete rest[key];
           return {
             ...rest,
             field_release: presentFieldRelease({ released_at: releasedAt, released_by: releasedBy, note }),
@@ -77,6 +81,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
             change_orders: changeOrders,
             closeout,
             labor,
+            ar,
           };
         }),
       }))

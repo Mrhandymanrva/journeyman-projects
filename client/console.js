@@ -957,7 +957,7 @@ function serviceTitanNumberControl(dr, drawData, canRecord) {
         drawData.revenue_system,
       )}.`;
   if (!canRecord) {
-    return `<div class="stref"><span class="w">${recorded} Ask an owner, manager or office user to record it.</span></div>`;
+    return `<div class="stref"><span class="w">${recorded} Ask an owner, a manager, the project coordinator, or office to record it.</span></div>`;
   }
   return `<div class="stref${dr.external_invoice_number ? " filled" : ""}">
         <span class="w">${recorded}</span>
@@ -973,10 +973,53 @@ function serviceTitanNumberControl(dr, drawData, canRecord) {
         }</div>`;
 }
 
-function renderDraws(drawData) {
-  const canRecord = ["owner", "manager", "office"].includes(session.staff.role);
+function drawMatchLine(dr) {
+  const match = dr.match;
+  if (!match || match.state === "none") return "";
+  if (match.state === "matched") {
+    const unpaid = Number(match.balance) > 0;
+    return `<div class="m">${unpaid ? "Unpaid" : "Paid"} · matched ${esc(match.invoice_number)} · balance ${money(
+      match.balance,
+    )}</div>`;
+  }
+  const suggestion = dr.suggestion;
+  if (!suggestion) return "";
+  const confirm = can("record_external_invoice")
+    ? `<button class="btn sm" data-st-suggest="${dr.id}" data-number="${esc(
+        suggestion.invoice_number,
+      )}" type="button">Use ${esc(suggestion.invoice_number)}</button>`
+    : "";
+  return `<div class="m">Suggested ServiceTitan invoice ${esc(
+    suggestion.invoice_number,
+  )}. Confirming records the number here. It does not write to ServiceTitan.</div>${confirm}`;
+}
 
-  el("draws").innerHTML = drawData.draws
+function renderDraws(drawData) {
+  const canRecord = can("record_external_invoice");
+  const refresh = el("ar-refresh");
+  if (refresh) {
+    refresh.hidden = !can("refresh_ar");
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      try {
+        const result = await api(`/projects/${current.id}/servicetitan/ar-refresh`, { method: "POST" });
+        if (result && result.refreshed === false) window.alert(result.message);
+        await select(current.id);
+      } catch (err) {
+        refresh.disabled = false;
+        window.alert(err.message);
+      }
+    };
+  }
+
+  const unused = drawData.unmatched_invoices || [];
+  const unusedNote =
+    unused.length > 1
+      ? `<p class="note">More than one ServiceTitan invoice is unused, so none was suggested: ${unused
+          .map((row) => esc(row.invoice_number))
+          .join(", ")}.</p>`
+      : "";
+  el("draws").innerHTML = unusedNote + drawData.draws
     .map((dr) => {
       let ref = "";
       if (dr.status === "approved" && !dr.external_invoice_number) {
@@ -996,7 +1039,7 @@ function renderDraws(drawData) {
               : `<div class="stref">
         <span class="w">No invoice recorded in ${esc(
           drawData.revenue_system,
-        )} — ask an owner, manager or office user to record it</span></div>`;
+        )} — ask an owner, a manager, the project coordinator, or office to record it</span></div>`;
       } else if (dr.external_invoice_number) {
         const verified = dr.external_invoice_verified_at;
         ref =
@@ -1016,7 +1059,7 @@ function renderDraws(drawData) {
       <div class="draw-h"><span class="t">${esc(dr.label)}</span><span class="a num">${money(
         dr.amount,
       )}</span></div>
-      <div class="m">${esc(meta)}</div>${drawActionsFor(dr)}${ref}</div>`;
+      <div class="m">${esc(meta)}</div>${drawMatchLine(dr)}${drawActionsFor(dr)}${ref}</div>`;
     })
     .join("");
 
@@ -1068,6 +1111,21 @@ function renderDraws(drawData) {
         input.disabled = false;
         input.style.borderColor = "#B4231F";
         input.title = err.message;
+      }
+    });
+  });
+  document.querySelectorAll("#draws [data-st-suggest]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/draws/${btn.dataset.stSuggest}/external-invoice`, {
+          method: "PATCH",
+          body: JSON.stringify({ external_invoice_number: btn.dataset.number }),
+        });
+        await select(current.id);
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(err.message);
       }
     });
   });
@@ -1987,16 +2045,29 @@ el("log-new").addEventListener("click", dailyLogDrawer);
 
 let coLines = [];
 
+function soldEstimateNote(data) {
+  const rows = data.unmatched_sold_estimates || [];
+  if (!rows.length) return "";
+  const amount = Number(data.pending_estimate_revisions || 0);
+  return `<p class="note">Sold in ServiceTitan, not in the budget yet: ${rows
+    .map((row) => `${esc(row.name || row.id)} · ${money(row.customer_amount)}`)
+    .join(", ")}. ${money(
+    amount,
+  )} is not in the revised contract until someone approves a local change order.</p>`;
+}
+
 function renderChangeOrders(data) {
   const cos = data.change_orders;
   el("cotag").textContent = cos.length
     ? `${cos.filter((c) => c.status === "approved").length} of ${cos.length} approved`
     : "none";
   el("co-new").hidden = !can("send_change_order");
+  const pending = soldEstimateNote(data);
 
   if (cos.length === 0) {
     el("cos").innerHTML =
-      '<div class="state">No change orders. This is the only sanctioned way to move a frozen budget.</div>';
+      '<div class="state">No change orders. This is the only sanctioned way to move a frozen budget.</div>' +
+      pending;
     return;
   }
 
@@ -2026,7 +2097,7 @@ function renderChangeOrders(data) {
         </div>
         <div class="row-r">${signed(co.customer_amount)}</div></div>`;
     })
-    .join("");
+    .join("") + pending;
 
   document.querySelectorAll("#cos [data-co]").forEach((node) =>
     node.addEventListener("click", () => {

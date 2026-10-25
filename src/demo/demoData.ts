@@ -18,6 +18,7 @@
  */
 import type { Database, SqlClient } from '../db/database.js';
 import { activateModule, writePlatformRows } from '../db/activation.js';
+import { storeProjectAr } from '../domain/arMatch.js';
 import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
 
@@ -471,6 +472,68 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
                CURRENT_DATE - 2, 6.50, 'timesheet', $3, now())`,
       [TENANT_ID, whitfield, laborCode],
     );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
+    );
+    const systemId = system.rows[0]?.id;
+    if (systemId) {
+      await c.query(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
+         VALUES ($1,$2,$3,'900184','Whitfield field job', true)
+         ON CONFLICT DO NOTHING`,
+        [TENANT_ID, whitfield, systemId],
+      );
+      await storeProjectAr(c, {
+        tenantId: TENANT_ID,
+        projectId: whitfield,
+        externalSystemId: systemId,
+        jobIds: ['900184'],
+        read: {
+          forbidden: false,
+          invoices: [
+            {
+              externalInvoiceId: 'demo-inv-1',
+              invoiceNumber: '118432-1',
+              externalJobId: '900184',
+              total: 12540,
+              balance: 0,
+              invoicedOn: '2026-10-01',
+              paidOn: '2026-10-12',
+            },
+            {
+              externalInvoiceId: 'demo-inv-2',
+              invoiceNumber: '118432-2',
+              externalJobId: '900184',
+              total: 12540,
+              balance: 12540,
+              invoicedOn: '2026-10-15',
+              paidOn: null,
+            },
+            {
+              externalInvoiceId: 'demo-inv-3',
+              invoiceNumber: 'ST-4401',
+              externalJobId: '900184',
+              total: 2400,
+              balance: 2400,
+              invoicedOn: '2026-10-20',
+              paidOn: null,
+            },
+          ],
+          payments: [],
+          estimates: [
+            {
+              externalEstimateId: 'demo-est-9',
+              name: 'Customer upgraded the tile',
+              externalJobId: '900184',
+              status: 'Sold',
+              soldOn: '2026-10-18',
+              customerAmount: 2400,
+            },
+          ],
+        },
+      });
+    }
   });
 
   // --- Okonkwo: preconstruction, permit review overdue

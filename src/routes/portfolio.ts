@@ -239,6 +239,39 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       missing_daily_logs: missingLogs,
       unrecorded_invoices: unrecorded.map((r) => ({ ...r, amount: num(r.amount), days_since_issued: num(r.days_since_issued) })),
       unapplied_invoices: { count: num(unapplied?.n), amount: num(unapplied?.amount), unmatched_to_project: num(unapplied?.unmatched) },
+      unmatched_job_invoices: (await q<{
+        project_number: string; project_name: string; invoice_number: string; external_job_id: string | null;
+        total: string; balance: string;
+      }>(
+        `SELECT p.project_number, p.name AS project_name, i.invoice_number, i.external_job_id,
+                i.total::text, i.balance::text
+           FROM projects.st_invoice_observations i
+           JOIN projects.projects p ON p.id = i.project_id
+           JOIN projects.project_job_links j
+             ON j.project_id = i.project_id AND j.external_job_id = i.external_job_id AND j.source_active
+          WHERE NOT EXISTS (
+            SELECT 1 FROM projects.draws d
+             WHERE d.project_id = i.project_id
+               AND lower(btrim(d.external_invoice_number)) = lower(btrim(i.invoice_number))
+          )
+            AND NOT EXISTS (
+            SELECT 1 FROM projects.change_orders co
+             WHERE co.project_id = i.project_id
+               AND co.status = 'approved'
+               AND (
+                 lower(btrim(co.st_estimate_number)) = lower(btrim(i.invoice_number))
+                 OR lower(btrim(co.external_estimate_ref)) = lower(btrim(i.invoice_number))
+               )
+          )
+          ORDER BY p.project_number, i.invoice_number`,
+      )).map((row) => ({
+        project_number: row.project_number,
+        project_name: row.project_name,
+        invoice_number: row.invoice_number,
+        external_job_id: row.external_job_id,
+        total: num(row.total),
+        balance: num(row.balance),
+      })),
       vendors_blocked: vendors.map((v) => ({ name: v.legal_name, expired: num(v.expired_count), missing: num(v.missing_count), next_expiry: v.next_expiry })),
       vendors_expiring: num(expiring?.n),
       gates_awaiting_approval: projects.reduce((t, p) => t + num(p.gates_awaiting), 0),

@@ -6,6 +6,7 @@ import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { loadVisibleProject, num, parseBody, parseUuidParam } from './shared.js';
 import { resolveAdapter } from '../adapters/externalSystem.js';
+import { annotateDrawList, loadProjectInvoices } from '../domain/arMatch.js';
 import { assertLocalCustomerInvoicesAllowed, serviceTitanOwnsRevenue } from '../domain/localInvoices.js';
 
 const drawScheduleSchema = z.object({
@@ -25,8 +26,7 @@ const externalInvoiceSchema = z.object({
 });
 
 // Null clears the number. An empty string is a validation error, not a clear.
-// TODO: automatic matching of ServiceTitan invoices to draws is planned and
-// is not built. The draw has no column for a ServiceTitan invoice id or date.
+// A refresh can suggest a number. This route is still the only way it is stored.
 const recordExternalInvoiceSchema = z.object({
   external_invoice_number: z.string().trim().min(1).nullable(),
 });
@@ -53,7 +53,7 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         `SELECT d.id, d.sequence_number, d.label, d.trigger_milestone, d.amount,
                 d.status::text AS status, d.earned_at, d.approved_by, d.approved_at,
                 d.external_invoice_number, d.external_invoice_recorded_at,
-                d.external_invoice_verified_at, d.is_retainage,
+                d.external_invoice_verified_at, d.paid_on::text AS paid_on, d.is_retainage,
                 v.applied_amount, v.unapplied_amount, v.invoice_count
            FROM projects.draws d
            JOIN projects.v_draw_application v ON v.draw_id = d.id
@@ -61,6 +61,8 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         [projectId],
       );
 
+      const invoices = await loadProjectInvoices(ctx.db, projectId);
+      const annotated = annotateDrawList(rows.map(serialiseDraw), invoices);
       sendData(ctx.res, {
         // The client hides the verify action rather than offering something
         // that cannot work. A manual-adapter tenant sees false.
@@ -71,7 +73,8 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
         // instead. POST /draws/:id/external-invoice still refuses; PATCH on
         // the same path only stores the number.
         local_invoices_allowed: !(await serviceTitanOwnsRevenue(ctx.db)),
-        draws: rows.map(serialiseDraw),
+        unmatched_invoices: annotated.unmatched_invoices,
+        draws: annotated.draws,
       });
     }),
   );
@@ -266,9 +269,8 @@ export function drawRoutes(deps: StaffRouterDeps): Router {
   // Number only. No project_invoices row, and no write to ServiceTitan or
   // QuickBooks. This is the action that stays available while ServiceTitan
   // owns revenue. Correcting a number re-stamps the draw; clearing it reverts
-  // an invoiced draw. The same number is left untouched.
-  // TODO: automatic matching of ServiceTitan invoices to draws is planned
-  // and is not built. There is no draw column for the invoice id or date.
+  // an invoiced draw. The same number is left untouched. A refresh may suggest
+  // a number. This route is still what stores it.
   router.patch(
     '/draws/:id/external-invoice',
     staffRoute(deps, async (ctx) => {

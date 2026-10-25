@@ -19,6 +19,7 @@ import {
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { createProject } from "./projects.js";
 import { readLaborJobs, stampLaborCodes, storeJobLabor, type LaborJobResult } from "../domain/laborActuals.js";
+import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
 import {
   pickFieldStart,
@@ -204,10 +205,18 @@ export function stProjectRoutes(
             WHERE s.external_system_id = $1 AND s.external_project_id = $2`,
           [c.externalSystemId, b.external_project_id],
         );
+        const since = await ctx.db.query<{ observed_at: Date | null }>(
+          `SELECT max(i.observed_at) AS observed_at
+             FROM projects.st_project_connections s
+             JOIN projects.st_invoice_observations i ON i.project_id = s.project_id
+            WHERE s.external_system_id = $1 AND s.external_project_id = $2`,
+          [c.externalSystemId, b.external_project_id],
+        );
         return {
           b,
           c,
           manual: existing.rows[0]?.field_start_source === "manual",
+          modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
       async (p) => {
@@ -225,7 +234,8 @@ export function stProjectRoutes(
           p.c.client,
           details.jobs.map((job) => job.id),
         );
-        return { details, fieldStart, labor };
+        const ar = await readLinkedAr(p.c.client, p.modifiedSince);
+        return { details, fieldStart, labor, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
@@ -272,12 +282,18 @@ export function stProjectRoutes(
         }
         await applySource(ctx, id, c, result.details);
         await storeReadLabor(ctx, id, result.labor);
+        await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
         if (!p.manual) {
           await storeComputedFieldStart(ctx.db, id, result.fieldStart);
         }
         sendData(
           ctx.res,
-          { id, project: result.details.project, linkedJobs: result.details.jobs.length },
+          {
+            id,
+            project: result.details.project,
+            linkedJobs: result.details.jobs.length,
+            ...arNotice(result.ar),
+          },
           undefined,
           existing.rows.length ? 200 : 201,
         );
@@ -348,11 +364,16 @@ export function stProjectRoutes(
           ctx.req.body,
         );
         const c = await binding(ctx);
+        const since = await ctx.db.query<{ observed_at: Date | null }>(
+          `SELECT max(observed_at) AS observed_at FROM projects.st_invoice_observations WHERE project_id = $1`,
+          [id],
+        );
         return {
           id,
           b,
           c,
           manual: project.field_start_source === "manual",
+          modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
       async (p) => {
@@ -370,7 +391,8 @@ export function stProjectRoutes(
           p.c.client,
           details.jobs.map((job) => job.id),
         );
-        return { details, fieldStart, labor };
+        const ar = await readLinkedAr(p.c.client, p.modifiedSince);
+        return { details, fieldStart, labor, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
@@ -383,6 +405,13 @@ export function stProjectRoutes(
           );
         await applySource(ctx, p.id, c, result.details);
         await storeReadLabor(ctx, p.id, result.labor);
+        await storeReadAr(
+          ctx,
+          p.id,
+          c.externalSystemId,
+          result.details.jobs.map((job) => job.id),
+          result.ar,
+        );
         if (!p.manual) {
           await storeComputedFieldStart(ctx.db, p.id, result.fieldStart);
         }
@@ -390,6 +419,7 @@ export function stProjectRoutes(
           project: result.details.project,
           observedAt: result.details.observedAt,
           linkedJobs: result.details.project.jobIds.length,
+          ...arNotice(result.ar),
         });
       },
     ),
@@ -478,6 +508,73 @@ export function stProjectRoutes(
       },
     ),
   );
+  router.post(
+    "/projects/:id/servicetitan/ar-refresh",
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        await loadVisibleProject(ctx, id, "id");
+        requireCapability(ctx.staff.role, "refresh_ar");
+        const source = sources.serviceTitan;
+        if (
+          !source ||
+          source.tenantId !== ctx.staff.tenantId ||
+          !source.client.readInvoices ||
+          !source.client.readPayments ||
+          !source.client.readEstimates
+        ) {
+          throw new ApiError(
+            "conflict",
+            "ServiceTitan invoice read is not configured. Existing invoices were left as they are.",
+          );
+        }
+        const jobs = await ctx.db.query<{ external_job_id: string }>(
+          `SELECT external_job_id FROM projects.project_job_links
+            WHERE project_id = $1 AND external_system_id = $2 AND source_active
+            ORDER BY external_job_id`,
+          [id, source.externalSystemId],
+        );
+        const since = await ctx.db.query<{ observed_at: Date | null }>(
+          `SELECT max(observed_at) AS observed_at FROM projects.st_invoice_observations WHERE project_id = $1`,
+          [id],
+        );
+        return {
+          id,
+          externalSystemId: source.externalSystemId,
+          jobIds: jobs.rows.map((row) => row.external_job_id),
+          modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
+          readInvoices: source.client.readInvoices.bind(source.client),
+          readPayments: source.client.readPayments.bind(source.client),
+          readEstimates: source.client.readEstimates.bind(source.client),
+        };
+      },
+      async (prepared) =>
+        readLinkedAr(
+          {
+            readInvoices: prepared.readInvoices,
+            readPayments: prepared.readPayments,
+            readEstimates: prepared.readEstimates,
+          },
+          prepared.modifiedSince,
+        ),
+      async (ctx, prepared, ar) => {
+        requireCapability(ctx.staff.role, "refresh_ar");
+        await loadVisibleProject(ctx, prepared.id, "id");
+        if (!ar) {
+          throw new ApiError(
+            "conflict",
+            "ServiceTitan invoice read is not configured. Existing invoices were left as they are.",
+          );
+        }
+        await storeReadAr(ctx, prepared.id, prepared.externalSystemId, prepared.jobIds, ar);
+        sendData(ctx.res, {
+          refreshed: !ar.forbidden,
+          ...(ar.forbidden ? { message: AR_READ_REFUSED } : {}),
+        });
+      },
+    ),
+  );
   return router;
 }
 
@@ -519,4 +616,53 @@ async function storeReadLabor(
     });
   }
   await stampLaborCodes(ctx.db, ctx.staff.tenantId, projectId);
+}
+
+async function readLinkedAr(
+  client: {
+    readInvoices?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; invoices: ArRead["invoices"] }>;
+    readPayments?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; payments: ArRead["payments"] }>;
+    readEstimates?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; estimates: ArRead["estimates"] }>;
+  },
+  modifiedSince: string | null,
+): Promise<ArRead | null> {
+  if (!client.readInvoices || !client.readPayments || !client.readEstimates) return null;
+  const [invoices, payments, estimates] = await Promise.all([
+    client.readInvoices(modifiedSince),
+    client.readPayments(modifiedSince),
+    client.readEstimates(modifiedSince),
+  ]);
+  if (invoices.forbidden || payments.forbidden || estimates.forbidden) {
+    return { forbidden: true, invoices: [], payments: [], estimates: [] };
+  }
+  return {
+    forbidden: false,
+    invoices: invoices.invoices,
+    payments: payments.payments,
+    estimates: estimates.estimates,
+  };
+}
+
+async function storeReadAr(
+  ctx: StaffContext,
+  projectId: string,
+  externalSystemId: string,
+  jobIds: string[],
+  ar: ArRead | null,
+): Promise<void> {
+  if (!ar) return;
+  await storeProjectAr(ctx.db, {
+    tenantId: ctx.staff.tenantId,
+    projectId,
+    externalSystemId,
+    jobIds,
+    read: ar,
+  });
+}
+
+function arNotice(ar: ArRead | null): { ar?: { refreshed: boolean; message?: string } } {
+  if (!ar) return {};
+  return ar.forbidden
+    ? { ar: { refreshed: false, message: AR_READ_REFUSED } }
+    : { ar: { refreshed: true } };
 }
