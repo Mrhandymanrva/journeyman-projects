@@ -76,6 +76,7 @@ export const TENANT_SCOPED_TABLES = [
   'draws',
   'jurisdictions',
   'jurisdiction_contacts',
+  'permit_office_seed_runs',
   'permits',
   'permit_milestone_templates',
   'permit_milestones',
