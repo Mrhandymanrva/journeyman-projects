@@ -134,7 +134,7 @@ afterAll(async () => {
   await h?.close();
 });
 
-it("defaults an omitted logged start to today in New York and keeps an explicit null", async () => {
+it("defaults an omitted logged start to the created date in New York and keeps an explicit null", async () => {
   const created = await owner()
     .post(base + "/projects")
     .send(projectBody({ project_number: "LOG-TODAY", name: "Logged today" }));
@@ -144,7 +144,15 @@ it("defaults an omitted logged start to today in New York and keeps an explicit 
       `SELECT (now() AT TIME ZONE 'America/New_York')::date::text AS d`,
     ),
   );
+  const createdDate = await h.db.withTenant(t.id, (db) =>
+    db.query<{ d: string }>(
+      `SELECT (created_at AT TIME ZONE 'America/New_York')::date::text AS d
+         FROM projects.projects WHERE id = $1`,
+      [created.body.data.id],
+    ),
+  );
   expect(created.body.data.scheduled_start).toBe(today.rows[0]!.d);
+  expect(created.body.data.scheduled_start).toBe(createdDate.rows[0]!.d);
   expect(created.body.data.field_start).toEqual(EMPTY);
   expect(created.body.data.precon.open).toBe(7);
   expect(created.body.data.precon.tasks).toHaveLength(7);
@@ -162,42 +170,87 @@ it("defaults an omitted logged start to today in New York and keeps an explicit 
   expect(cleared.body.data.scheduled_start).toBeNull();
 });
 
-it("copies the created date once and does not repeat the copy", async () => {
+it("leaves an existing logged start unchanged after migration 035 and a ServiceTitan refresh", async () => {
   const sql = readFileSync(path.join(repoRoot, "db/035_field_start.sql"), "utf8");
-  expect(sql).toContain(
-    "UPDATE projects SET scheduled_start = (created_at AT TIME ZONE 'America/New_York')::date;",
-  );
-  const day = await h.db.asOwner((db) =>
-    db.query<{ d: string }>(
-      `SELECT (timestamptz '2026-10-25 03:30:00+00' AT TIME ZONE 'America/New_York')::date::text AS d`,
+  expect(sql).not.toMatch(/UPDATE\s+projects[\s\S]*scheduled_start/i);
+  expect(sql).not.toContain("scheduled_start_origin_reset");
+
+  const live = [
+    ["320012949", "2026-09-01"],
+    ["321293715", "2026-10-05"],
+    ["321586598", "2026-10-19"],
+    ["321612166", "2026-09-17"],
+  ] as const;
+  const projects: Array<{ id: string; start: string }> = [];
+  for (const [number, start] of live) {
+    const created = await owner()
+      .post(base + "/projects")
+      .send(
+        projectBody({
+          project_number: number,
+          name: "Live " + number,
+          scheduled_start: start,
+        }),
+      );
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.scheduled_start).toBe(start);
+    projects.push({ id: created.body.data.id, start });
+  }
+
+  await h.db.asOwner((db) =>
+    db.query(
+      `UPDATE projects.projects
+          SET created_at = timestamptz '2026-01-15 16:00:00+00'
+        WHERE id = ANY($1::uuid[])`,
+      [projects.map((project) => project.id)],
     ),
   );
-  expect(day.rows[0]!.d).toBe("2026-10-24");
 
-  const marker = await h.db.asOwner((db) =>
-    db.query<{ n: string }>(
-      `SELECT count(*)::text AS n FROM projects.scheduled_start_origin_reset`,
+  for (const statement of splitSqlStatements(sql)) {
+    await h.db.asOwner((db) => db.query(statement.text));
+  }
+
+  const stored = await h.db.withTenant(t.id, (db) =>
+    db.query<{ id: string; scheduled_start: string; created_date: string }>(
+      `SELECT id::text, scheduled_start::text,
+              (created_at AT TIME ZONE 'America/New_York')::date::text AS created_date
+         FROM projects.projects
+        WHERE id = ANY($1::uuid[])`,
+      [projects.map((project) => project.id)],
     ),
   );
-  expect(marker.rows[0]!.n).toBe("1");
+  for (const project of projects) {
+    const row = stored.rows.find((item) => item.id === project.id);
+    expect(row?.created_date).toBe("2026-01-15");
+    expect(row?.scheduled_start).toBe(project.start);
+    expect(row?.scheduled_start).not.toBe(row?.created_date);
+    const again = await owner().get(base + "/projects/" + project.id);
+    expect(again.body.data.scheduled_start).toBe(project.start);
+  }
 
-  const created = await owner()
-    .post(base + "/projects")
-    .send(
-      projectBody({
-        project_number: "LOG-KEEP",
-        name: "Keep this logged start",
-        scheduled_start: "2026-12-01",
-      }),
-    );
-  expect(created.status).toBe(201);
-  const reset = splitSqlStatements(sql).find((statement) =>
-    statement.text.includes("scheduled_start_origin_reset"),
+  const kept = projects[0]!;
+  readJob.mockImplementation(async (id: string) =>
+    jobRead(id, [appointment("40", "2026-11-03T15:00:00.000Z")], {
+      observedAt: "2026-10-25T18:00:00.000Z",
+      projectId: "320012949",
+    }),
   );
-  expect(reset).toBeTruthy();
-  await h.db.asOwner((db) => db.query(reset!.text));
-  const again = await owner().get(base + "/projects/" + created.body.data.id);
-  expect(again.body.data.scheduled_start).toBe("2026-12-01");
+  readProject.mockResolvedValueOnce(details(["940"], "320012949"));
+  const linked = await owner()
+    .post(base + "/projects/" + kept.id + "/servicetitan")
+    .send({ external_project_id: "320012949" });
+  expect(linked.status, JSON.stringify(linked.body)).toBe(200);
+  readProject.mockResolvedValueOnce(details(["940"], "320012949"));
+  const refreshed = await owner()
+    .post(base + "/projects/" + kept.id + "/servicetitan")
+    .send({ external_project_id: "320012949" });
+  expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+  const after = await owner().get(base + "/projects/" + kept.id);
+  expect(after.body.data.scheduled_start).toBe("2026-09-01");
+  expect(after.body.data.scheduled_start).not.toBe("2026-09-20");
+  expect(after.body.data.scheduled_end).toBe("2026-10-10");
+  readJob.mockClear();
+  readProject.mockClear();
 });
 
 it("stores the earliest New York appointment and ignores a local schedule row", async () => {
