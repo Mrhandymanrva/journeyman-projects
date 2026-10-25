@@ -186,7 +186,7 @@ export function createWorkspace({
       void enter("plan");
     };
   });
-  for (const id of ["budget", "pos", "cos", "draws"])
+  for (const id of ["budget", "pos", "cos", "closeout", "draws"])
     move(id, "financials", true);
   move("notice", "financials");
   move("logs", "logs", true);
