@@ -285,7 +285,7 @@ describe("closeout", () => {
       );
     });
 
-    const sql = readFileSync(path.join(repoRoot, "db/040_change_order_log_and_closeout.sql"), "utf8");
+    const sql = readFileSync(path.join(repoRoot, "db/039_change_order_log_and_closeout.sql"), "utf8");
     await h.db.asOwner(async (c) => {
       for (const stmt of splitSqlStatements(sql)) await c.query(stmt.text);
     });
@@ -307,7 +307,7 @@ describe("closeout", () => {
       ),
     );
     expect(kept.rows[0]?.checklist.map((row) => row.key)).toEqual(["old"]);
-    expect(SCHEMA_FILES.some((file) => file.endsWith("040_change_order_log_and_closeout.sql"))).toBe(true);
+    expect(SCHEMA_FILES.some((file) => file.endsWith("039_change_order_log_and_closeout.sql"))).toBe(true);
   });
 });
 

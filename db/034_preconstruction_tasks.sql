@@ -13,17 +13,51 @@
 
 SET search_path = projects, public;
 
-ALTER TABLE purchase_orders DROP CONSTRAINT IF EXISTS purchase_orders_tenant_id_uq;
-ALTER TABLE purchase_orders
-  ADD CONSTRAINT purchase_orders_tenant_id_uq UNIQUE (tenant_id, id);
+-- Unique (tenant_id, id) is what precon_tasks' foreign keys reference.
+-- Add each one when it is missing. Do not drop it on a later deploy:
+-- provision re-applies this file, and a drop fails once those foreign keys exist.
+DO $uq$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = 'projects'
+       AND t.relname = 'purchase_orders'
+       AND c.conname = 'purchase_orders_tenant_id_uq'
+  ) THEN
+    ALTER TABLE purchase_orders
+      ADD CONSTRAINT purchase_orders_tenant_id_uq UNIQUE (tenant_id, id);
+  END IF;
 
-ALTER TABLE permits DROP CONSTRAINT IF EXISTS permits_tenant_id_uq;
-ALTER TABLE permits
-  ADD CONSTRAINT permits_tenant_id_uq UNIQUE (tenant_id, id);
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = 'projects'
+       AND t.relname = 'permits'
+       AND c.conname = 'permits_tenant_id_uq'
+  ) THEN
+    ALTER TABLE permits
+      ADD CONSTRAINT permits_tenant_id_uq UNIQUE (tenant_id, id);
+  END IF;
 
-ALTER TABLE jurisdictions DROP CONSTRAINT IF EXISTS jurisdictions_tenant_id_uq;
-ALTER TABLE jurisdictions
-  ADD CONSTRAINT jurisdictions_tenant_id_uq UNIQUE (tenant_id, id);
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = 'projects'
+       AND t.relname = 'jurisdictions'
+       AND c.conname = 'jurisdictions_tenant_id_uq'
+  ) THEN
+    ALTER TABLE jurisdictions
+      ADD CONSTRAINT jurisdictions_tenant_id_uq UNIQUE (tenant_id, id);
+  END IF;
+END
+$uq$;
 
 CREATE TABLE IF NOT EXISTS precon_task_templates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -8,6 +8,17 @@ export interface Env {
   devLoginToken: string;
   /** Sign in with Command Center; absent when CC_SSO_* is not set. */
   sso?: { url: string; clientId: string; clientSecret: string; tenantId: string };
+  /**
+   * Optional webhook for an unhandled 500. Absent when ALERT_WEBHOOK_URL is
+   * unset or blank. Nothing is sent in that case.
+   */
+  alertWebhookUrl?: string;
+}
+
+/** Blank and whitespace-only values are unset. */
+export function alertWebhookUrl(source: NodeJS.ProcessEnv = process.env): string | undefined {
+  const url = (source.ALERT_WEBHOOK_URL ?? '').trim();
+  return url || undefined;
 }
 
 /**
@@ -97,5 +108,6 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     devLogin,
     devLoginToken,
     sso: ssoOn ? { url: ccUrl, clientId: ccClientId, clientSecret: ccClientSecret, tenantId: ssoTenantId } : undefined,
+    alertWebhookUrl: alertWebhookUrl(source),
   };
 }

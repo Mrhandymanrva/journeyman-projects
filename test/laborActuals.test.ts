@@ -211,6 +211,6 @@ describe("labor actuals", () => {
     expect(coordinator.status).toBe(403);
     const refresh = await owner().post(`/api/v1/projects/projects/${projectId}/labor/refresh`);
     expect(refresh.status).toBe(409);
-    expect(SCHEMA_FILES.some((file) => file.endsWith("037_labor_actuals.sql"))).toBe(true);
+    expect(SCHEMA_FILES.some((file) => file.endsWith("040_labor_actuals.sql"))).toBe(true);
   });
 });

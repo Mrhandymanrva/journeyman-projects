@@ -9,6 +9,7 @@ import {
   assertDatabaseContract,
   StartupAssertionError,
 } from "./db/assertions.js";
+import { seedPermitOffices } from "./domain/permitOfficeSeed.js";
 import { MemoryStaffSessions } from "./http/memoryStaffSessions.js";
 
 /**
@@ -59,6 +60,24 @@ try {
       "",
       "Check that the PostgreSQL service is running and that DATABASE_URL points",
       "at it. If the host requires TLS, the connection string needs ?sslmode=require.",
+    ].join("\n"),
+  );
+}
+
+try {
+  await seedPermitOffices(database);
+} catch (err) {
+  await database.close().catch(() => {});
+  const message = err instanceof Error ? err.message : String(err);
+  die(
+    "The permit office seed did not finish.",
+    [
+      `  ${message}`,
+      "",
+      "Deploy applies db/037_permit_office_seed.sql, then loads",
+      "db/seeds/permit_offices_import.csv through the same importer as",
+      "POST /jurisdictions/import. The load runs once for the deployment",
+      "tenant. A later boot sees that it already ran and leaves the rows alone.",
     ].join("\n"),
   );
 }

@@ -1,5 +1,63 @@
 import type { Response, Request, NextFunction } from 'express';
+import { alertWebhookUrl } from '../env.js';
 import { ApiError } from './errors.js';
+
+const ALERT_TIMEOUT_MS = 3_000;
+const ALERT_SUPPRESS_MS = 5 * 60 * 1000;
+const recentAlerts = new Map<string, number>();
+let alertNow = (): number => Date.now();
+
+/** Tests advance the suppression clock. Production uses the wall clock. */
+export function setAlertClockForTests(now: (() => number) | null): void {
+  alertNow = now ?? (() => Date.now());
+}
+
+export function resetAlertSuppression(): void {
+  recentAlerts.clear();
+}
+
+function environmentLabel(): string {
+  const name = (process.env.NODE_ENV ?? 'development').trim();
+  return name || 'development';
+}
+
+/** Path only. The query string can carry codes and is not part of the alert. */
+function requestPath(req: Request): string {
+  const raw = req.originalUrl || req.url || '/';
+  const path = (raw.split('?')[0] || '/').replace(/[\r\n]/g, '');
+  return path.slice(0, 300) || '/';
+}
+
+/**
+ * Fire-and-forget note that this process returned an unhandled 500.
+ * The text is the environment name and the path. It does not include the
+ * request body, cookies, the query string, or SQL parameters. Identical
+ * text is skipped for five minutes. An unset webhook does nothing, and a
+ * failed post never changes the response.
+ */
+function notifyUnhandled(req: Request): void {
+  const url = alertWebhookUrl();
+  if (!url) return;
+  const message = `${environmentLabel()} ${requestPath(req)}`.replace(/[\r\n]/g, '');
+  const now = alertNow();
+  const previous = recentAlerts.get(message);
+  if (previous !== undefined && now - previous < ALERT_SUPPRESS_MS) return;
+  recentAlerts.set(message, now);
+  for (const [key, sentAt] of recentAlerts) {
+    if (now - sentAt >= ALERT_SUPPRESS_MS) recentAlerts.delete(key);
+  }
+  try {
+    void fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+      body: message,
+      credentials: 'omit',
+      signal: AbortSignal.timeout(ALERT_TIMEOUT_MS),
+    }).catch(() => {});
+  } catch {
+    // A bad URL throws before fetch returns a promise. The 500 still stands.
+  }
+}
 
 export interface PageMeta {
   page: number;
@@ -18,7 +76,7 @@ export function sendData(res: Response, data: unknown, meta?: PageMeta, status =
  */
 export function errorHandler(
   err: unknown,
-  _req: Request,
+  req: Request,
   res: Response,
   _next: NextFunction,
 ): void {
@@ -49,6 +107,7 @@ export function errorHandler(
 
   // eslint-disable-next-line no-console
   console.error('[unhandled]', err);
+  notifyUnhandled(req);
   res.status(500).json({
     error: { code: 'internal', message: 'Something went wrong on our side.' },
   });
