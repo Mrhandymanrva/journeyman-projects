@@ -30,6 +30,7 @@ describe("portfolio project feed", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data.projects.map((p: { project_number: string }) => p.project_number)).toEqual(["P-300"]);
     expect(res.body.data.projects[0].qbo_customer_id).toBeNull();
+    expect(res.body.data.projects[0].gates).toEqual({ gate_1: "open", gate_2: "open" });
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 

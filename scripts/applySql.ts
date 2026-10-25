@@ -48,6 +48,7 @@ const FILES = [
   path.join(repoRoot, "db/035_field_start.sql"),
   path.join(repoRoot, "db/036_permit_offices.sql"),
   path.join(repoRoot, "db/037_permit_office_seed.sql"),
+  path.join(repoRoot, "db/038_gate_checklist_defaults.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');
