@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
+import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -75,6 +76,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
     actual_start: string | null; updated_at: string; pm: string | null;
     revised_contract: string | null; committed_cost: string | null; projected_cost: string | null;
     gates_awaiting: string; draws_waiting: string;
+    field_released_at: unknown; field_release_note: string | null; field_released_by_name: string | null;
   }>(
     `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.city, p.region,
             p.contract_value::text, p.target_margin::text,
@@ -82,9 +84,11 @@ async function buildSummary(db: SqlClient, tenantId: string) {
             s.full_name AS pm,
             m.revised_contract::text, m.committed_cost::text, m.projected_cost::text,
             (SELECT count(*) FROM projects.stage_gates g WHERE g.project_id = p.id AND g.status = 'submitted')::text AS gates_awaiting,
-            (SELECT count(*) FROM projects.draws d WHERE d.project_id = p.id AND d.status IN ('earned','approved'))::text AS draws_waiting
+            (SELECT count(*) FROM projects.draws d WHERE d.project_id = p.id AND d.status IN ('earned','approved'))::text AS draws_waiting,
+            p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
        FROM projects.projects p
        LEFT JOIN projects.staff s ON s.id = p.pm_id
+       LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
        LEFT JOIN projects.v_project_margin m ON m.project_id = p.id
       WHERE p.stage NOT IN ('complete','cancelled')
       ORDER BY p.updated_at DESC`,
@@ -206,6 +210,11 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         projected_cost: proj,
         projected_margin_pct: proj === null || revised <= 0 ? null : (revised - proj) / revised,
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
+        field_release: presentFieldRelease({
+          released_at: p.field_released_at,
+          released_by: p.field_released_by_name,
+          note: p.field_release_note,
+        }),
         gates_awaiting_approval: num(p.gates_awaiting), draws_waiting: num(p.draws_waiting),
         updated_at: p.updated_at,
       };

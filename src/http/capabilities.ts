@@ -40,6 +40,11 @@ export const CAPABILITIES = {
   view_margin: ['owner', 'manager', 'project_manager', 'estimator', 'bookkeeper'],
   export_cost_data: ['owner', 'manager', 'estimator', 'bookkeeper'],
   advance_stage: ['owner', 'manager', 'project_manager'],
+  // A flag that field capacity was confirmed. It does not block scheduling,
+  // gates, or any other write. Owner and manager may set or clear it.
+  // There is no Office GM or Project Coordinator role: manager is the
+  // leadership seat next to owner, and office is the view-only office seat.
+  record_field_release: ['owner', 'manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

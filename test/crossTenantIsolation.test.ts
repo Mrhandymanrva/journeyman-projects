@@ -528,6 +528,18 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/projects/${f.projectId}/gates/0/reject`,
     body: () => ({ note: "no" }),
   },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-release`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-release`,
+    body: () => ({ note: "not this tenant" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-release/undo`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-release/undo`,
+    body: () => ({ note: "not this tenant" }),
+  },
 
   // --- phase 2: budget ----------------------------------------------------
   {

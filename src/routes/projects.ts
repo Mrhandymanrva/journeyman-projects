@@ -1,4 +1,6 @@
 import { deleteLocalProject } from '../domain/deleteProject.js';
+import { presentFieldRelease, readFieldRelease } from '../domain/fieldRelease.js';
+import type { SqlClient } from '../db/database.js';
 import { Router } from "express";
 import { z } from "zod";
 import { sendData } from "../http/envelope.js";
@@ -136,8 +138,12 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         `SELECT p.id, p.project_number, p.name, p.stage, p.business_unit_id,
                 p.pm_id, p.estimator_id, p.city, p.region,
                 p.contract_value, p.currency, p.target_margin,
-                p.scheduled_start, p.scheduled_end, p.updated_at
-           FROM projects.projects p ${where}
+                p.scheduled_start, p.scheduled_end, p.updated_at,
+                p.field_released_at, p.field_release_note,
+                rel.full_name AS field_released_by_name
+           FROM projects.projects p
+           LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
+           ${where}
           ORDER BY p.created_at DESC
           LIMIT $6 OFFSET $7`,
         [...params, perPage, offset],
@@ -259,7 +265,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       );
 
       sendData(ctx.res, {
-        ...serialiseProject(project),
+        ...(await projectPayload(ctx.db, id, project, true)),
 
         pm_name: nameOf(project.pm_id),
         estimator_name: nameOf(project.estimator_id),
@@ -387,7 +393,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           ctx,
           id,
         );
-        sendData(ctx.res, serialiseProject(unchanged));
+        sendData(ctx.res, await projectPayload(ctx.db, id, unchanged));
         return;
       }
 
@@ -397,7 +403,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         [id, ...entries.map(([, v]) => v)],
       );
       if (!rows[0]) throw notFound("Project not found");
-      sendData(ctx.res, serialiseProject(rows[0]));
+      sendData(ctx.res, await projectPayload(ctx.db, id, rows[0]));
     }),
   );
 
@@ -505,7 +511,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         [id, stage],
       );
       sendData(ctx.res, {
-        ...serialiseProject(rows[0]!),
+        ...(await projectPayload(ctx.db, id, rows[0]!)),
         next_stage: nextStage(stage),
       });
     }),
@@ -668,7 +674,7 @@ export async function createProject(
         );
 
   return {
-    ...serialiseProject(project),
+    ...(await projectPayload(ctx.db, projectId, project)),
     id: projectId,
     gates_created: gates.rowCount || gates.rows.length,
     budget_lines_created: budgetLineCount,
@@ -685,17 +691,38 @@ function round4(n: number): number {
 }
 
 function serialiseProjectSummary(row: Record<string, unknown>) {
-  return {
-    ...row,
-    contract_value: num(row.contract_value),
-    target_margin: num(row.target_margin),
-  };
+  return serialiseProject(row);
 }
 
 function serialiseProject(row: Record<string, unknown>) {
+  const rest = { ...row };
+  const releasedAt = rest.field_released_at;
+  const note = rest.field_release_note;
+  const releasedByName = rest.field_released_by_name;
+  delete rest.field_released_by;
+  delete rest.field_released_at;
+  delete rest.field_release_note;
+  delete rest.field_released_by_name;
   return {
-    ...row,
+    ...rest,
     contract_value: num(row.contract_value),
     target_margin: num(row.target_margin),
+    field_release: presentFieldRelease({
+      released_at: releasedAt,
+      released_by: typeof releasedByName === 'string' ? releasedByName : null,
+      note,
+    }),
+  };
+}
+
+async function projectPayload(
+  db: SqlClient,
+  projectId: string,
+  row: Record<string, unknown>,
+  withHistory = false,
+) {
+  return {
+    ...serialiseProject(row),
+    field_release: await readFieldRelease(db, projectId, withHistory),
   };
 }

@@ -1,3 +1,4 @@
+import { bindFieldRelease, fieldReleaseHtml } from "./fieldRelease.js";
 import { createWorkspace } from "./workspace.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { createPlanning } from "./planning.js";
@@ -387,7 +388,7 @@ function render(d) {
   renderStats(p, d.margin, d.cost);
   renderNotice(d.budget, d.drawData);
   renderStageBar(p, p.gates);
-  renderGates(p.gates);
+  renderGates(p);
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
@@ -467,11 +468,13 @@ function renderNotice(budget, drawData) {
   el("notice").innerHTML = notices.join("");
 }
 
-function renderGates(gates) {
+function renderGates(project) {
   // Count and content are tenant configuration. The mock's five-entry
   // GATE_LABELS array is gone; this reads what the tenant actually has.
+  const gates = project.gates || [];
   const currentIndex = gates.findIndex((g) => g.status !== "approved");
   const stage = currentIndex === -1 ? gates.length : currentIndex;
+  const released = Boolean(project.field_release?.released);
 
   el("gates").innerHTML = gates
     .map((g, i) => {
@@ -487,13 +490,34 @@ function renderGates(gates) {
       const outstanding = (g.checklist || []).filter((c) => !c.done).length;
       const detail =
         outstanding > 0 && i === stage ? ` · ${outstanding} outstanding` : "";
+      const releaseMark =
+        Number(g.gate_number) === 2
+          ? released
+            ? " · Field release recorded"
+            : " · No field release"
+          : "";
       return `<div class="gate ${cls} actionable" data-gate="${g.gate_number}">
       <div class="stamp">${i < stage ? "✓" : g.gate_number}</div>
       <div class="gate-t"><span class="n">${esc(g.title)}</span>
-      <span class="m">Gate ${g.gate_number} · ${meta}${detail}</span></div>
+      <span class="m">Gate ${g.gate_number} · ${meta}${detail}${releaseMark}</span></div>
     </div>`;
     })
     .join("");
+
+  const gate2 = gates.find((g) => Number(g.gate_number) === 2);
+  const releasePanel = fieldReleaseHtml({
+    release: project.field_release,
+    canRelease: can("record_field_release"),
+    esc,
+    items: gate2?.checklist || [],
+  });
+  const gate2Node = el("gates").querySelector('.gate[data-gate="2"]');
+  if (gate2Node) gate2Node.insertAdjacentHTML("afterend", releasePanel);
+  else el("gates").insertAdjacentHTML("beforeend", releasePanel);
+  bindFieldRelease(el("gates").querySelector(".field-release"), {
+    onRelease: (note) => saveFieldRelease(note, false),
+    onUndo: (note) => saveFieldRelease(note, true),
+  });
 
   // Every gate opens, not just the current one: a rejected gate two stages back
   // is exactly the thing someone needs to get at.
@@ -505,6 +529,18 @@ function renderGates(gates) {
       if (gate) gateDrawer(gate);
     }),
   );
+}
+
+async function saveFieldRelease(note, undo) {
+  await api(
+    `/projects/${current.id}/field-release${undo ? "/undo" : ""}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ note: note || null }),
+    },
+  );
+  closeDrawer();
+  await select(current.id);
 }
 
 function renderBudget(cost, budget) {
@@ -1031,6 +1067,16 @@ function gateDrawer(gate) {
              .join("")}</div>`
          : '<p class="note">No checklist on this gate. Checklists are tenant configuration.</p>'
      }
+     ${
+       Number(gate.gate_number) === 2
+         ? fieldReleaseHtml({
+             release: current?.field_release,
+             canRelease: can("record_field_release"),
+             esc,
+             showItems: false,
+           })
+         : ""
+     }
      ${field("Note", '<textarea id="gate-note" placeholder="Required to reject or reopen"></textarea>')}
      ${
        mayApprove
@@ -1110,6 +1156,13 @@ function gateDrawer(gate) {
           `${outstanding} checklist item${outstanding > 1 ? "s" : ""} outstanding — approval is refused until they are ticked.`,
           "",
         );
+      }
+      if (Number(gate.gate_number) === 2) {
+        bindFieldRelease(el("drawer-body").querySelector(".field-release"), {
+          onRelease: (note) => saveFieldRelease(note, false),
+          onUndo: (note) => saveFieldRelease(note, true),
+          onError: (err) => drawerMessage(err.message),
+        });
       }
     },
   );

@@ -43,6 +43,7 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/030_draw_external_invoice_number.sql"),
   path.join(repoRoot, "db/031_material_bill_cost.sql"),
   path.join(repoRoot, "db/032_vendor_document_notes.sql"),
+  path.join(repoRoot, "db/033_field_release.sql"),
 ];
 
 export interface TenantFixture {

@@ -37,6 +37,7 @@ const db = await PgliteDatabase.create([
   "db/013_st_projects.sql",
   "db/014_st_project_authority.sql",
   "db/032_vendor_document_notes.sql",
+  "db/033_field_release.sql",
 ]);
 
 await assertDatabaseContract(db);

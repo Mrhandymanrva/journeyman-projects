@@ -37,6 +37,7 @@ const FILES = [
   path.join(repoRoot, "db/022_vendor_sync.sql"),
   path.join(repoRoot, "db/023_agreement_advisory.sql"),
   path.join(repoRoot, "db/032_vendor_document_notes.sql"),
+  path.join(repoRoot, "db/033_field_release.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');
