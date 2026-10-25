@@ -560,9 +560,9 @@ describe("project health", () => {
 
     const source = readFileSync(path.join(repoRoot, "src/workers/healthSnapshot.ts"), "utf8");
     expect(source).not.toMatch(/serviceTitan|quickbooks|servicetitan\.io|fetch\(/);
-    const migration = readFileSync(path.join(repoRoot, "db/041_project_health_snapshots.sql"), "utf8");
+    const migration = readFileSync(path.join(repoRoot, "db/042_project_health_snapshots.sql"), "utf8");
     expect(migration).not.toMatch(/scheduled_start\s*=/);
-    expect(SCHEMA_FILES.some((file) => file.endsWith("041_project_health_snapshots.sql"))).toBe(true);
+    expect(SCHEMA_FILES.some((file) => file.endsWith("042_project_health_snapshots.sql"))).toBe(true);
     expect(startHealthSnapshotScheduler(h.db, undefined)).toBeUndefined();
   });
 
