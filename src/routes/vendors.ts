@@ -191,7 +191,7 @@ export function vendorRoutes(deps: StaffRouterDeps): Router {
 
       const documents = await ctx.db.query<Record<string, unknown>>(
         `SELECT d.id, d.kind::text AS kind, d.coverage_kinds::text[] AS coverage_kinds, d.issued_on, d.expires_on, d.file_key,
-                d.verified_by, d.verified_at, d.verify_method, d.created_at,d.file_name,d.media_type,d.file_size,(d.file_data IS NOT NULL) AS has_file
+                d.verified_by, d.verified_at, d.verify_method, d.notes, d.created_at,d.file_name,d.media_type,d.file_size,(d.file_data IS NOT NULL) AS has_file
            FROM projects.vendor_documents d
           WHERE d.vendor_id = $1
           ORDER BY d.kind, d.expires_on DESC NULLS LAST`,
