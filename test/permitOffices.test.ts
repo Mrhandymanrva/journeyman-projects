@@ -163,6 +163,61 @@ it("rejects credential keys and unknown JSON, and accepts contact_role as a titl
   expect(city?.contacts[0]?.title).toBe("Plans examiner");
 });
 
+it("keeps a blank contact row as an office only, and ignores seed metadata on each office", async () => {
+  const header =
+    "municipality,state,office_name,address_line1,address_line2,office_city,postal_code,main_phone,website_url,portal_url,work_requiring_permit,required_documents,plan_requirements,fee_notes,fee_schedule_url,typical_review_days,inspection_method,inspection_phone,inspection_url,notes,last_verified,contact_name,contact_title,contact_phone,contact_email,contact_notes";
+  const blank = "Quiet County,VA,Building Inspection" + ",".repeat(23);
+  const first = await owner()
+    .post(base + "/jurisdictions/import")
+    .set("Content-Type", "text/csv")
+    .send(`${header}\n${blank}\n`);
+  expect(first.status, JSON.stringify(first.body)).toBe(200);
+  expect(first.body.data).toEqual({
+    created: 1,
+    updated: 0,
+    contacts_upserted: 0,
+    unchanged: 0,
+  });
+  const again = await owner()
+    .post(base + "/jurisdictions/import")
+    .set("Content-Type", "text/csv")
+    .send(`${header}\n${blank}\n`);
+  expect(again.body.data).toEqual({
+    created: 0,
+    updated: 0,
+    contacts_upserted: 0,
+    unchanged: 1,
+  });
+
+  const seeded = await owner()
+    .post(base + "/jurisdictions/import")
+    .send([
+      {
+        municipality: "Quiet County",
+        state: "VA",
+        office_name: "Building Inspection",
+        contacts: [],
+        source_urls: ["https://example.test/quiet"],
+        completeness: "partial",
+        data_gaps: ["portal_url"],
+      },
+    ]);
+  expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+  expect(seeded.body.data).toEqual({
+    created: 0,
+    updated: 0,
+    contacts_upserted: 0,
+    unchanged: 1,
+  });
+  const list = await owner().get(base + "/jurisdictions");
+  const quiet = (
+    list.body.data as Array<{ name: string; contacts: unknown[] }>
+  ).filter((office) => office.name === "Quiet County");
+  expect(quiet).toHaveLength(1);
+  expect(quiet[0]?.contacts).toEqual([]);
+  expect(JSON.stringify(list.body)).not.toContain("example.test/quiet");
+});
+
 it("requires a state, keeps one office per municipality and state, and limits who can edit", async () => {
   const missing = await owner()
     .post(base + "/jurisdictions")

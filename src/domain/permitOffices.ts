@@ -31,7 +31,12 @@ export const CSV_COLUMNS = [
   "contact_notes",
 ] as const;
 
-/** Top-level JSON keys the importer drops. Any other unknown key is rejected. */
+/**
+ * JSON keys the importer drops on the document and on each office.
+ * The seed file is an array of offices, and each office carries these three.
+ * Any other unknown key is rejected. Credential-like keys are rejected
+ * even when they sit inside one of these objects.
+ */
 export const IGNORED_IMPORT_KEYS = ["source_urls", "completeness", "data_gaps"] as const;
 
 const CREDENTIAL_KEY = /(user_?name|password|passcode|token|secret|api_?key)/i;
@@ -181,7 +186,7 @@ export function parsePermitOfficeJson(body: unknown): PermitOfficeInput[] {
   rejectCredentialKeys(body);
   const stripped = stripIgnoredImportKeys(body);
   if (Array.isArray(stripped)) {
-    return stripped.map((office, index) => parseOffice(office, index));
+    return stripped.map((office, index) => parseOffice(stripIgnoredImportKeys(office), index));
   }
   if (stripped && typeof stripped === "object" && "offices" in stripped) {
     const parsed = z
@@ -195,9 +200,11 @@ export function parsePermitOfficeJson(body: unknown): PermitOfficeInput[] {
         parsed.error.flatten(),
       );
     }
-    return parsed.data.offices.map((office, index) => parseOffice(office, index));
+    return parsed.data.offices.map((office, index) =>
+      parseOffice(stripIgnoredImportKeys(office), index),
+    );
   }
-  return [parseOffice(stripped, 0)];
+  return [parseOffice(stripIgnoredImportKeys(stripped), 0)];
 }
 
 function parseOffice(value: unknown, index: number): PermitOfficeInput {
