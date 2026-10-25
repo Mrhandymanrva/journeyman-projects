@@ -4,7 +4,7 @@ import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
-import { portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { portfolioFeedLabor, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
 import { loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
@@ -219,7 +219,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         projected_margin_pct: proj === null || revised <= 0 ? null : (revised - proj) / revised,
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
         field_start: presentFieldStart(p),
-        labor: presentPortfolioLabor(p as unknown as Record<string, unknown>),
+        labor: portfolioFeedLabor(presentPortfolioLabor(p as unknown as Record<string, unknown>)),
         precon: { open: Number(p.precon_open ?? 0), overdue: Number(p.precon_overdue ?? 0) },
         field_release: presentFieldRelease({
           released_at: p.field_released_at,

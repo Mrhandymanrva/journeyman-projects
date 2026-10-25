@@ -220,7 +220,7 @@ export async function storeJobLabor(
   }
 }
 
-/** Point stored hours at the project override, otherwise the tenant code. No rate or no code leaves them uncoded. */
+/** Point stored hours at the project override, otherwise the tenant code. No code leaves them uncoded. */
 export async function stampLaborCodes(
   db: SqlClient,
   tenantId: string,
@@ -228,10 +228,7 @@ export async function stampLaborCodes(
 ): Promise<void> {
   await db.query(
     `UPDATE projects.labor_actuals a
-        SET cost_code_id = CASE
-              WHEN s.labor_burdened_hourly_rate IS NULL THEN NULL
-              ELSE COALESCE(p.labor_cost_code_id, s.labor_cost_code_id)
-            END
+        SET cost_code_id = COALESCE(p.labor_cost_code_id, s.labor_cost_code_id)
        FROM projects.projects p
        JOIN projects.tenant_settings s ON s.tenant_id = p.tenant_id
       WHERE a.project_id = p.id
@@ -241,9 +238,51 @@ export async function stampLaborCodes(
   );
 }
 
-export interface PortfolioLabor {
+export interface TechnicianRate {
+  id: string;
+  name: string;
+  active: boolean;
+  hourlyRate: number | null;
+  burdenRate: number | null;
+}
+
+export interface TechnicianDirectory {
+  /** False when this connection cannot read technicians. Stored rates stay. */
+  read: boolean;
+  forbidden: boolean;
+  technicians: TechnicianRate[];
+}
+
+export interface RateGap {
+  external_technician_id: string;
+  technician_name: string;
+  hourly_rate: number | null;
+  burden_rate: number | null;
+  messages: string[];
+}
+
+export interface PricedTechnician {
+  external_technician_id: string | null;
+  technician_name: string;
   hours: number;
-  amount: number | null;
+  coded_hours: number;
+  hourly_rate: number | null;
+  burden_rate: number | null;
+  wage: number | null;
+  burden: number | null;
+  /** Coded hours only. This is what actual cost and the portfolio totals use. */
+  budget_wage: number | null;
+  budget_burden: number | null;
+  missing: string[];
+}
+
+export interface PortfolioLabor {
+  labor_hours: number;
+  labor_wage: number;
+  labor_burden: number;
+  total: number;
+  missing: string[];
+  technicians: PricedTechnician[];
   uncoded_hours: number;
   source: "timesheet" | "appointment_window" | "mixed" | null;
   observed_at: string | null;
@@ -251,6 +290,7 @@ export interface PortfolioLabor {
 
 /** `alias` is a query alias we wrote, never request input. */
 export function portfolioLaborColumns(alias = "p"): string {
+  if (!/^[a-z]+$/.test(alias)) throw new Error("Invalid labor alias.");
   return `(SELECT COALESCE(SUM(a.hours), 0) FROM projects.labor_actuals a
             WHERE a.project_id = ${alias}.id) AS labor_hours,
           (SELECT COALESCE(SUM(a.hours) FILTER (WHERE a.cost_code_id IS NULL), 0)
@@ -261,8 +301,28 @@ export function portfolioLaborColumns(alias = "p"): string {
              FROM projects.labor_actuals a WHERE a.project_id = ${alias}.id) AS labor_window_rows,
           (SELECT MAX(a.observed_at) FROM projects.labor_actuals a
             WHERE a.project_id = ${alias}.id) AS labor_observed_at,
-          (SELECT s.labor_burdened_hourly_rate FROM projects.tenant_settings s
-            WHERE s.tenant_id = ${alias}.tenant_id) AS labor_rate`;
+          (SELECT COALESCE(json_agg(json_build_object(
+              'technician_id', g.technician_id,
+              'technician_name', g.technician_name,
+              'hours', g.hours,
+              'coded_hours', g.coded_hours,
+              'hourly_rate', g.hourly_rate,
+              'burden_rate', g.burden_rate
+            )), '[]'::json)
+             FROM (
+               SELECT a.external_technician_id AS technician_id,
+                      MAX(a.technician_name) AS technician_name,
+                      SUM(a.hours) AS hours,
+                      COALESCE(SUM(a.hours) FILTER (WHERE a.cost_code_id IS NOT NULL), 0) AS coded_hours,
+                      MAX(r.hourly_rate) AS hourly_rate,
+                      MAX(r.burden_rate) AS burden_rate
+                 FROM projects.labor_actuals a
+                 LEFT JOIN projects.technician_labor_rates r
+                   ON r.tenant_id = a.tenant_id
+                  AND r.external_technician_id = a.external_technician_id
+                WHERE a.project_id = ${alias}.id
+                GROUP BY a.external_technician_id
+             ) g) AS labor_techs`;
 }
 
 export const PORTFOLIO_LABOR_KEYS = [
@@ -271,26 +331,234 @@ export const PORTFOLIO_LABOR_KEYS = [
   "labor_timesheet_rows",
   "labor_window_rows",
   "labor_observed_at",
-  "labor_rate",
+  "labor_techs",
 ] as const;
+
+export function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export function technicianLabel(name: string | null | undefined, id: string | null): string {
+  const trimmed = name?.trim();
+  if (trimmed) return trimmed;
+  return id ? `Technician ${id}` : "Technician";
+}
+
+/** A usable rate is a positive number. Null is missing. Zero is called out as zero. */
+export function rateGap(
+  kind: "hourly rate" | "burden rate",
+  name: string,
+  value: number | null,
+): string | null {
+  if (value === null || !Number.isFinite(value)) {
+    return `Missing from ServiceTitan: ${kind} for ${name}`;
+  }
+  if (value === 0) return `Missing from ServiceTitan: ${kind} is 0 for ${name}`;
+  if (value < 0) return `Missing from ServiceTitan: ${kind} for ${name}`;
+  return null;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asTechs(value: unknown): Array<Record<string, unknown>> {
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+export function priceTechnician(
+  hours: number,
+  codedHours: number,
+  hourly: number | null,
+  burden: number | null,
+  name: string,
+  technicianId: string | null,
+): PricedTechnician {
+  const missing = [
+    rateGap("hourly rate", name, hourly),
+    rateGap("burden rate", name, burden),
+  ].filter((line): line is string => line !== null);
+  const priced = missing.length === 0 && hourly !== null && burden !== null;
+  return {
+    external_technician_id: technicianId,
+    technician_name: name,
+    hours,
+    coded_hours: codedHours,
+    hourly_rate: hourly,
+    burden_rate: burden,
+    wage: priced ? roundMoney(hours * hourly) : null,
+    burden: priced ? roundMoney(hours * burden) : null,
+    budget_wage: priced ? roundMoney(codedHours * hourly) : null,
+    budget_burden: priced ? roundMoney(codedHours * burden) : null,
+    missing,
+  };
+}
+
+/** Portfolio consumers see project dollars and the missing sentences, not a person's rate. */
+export function portfolioFeedLabor(labor: PortfolioLabor): Omit<PortfolioLabor, "technicians"> {
+  const { technicians: _technicians, ...rest } = labor;
+  return rest;
+}
 
 export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLabor {
   const hours = Number(row.labor_hours ?? 0);
   const uncoded = Number(row.labor_uncoded_hours ?? 0);
   const timesheets = Number(row.labor_timesheet_rows ?? 0);
   const windows = Number(row.labor_window_rows ?? 0);
-  const rate = row.labor_rate === null || row.labor_rate === undefined ? null : Number(row.labor_rate);
   const observed = row.labor_observed_at;
   let source: PortfolioLabor["source"] = null;
   if (timesheets > 0 && windows > 0) source = "mixed";
   else if (timesheets > 0) source = "timesheet";
   else if (windows > 0) source = "appointment_window";
-  const coded = Math.max(0, hours - uncoded);
+  const technicians = asTechs(row.labor_techs)
+    .map((tech) => {
+      const id = tech.technician_id == null ? null : String(tech.technician_id);
+      const name = technicianLabel(
+        typeof tech.technician_name === "string" ? tech.technician_name : null,
+        id,
+      );
+      return priceTechnician(
+        Number(tech.hours ?? 0),
+        Number(tech.coded_hours ?? 0),
+        finiteOrNull(tech.hourly_rate),
+        finiteOrNull(tech.burden_rate),
+        name,
+        id,
+      );
+    })
+    .sort((a, b) => a.technician_name.localeCompare(b.technician_name));
+  const labor_wage = roundMoney(
+    technicians.reduce((sum, tech) => sum + (tech.budget_wage ?? 0), 0),
+  );
+  const labor_burden = roundMoney(
+    technicians.reduce((sum, tech) => sum + (tech.budget_burden ?? 0), 0),
+  );
   return {
-    hours,
+    labor_hours: hours,
+    labor_wage,
+    labor_burden,
+    total: roundMoney(labor_wage + labor_burden),
+    missing: technicians.flatMap((tech) => tech.missing),
+    technicians,
     uncoded_hours: uncoded,
-    amount: rate === null ? null : Math.round(coded * rate * 100) / 100,
     source,
     observed_at: observed instanceof Date ? observed.toISOString() : typeof observed === "string" ? observed : null,
   };
+}
+
+export async function readTechnicianDirectory(client: {
+  readTechnicians?: () => Promise<TechnicianRate[]>;
+} | null | undefined): Promise<TechnicianDirectory> {
+  if (!client?.readTechnicians) return { read: false, forbidden: false, technicians: [] };
+  try {
+    return { read: true, forbidden: false, technicians: await client.readTechnicians() };
+  } catch (err) {
+    if (err instanceof Error && /\bHTTP 403\b/.test(err.message)) {
+      return { read: true, forbidden: true, technicians: [] };
+    }
+    throw err;
+  }
+}
+
+export async function storeTechnicianRates(
+  db: SqlClient,
+  tenantId: string,
+  technicians: TechnicianRate[],
+  observedAt: Date,
+): Promise<void> {
+  const ids: string[] = [];
+  for (const tech of technicians) {
+    ids.push(tech.id);
+    await db.query(
+      `INSERT INTO projects.technician_labor_rates
+         (tenant_id, external_technician_id, technician_name, active,
+          hourly_rate, burden_rate, observed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (tenant_id, external_technician_id) DO UPDATE
+         SET technician_name = EXCLUDED.technician_name,
+             active = EXCLUDED.active,
+             hourly_rate = EXCLUDED.hourly_rate,
+             burden_rate = EXCLUDED.burden_rate,
+             observed_at = EXCLUDED.observed_at`,
+      [
+        tenantId,
+        tech.id,
+        tech.name,
+        tech.active,
+        tech.hourlyRate,
+        tech.burdenRate,
+        observedAt,
+      ],
+    );
+  }
+  await db.query(
+    `UPDATE projects.technician_labor_rates
+        SET active = false, observed_at = $3
+      WHERE tenant_id = $1
+        AND external_technician_id <> ALL($2::text[])`,
+    [tenantId, ids, observedAt],
+  );
+}
+
+export async function applyTechnicianDirectory(
+  db: SqlClient,
+  tenantId: string,
+  directory: TechnicianDirectory,
+  observedAt: Date,
+): Promise<void> {
+  if (!directory.read) return;
+  if (directory.forbidden) {
+    await markTechnicianRead(db, tenantId, true);
+    return;
+  }
+  await storeTechnicianRates(db, tenantId, directory.technicians, observedAt);
+  await markTechnicianRead(db, tenantId, false);
+}
+
+export async function markTechnicianRead(
+  db: SqlClient,
+  tenantId: string,
+  forbidden: boolean,
+): Promise<void> {
+  await db.query(
+    `UPDATE projects.tenant_settings SET labor_rates_forbidden = $2 WHERE tenant_id = $1`,
+    [tenantId, forbidden],
+  );
+}
+
+export async function listActiveRateGaps(db: SqlClient, tenantId: string): Promise<RateGap[]> {
+  const { rows } = await db.query<{
+    external_technician_id: string;
+    technician_name: string | null;
+    hourly_rate: string | null;
+    burden_rate: string | null;
+  }>(
+    `SELECT external_technician_id, technician_name, hourly_rate::text, burden_rate::text
+       FROM projects.technician_labor_rates
+      WHERE tenant_id = $1 AND active
+      ORDER BY technician_name NULLS LAST, external_technician_id`,
+    [tenantId],
+  );
+  const gaps: RateGap[] = [];
+  for (const row of rows) {
+    const hourly = finiteOrNull(row.hourly_rate);
+    const burden = finiteOrNull(row.burden_rate);
+    const name = technicianLabel(row.technician_name, row.external_technician_id);
+    const messages = [
+      rateGap("hourly rate", name, hourly),
+      rateGap("burden rate", name, burden),
+    ].filter((line): line is string => line !== null);
+    if (!messages.length) continue;
+    gaps.push({
+      external_technician_id: row.external_technician_id,
+      technician_name: name,
+      hourly_rate: hourly,
+      burden_rate: burden,
+      messages,
+    });
+  }
+  return gaps;
 }

@@ -9,6 +9,7 @@ import { requireCapability } from "../http/capabilities.js";
 import { ApiError } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { applyTechnicianDirectory } from "../domain/laborActuals.js";
 import { pmCatalog } from "../domain/pmCatalog.js";
 export function directoryRoutes(
   deps: StaffRouterDeps,
@@ -85,6 +86,22 @@ export function directoryRoutes(
         await ctx.db.query(
           "UPDATE projects.scheduling_resources SET active=false,source_observed_at=$2 WHERE source_system_id=$1",
           [c.externalSystemId, p.startedAt],
+        );
+        await applyTechnicianDirectory(
+          ctx.db,
+          ctx.staff.tenantId,
+          {
+            read: true,
+            forbidden: false,
+            technicians: technicians.map((tech) => ({
+              id: tech.id,
+              name: tech.name,
+              active: tech.active,
+              hourlyRate: tech.hourlyRate ?? null,
+              burdenRate: tech.burdenRate ?? null,
+            })),
+          },
+          new Date(p.startedAt),
         );
         for (const tech of technicians)
           await ctx.db.query(

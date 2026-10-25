@@ -56,9 +56,14 @@ describe('cost type account form', () => {
         }
         if (path === '/settings/labor') {
           return {
-            labor_burdened_hourly_rate: 65,
             labor_cost_code_id: 'code-210',
             labor_cost_code: '210',
+            rate_gaps: [
+              {
+                technician_name: 'Jordan Hale',
+                messages: ['Missing from ServiceTitan: burden rate is 0 for Jordan Hale'],
+              },
+            ],
           };
         }
         if (path === '/cost-codes') {
@@ -95,9 +100,11 @@ describe('cost type account form', () => {
     expect(html).toContain('>Subcontractors</span>');
     expect(html).toContain('id="ap-grace"');
     expect(html).toContain('Agreement grace days');
-    expect(html).toContain('Labor rate');
-    expect(html).toContain('id="labor-rate"');
-    expect(html).toContain('value="65"');
+    expect(html).toContain('>Labor</h3>');
+    expect(html).not.toContain('id="labor-rate"');
+    expect(html).not.toContain('Burdened hourly rate');
+    expect(html).toContain('id="labor-rate-gaps"');
+    expect(html).toContain('Missing from ServiceTitan: burden rate is 0 for Jordan Hale');
     expect(html).toContain('value="code-210" selected');
     expect(html).toContain('210 Interior demolition');
     expect(html).not.toContain('Cabinets');

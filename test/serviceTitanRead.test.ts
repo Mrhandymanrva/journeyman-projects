@@ -160,17 +160,39 @@ describe("read-only ServiceTitan client", () => {
   });
 });
 
-it("reads the technician directory without importing payroll/contact fields", async () => {
+it("reads technician hourly and burden rates and drops contact fields", async () => {
   const { client } = setup([
     {
       data: [
-        { id: 6, name: "Alex", active: true, hourlyRate: 55, email: "private" },
+        {
+          id: 6,
+          name: "Alex",
+          active: true,
+          hourlyRate: 40,
+          burdenRate: 12,
+          email: "private",
+          phoneNumber: "555-0100",
+        },
       ],
       hasMore: false,
     },
   ]);
+  const rows = await client.readTechnicians();
+  expect(rows).toEqual([
+    { id: "6", name: "Alex", active: true, hourlyRate: 40, burdenRate: 12 },
+  ]);
+  expect(rows[0]).not.toHaveProperty("email");
+  expect(rows[0]).not.toHaveProperty("phoneNumber");
+});
+it("keeps a missing technician rate as missing instead of inventing one", async () => {
+  const { client } = setup([
+    {
+      data: [{ id: 6, name: "Alex", active: true, hourlyRate: 0 }],
+      hasMore: false,
+    },
+  ]);
   expect(await client.readTechnicians()).toEqual([
-    { id: "6", name: "Alex", active: true },
+    { id: "6", name: "Alex", active: true, hourlyRate: 0, burdenRate: null },
   ]);
 });
 it("rejects changed appointments without a business write", async () => {

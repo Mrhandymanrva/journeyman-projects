@@ -2267,8 +2267,25 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   );
 }
 
+function laborMoney(n) {
+  return (
+    "$" +
+    Number(n).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  );
+}
 function renderLabor(row) {
-  const data = row || { hours: 0, uncoded_hours: 0, source: null, lines: [], cost_code: null };
+  const data = row || {
+    hours: 0,
+    uncoded_hours: 0,
+    source: null,
+    lines: [],
+    technicians: [],
+    missing: [],
+    cost_code: null,
+  };
   const refresh = el("labor-refresh");
   if (refresh) refresh.hidden = !can("refresh_labor");
   if (el("labortag")) {
@@ -2278,13 +2295,55 @@ function renderLabor(row) {
   }
   if (!el("labor")) return;
   const moneyLine =
-    data.amount === undefined || data.amount === null
+    data.labor_wage === undefined
       ? ""
-      : `<div class="row-m">Labor cost ${money(data.amount)}${
-          data.rate != null ? ` at ${money(data.rate)} an hour` : ""
-        }</div>`;
+      : `<div class="row-m">Wage ${laborMoney(data.labor_wage)} · Burden ${laborMoney(
+          data.labor_burden,
+        )} · Total ${laborMoney(data.total)}</div>`;
+  const techs = (data.technicians || [])
+    .map((tech) => {
+      const wage =
+        tech.wage == null
+          ? ""
+          : `<div class="row-m">Wage ${laborMoney(tech.wage)} · ${laborMoney(
+              tech.hourly_rate,
+            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician hourlyRate</div>`;
+      const burden =
+        tech.burden == null
+          ? ""
+          : `<div class="row-m">Burden ${laborMoney(tech.burden)} · ${laborMoney(
+              tech.burden_rate,
+            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician burdenRate</div>`;
+      const flags = (tech.missing || [])
+        .map((line) => `<p class="msg">${esc(line)}</p>`)
+        .join("");
+      return `<div class="row"><div class="row-b"><div class="row-t">${esc(
+        tech.technician_name || "Technician",
+      )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}${flags}</div></div>`;
+    })
+    .join("");
+  const gaps =
+    data.rate_gaps === undefined
+      ? ""
+      : `<h4>Active technicians missing a ServiceTitan rate</h4>${
+          data.rate_gaps.length
+            ? `<ul id="labor-rate-gaps">${data.rate_gaps
+                .map(
+                  (gap) =>
+                    `<li>${esc(gap.technician_name)}: ${(gap.messages || [])
+                      .map((line) => esc(line))
+                      .join(" ")}</li>`,
+                )
+                .join("")}</ul>`
+            : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`
+        }`;
   el("labor").innerHTML = `
-    <p class="note">Hours come from ServiceTitan timesheets. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan, and no wage is stored.</p>
+    <p class="note">Hours come from ServiceTitan timesheets. Wage is hours times that technician's ServiceTitan hourly rate. Burden is the same hours times that technician's burden rate, added on top. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
+    ${
+      data.rates_forbidden
+        ? `<p class="msg">The latest ServiceTitan technician read was denied. Rates from the last successful read are still used. A technician with no saved rate stays out of actual cost.</p>`
+        : ""
+    }
     <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
       ${moneyLine}
       <div class="row-m">${
@@ -2296,18 +2355,11 @@ function renderLabor(row) {
       }</div></div></div>
     ${
       Number(data.uncoded_hours) > 0
-        ? `<p class="msg"> ${Number(data.uncoded_hours).toLocaleString("en-US")} hours are uncoded. Set a labor cost code and a burdened rate before they hit the budget.</p>`
+        ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on a labor cost code, so they are not in the budget.</p>`
         : ""
     }
-    ${(data.lines || [])
-      .map(
-        (line) => `<div class="row"><div class="row-b"><div class="row-t">${esc(
-          line.technician_name || "Technician",
-        )}</div><div class="row-m">${esc(line.work_date)} · ${esc(
-          String(line.source || "").replaceAll("_", " "),
-        )}</div></div><div class="row-r">${esc(line.hours)} h</div></div>`,
-      )
-      .join("")}`;
+    ${techs}
+    ${gaps}`;
   refresh?.addEventListener("click", async () => {
     refresh.disabled = true;
     try {

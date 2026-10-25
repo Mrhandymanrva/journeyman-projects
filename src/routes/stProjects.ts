@@ -18,7 +18,15 @@ import {
 } from "./shared.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { createProject } from "./projects.js";
-import { readLaborJobs, stampLaborCodes, storeJobLabor, type LaborJobResult } from "../domain/laborActuals.js";
+import {
+  applyTechnicianDirectory,
+  readLaborJobs,
+  readTechnicianDirectory,
+  stampLaborCodes,
+  storeJobLabor,
+  type LaborJobResult,
+  type TechnicianDirectory,
+} from "../domain/laborActuals.js";
 import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
 import {
@@ -234,8 +242,9 @@ export function stProjectRoutes(
           p.c.client,
           details.jobs.map((job) => job.id),
         );
+        const directory = await readTechnicianDirectory(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, ar };
+        return { details, fieldStart, labor, directory, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
@@ -281,7 +290,7 @@ export function stProjectRoutes(
           id = created.id as string;
         }
         await applySource(ctx, id, c, result.details);
-        await storeReadLabor(ctx, id, result.labor);
+        await storeReadLabor(ctx, id, result.labor, result.directory);
         await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
         if (!p.manual) {
           await storeComputedFieldStart(ctx.db, id, result.fieldStart);
@@ -391,8 +400,9 @@ export function stProjectRoutes(
           p.c.client,
           details.jobs.map((job) => job.id),
         );
+        const directory = await readTechnicianDirectory(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, ar };
+        return { details, fieldStart, labor, directory, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
@@ -404,7 +414,7 @@ export function stProjectRoutes(
             "ServiceTitan connection changed; refresh before linking.",
           );
         await applySource(ctx, p.id, c, result.details);
-        await storeReadLabor(ctx, p.id, result.labor);
+        await storeReadLabor(ctx, p.id, result.labor, result.directory);
         await storeReadAr(
           ctx,
           p.id,
@@ -597,24 +607,27 @@ async function storeReadLabor(
   ctx: StaffContext,
   projectId: string,
   labor: LaborJobResult[] | null,
+  directory: TechnicianDirectory,
 ): Promise<void> {
-  if (!labor?.length) return;
-  const links = await ctx.db.query<{ id: string; external_job_id: string }>(
-    `SELECT id, external_job_id FROM projects.project_job_links WHERE project_id = $1`,
-    [projectId],
-  );
   const observedAt = new Date();
-  for (const result of labor) {
-    const link = links.rows.find((row) => row.external_job_id === result.jobId);
-    await storeJobLabor(ctx.db, {
-      tenantId: ctx.staff.tenantId,
-      projectId,
-      jobId: result.jobId,
-      jobLinkId: link?.id ?? null,
-      result,
-      observedAt,
-    });
+  if (labor?.length) {
+    const links = await ctx.db.query<{ id: string; external_job_id: string }>(
+      `SELECT id, external_job_id FROM projects.project_job_links WHERE project_id = $1`,
+      [projectId],
+    );
+    for (const result of labor) {
+      const link = links.rows.find((row) => row.external_job_id === result.jobId);
+      await storeJobLabor(ctx.db, {
+        tenantId: ctx.staff.tenantId,
+        projectId,
+        jobId: result.jobId,
+        jobLinkId: link?.id ?? null,
+        result,
+        observedAt,
+      });
+    }
   }
+  await applyTechnicianDirectory(ctx.db, ctx.staff.tenantId, directory, observedAt);
   await stampLaborCodes(ctx.db, ctx.staff.tenantId, projectId);
 }
 
