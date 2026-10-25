@@ -8,6 +8,7 @@ import { ApiError, notFound } from '../http/errors.js';
 import { can, requireCapability } from '../http/capabilities.js';
 import { staffExternalRoute, staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import { grossFromPercent, roundMoney } from '../domain/poMath.js';
+import { rankCardCharges } from '../domain/cardChargeMatch.js';
 import { payablesAmountBand, payablesAnchor, payablesWindow } from '../domain/payablesWindow.js';
 import { assertReadyToIssue, assertSubcontractCompliance } from '../domain/vendorCompliance.js';
 import {
@@ -735,9 +736,11 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       async (prepared) => readBridge(accounting!, prepared),
       async (ctx, prepared, result) => {
         if (!result.ok) throw bridgeRejection(prepared.action, result.message);
+        const ranked = rankCardCharges(normalizePayables(result.result), prepared.bill ?? null);
         sendData(ctx.res, {
           truncated: Boolean(result.result?.truncated),
-          transactions: rankPayables(normalizePayables(result.result), prepared.bill ?? null),
+          transactions: ranked.transactions,
+          suggestions: ranked.suggestions,
         });
       },
     ),
@@ -1359,50 +1362,3 @@ function normalizePayables(result: any) {
   return [...take('Bill', 'bills'), ...take('Purchase', 'purchases')];
 }
 
-interface PayableCandidate {
-  id: string | null;
-  txn_type: 'Bill' | 'Purchase';
-  doc_number: string | null;
-  total: number;
-  balance: number | null;
-  txn_date: string | null;
-  vendor_name: string | null;
-}
-
-function namesMatch(left: string | null, right: string | null): boolean {
-  const a = (left ?? '').trim().toLowerCase();
-  const b = (right ?? '').trim().toLowerCase();
-  if (!a || !b) return false;
-  return a.includes(b) || b.includes(a);
-}
-
-function daysApart(left: string | null, right: string | null): number {
-  if (!left || !right) return 365;
-  const a = Date.parse(left);
-  const b = Date.parse(right);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 365;
-  return Math.abs(a - b) / 86_400_000;
-}
-
-function rankPayables(
-  transactions: PayableCandidate[],
-  bill: { amount: number; invoiceDate: string | null; vendor: string | null } | null,
-) {
-  const scored = transactions.map((txn) => {
-    const variance = bill ? roundMoney(Number(txn.total) - bill.amount) : null;
-    const amountDelta = variance == null ? Number.POSITIVE_INFINITY : Math.abs(variance);
-    return {
-      ...txn,
-      variance,
-      amount_delta: bill ? amountDelta : null,
-      vendor_match: bill ? namesMatch(bill.vendor, txn.vendor_name) : false,
-      day_delta: bill ? daysApart(bill.invoiceDate, txn.txn_date) : null,
-    };
-  });
-  scored.sort((a, b) => {
-    if (a.vendor_match !== b.vendor_match) return a.vendor_match ? -1 : 1;
-    if (a.amount_delta !== b.amount_delta) return (a.amount_delta ?? 0) - (b.amount_delta ?? 0);
-    return (a.day_delta ?? 0) - (b.day_delta ?? 0);
-  });
-  return scored.map((txn, index) => ({ ...txn, suggested: index === 0 && bill != null && txn.id != null }));
-}

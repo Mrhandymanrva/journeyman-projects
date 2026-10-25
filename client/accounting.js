@@ -1,3 +1,5 @@
+import { rankCardCharges } from "./cardChargeMatch.js";
+
 export function createAccounting({
   api,
   el,
@@ -22,6 +24,7 @@ export function createAccounting({
       .join("");
   const error = (e) =>
     window.alert(e.message || "The request could not be completed.");
+  let suggestGeneration = 0;
   async function render() {
     const project = current();
     if (!project) return;
@@ -32,13 +35,14 @@ export function createAccounting({
     ]);
     if (current()?.id !== project.id) return;
     const canReclassify = can("issue_purchase_order") || can("approve_vendor_bill");
+    const generation = ++suggestGeneration;
     const bills = data.bills,
       live = bills.filter((b) => b.status !== "rejected"),
       received = live.filter((b) => b.status === "received" && b.po_kind !== "material"),
       materialOpen = live.filter((b) => b.status === "received" && b.po_kind === "material"),
       confirmed = live.filter((b) => b.qbo_id);
     el("project-payables").innerHTML =
-      `<div class="card"><div class="card-h"><div><h2>Vendor bills & payments</h2><p>Enter invoices, compare them with contracted work, approve them here, and pay in QuickBooks.</p></div><button class="btn" id="ap-reload">Refresh</button></div><div class="card-b"><div class="two"><p><strong>${money(live.reduce((s, b) => s + Number(b.amount), 0))}</strong> billed · <strong>${money(received.reduce((s, b) => s + Number(b.amount), 0))}</strong> awaiting approval</p><p><strong>${confirmed.length ? money(confirmed.reduce((s, b) => s + Number(b.qbo_balance ?? b.amount), 0)) : "Not yet synced"}</strong> remaining in QBO <small>(last recorded balances; payments and credits are managed there)</small></p></div><p class="note">${catalog.connected ? "Connected to the existing QuickBooks service. Approved subcontract bills are queued for their full amount." : "QuickBooks connector is not configured, so card charges cannot be looked up yet. Material orders still show as awaiting card charge and stay on the project cost."} ${materialOpen.length ? money(materialOpen.reduce((s, b) => s + Number(b.amount), 0)) + " awaiting card charge. That cost is on the project and is not in the approval queue." : ""}</p>${can("approve_vendor_bill") ? `<div class="actions"><button class="btn" id="ap-catalog">Refresh QuickBooks lists</button><button class="btn" id="ap-vendors">Vendor setup & W-9 review</button></div><label>QuickBooks customer / job for this project<select id="ap-customer"><option value="">No QBO customer mapping — project recorded in bill description</option>${options(catalog.customers || [], data.qbo_customer_id)}</select></label><button class="btn sm" id="ap-map">Save customer mapping</button>` : ""}<div class="actions">${can("issue_purchase_order") ? '<button class="btn primary" id="ap-material">Enter material order</button><button class="btn" id="ap-add">Enter vendor invoice</button>' : ""}</div>${canReclassify ? `<p class="note">A material bill that is already in QuickBooks is linked, not approved. Linking records the existing Bill or Purchase and does not queue a new one.</p>` : ""}<div class="sub-table"><table><thead><tr><th>Invoice / vendor</th><th>Contract & billed</th><th>Amount / due</th><th>Approval & QBO</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${bills.map((b) => `<tr><td><strong>${esc(b.vendor_invoice_number)}</strong><small>${esc(b.vendor)}</small><small>${esc(b.po_number)} · ${esc(b.po_kind || "subcontract")}</small></td><td>${money(b.contracted)} contracted<small>${money(b.billed_to_date)} billed${b.po_kind === "material" ? "" : Number(b.billed_to_date) > Number(b.contracted) ? " · OVER CONTRACT" : ""}</small></td><td>${money(b.amount)}<small>Due ${date(b.due_date)}</small>${Number(b.retention_held) ? `<small>${money(b.retention_held)} held, not approved for payment</small>` : ""}</td><td>${awaitingCard(b) ? "Awaiting card charge" : b.status === "paid" ? "Settled in QBO" : esc(b.status)}<small>${awaitingCard(b) ? "Recorded on the project. Nothing is sent to QuickBooks." : (esc(b.sync_state || "Not sent") + (b.qbo_id ? " · QBO #" + esc(b.qbo_id) : ""))}</small><small>${esc(b.sync_message || "")}</small><small>${esc(b.qbo_message || "")}</small></td><td>${b.qbo_id ? money(b.qbo_balance) : "—"}<small>${b.qbo_checked_at ? "Checked " + date(b.qbo_checked_at) : ""}</small></td><td>${(b.status === "received" || (b.status === "approved" && !b.sync_state)) && can("approve_vendor_bill") ? `${b.po_kind === "material" ? "" : `<button class="btn sm" type="button" data-ap-approve="${b.id}">Review & approve</button>`}<button class="btn sm danger" type="button" data-ap-reject="${b.id}">Reject</button>` : ""}${can("approve_vendor_bill") && ["failed", "uncertain"].includes(b.sync_state) ? `<button class="btn sm" data-ap-sync="${b.id}">${b.sync_state === "uncertain" ? "Check QBO receipt" : "Retry sync"}</button>` : ""}${b.qbo_id && can("approve_vendor_bill") ? `<button class="btn sm" data-ap-sync="${b.id}">Refresh balance</button>` : ""}${b.po_kind === "material" && b.status === "received" && can("link_material_purchase") ? `<button class="btn sm" type="button" data-ap-link="${b.id}">Link QuickBooks transaction</button>` : ""}${canReclassify && b.po_kind !== "material" && b.status !== "paid" ? `<button class="btn sm" data-ap-material="${b.po_id}">Mark as material purchase</button>` : ""}${canReclassify && b.status !== "rejected" ? `<button class="btn sm" data-ap-move="${b.po_id}">Move to another project</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="6">No vendor bills for this project yet.</td></tr>'}</tbody></table></div></div></div>`;
+      `<div class="card"><div class="card-h"><div><h2>Vendor bills & payments</h2><p>Enter invoices, compare them with contracted work, approve them here, and pay in QuickBooks.</p></div><button class="btn" id="ap-reload">Refresh</button></div><div class="card-b"><div class="two"><p><strong>${money(live.reduce((s, b) => s + Number(b.amount), 0))}</strong> billed · <strong>${money(received.reduce((s, b) => s + Number(b.amount), 0))}</strong> awaiting approval</p><p><strong>${confirmed.length ? money(confirmed.reduce((s, b) => s + Number(b.qbo_balance ?? b.amount), 0)) : "Not yet synced"}</strong> remaining in QBO <small>(last recorded balances; payments and credits are managed there)</small></p></div><p class="note">${catalog.connected ? "Connected to the existing QuickBooks service. Approved subcontract bills are queued for their full amount." : "QuickBooks connector is not configured, so card charges cannot be looked up yet. Material orders still show as awaiting card charge and stay on the project cost."} ${materialOpen.length ? money(materialOpen.reduce((s, b) => s + Number(b.amount), 0)) + " awaiting card charge. That cost is on the project and is not in the approval queue." : ""}</p>${can("approve_vendor_bill") ? `<div class="actions"><button class="btn" id="ap-catalog">Refresh QuickBooks lists</button><button class="btn" id="ap-vendors">Vendor setup & W-9 review</button></div><label>QuickBooks customer / job for this project<select id="ap-customer"><option value="">No QBO customer mapping — project recorded in bill description</option>${options(catalog.customers || [], data.qbo_customer_id)}</select></label><button class="btn sm" id="ap-map">Save customer mapping</button>` : ""}<div class="actions">${can("issue_purchase_order") ? '<button class="btn primary" id="ap-material">Enter material order</button><button class="btn" id="ap-add">Enter vendor invoice</button>' : ""}</div>${canReclassify ? `<p class="note">A material bill that is already in QuickBooks is linked, not approved. Linking records the existing Bill or Purchase and does not queue a new one.</p>` : ""}<div class="sub-table"><table><thead><tr><th>Invoice / vendor</th><th>Contract & billed</th><th>Amount / due</th><th>Approval & QBO</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${bills.map((b) => `<tr><td><strong>${esc(b.vendor_invoice_number)}</strong><small>${esc(b.vendor)}</small><small>${esc(b.po_number)} · ${esc(b.po_kind || "subcontract")}</small></td><td>${money(b.contracted)} contracted<small>${money(b.billed_to_date)} billed${b.po_kind === "material" ? "" : Number(b.billed_to_date) > Number(b.contracted) ? " · OVER CONTRACT" : ""}</small></td><td>${money(b.amount)}<small>Due ${date(b.due_date)}</small>${Number(b.retention_held) ? `<small>${money(b.retention_held)} held, not approved for payment</small>` : ""}</td><td>${awaitingCard(b) ? "Awaiting card charge" : b.status === "paid" ? "Settled in QBO" : esc(b.status)}<small>${awaitingCard(b) ? "Recorded on the project. Nothing is sent to QuickBooks." : (esc(b.sync_state || "Not sent") + (b.qbo_id ? " · QBO #" + esc(b.qbo_id) : ""))}</small>${awaitingCard(b) ? `<small class="ap-suggest" id="ap-suggest-${esc(b.id)}"></small>` : ""}<small>${esc(b.sync_message || "")}</small><small>${esc(b.qbo_message || "")}</small></td><td>${b.qbo_id ? money(b.qbo_balance) : "—"}<small>${b.qbo_checked_at ? "Checked " + date(b.qbo_checked_at) : ""}</small></td><td>${(b.status === "received" || (b.status === "approved" && !b.sync_state)) && can("approve_vendor_bill") ? `${b.po_kind === "material" ? "" : `<button class="btn sm" type="button" data-ap-approve="${b.id}">Review & approve</button>`}<button class="btn sm danger" type="button" data-ap-reject="${b.id}">Reject</button>` : ""}${can("approve_vendor_bill") && ["failed", "uncertain"].includes(b.sync_state) ? `<button class="btn sm" data-ap-sync="${b.id}">${b.sync_state === "uncertain" ? "Check QBO receipt" : "Retry sync"}</button>` : ""}${b.qbo_id && can("approve_vendor_bill") ? `<button class="btn sm" data-ap-sync="${b.id}">Refresh balance</button>` : ""}${b.po_kind === "material" && b.status === "received" && can("link_material_purchase") ? `<button class="btn sm" type="button" data-ap-link="${b.id}">Link QuickBooks transaction</button>` : ""}${canReclassify && b.po_kind !== "material" && b.status !== "paid" ? `<button class="btn sm" data-ap-material="${b.po_id}">Mark as material purchase</button>` : ""}${canReclassify && b.status !== "rejected" ? `<button class="btn sm" data-ap-move="${b.po_id}">Move to another project</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="6">No vendor bills for this project yet.</td></tr>'}</tbody></table></div></div></div>`;
     el("ap-reload").onclick = () => render().catch(error);
     if (el("ap-catalog"))
       el("ap-catalog").onclick = async () => {
@@ -142,6 +146,52 @@ export function createAccounting({
             }
           }),
       );
+    if (catalog.connected && can("link_material_purchase")) {
+      const awaiting = bills.filter((b) => awaitingCard(b));
+      await Promise.all(
+        awaiting.map(async (bill) => {
+          const slot = el(`ap-suggest-${bill.id}`);
+          if (!slot) return;
+          try {
+            const found = await api(
+              `/purchase-orders/${bill.po_id}/qbo-candidates?bill_id=${encodeURIComponent(bill.id)}`,
+            );
+            if (generation !== suggestGeneration) return;
+            const suggestions = Array.isArray(found?.suggestions)
+              ? found.suggestions.filter((txn) => txn && txn.id && txn.suggested !== false)
+              : rankCardCharges(found?.transactions || [], billAnchor(bill)).suggestions;
+            const current = el(`ap-suggest-${bill.id}`);
+            if (!current || generation !== suggestGeneration) return;
+            current.textContent = suggestions.length
+              ? `Suggested card charge${suggestions.length === 1 ? "" : "s"}: ${suggestions
+                  .map(suggestionLabel)
+                  .join("; ")}. Use Link QuickBooks transaction to attach one.`
+              : "No suggested card charges. Use Link QuickBooks transaction to look one up.";
+          } catch {
+            const current = el(`ap-suggest-${bill.id}`);
+            if (current && generation === suggestGeneration) current.textContent = "";
+          }
+        }),
+      );
+    }
+  }
+  function billAnchor(bill) {
+    return {
+      amount: Number(bill.amount),
+      invoiceDate: bill.invoice_date || bill.due_date || null,
+      vendor: bill.vendor || null,
+    };
+  }
+  function suggestionLabel(txn) {
+    return [
+      txn.txn_type,
+      txn.doc_number || txn.id,
+      money(txn.total),
+      txn.txn_date || "",
+      txn.vendor_name || "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
   }
   function awaitingCard(b) {
     if (b.card_charge_state === "awaiting_card_charge") return true;
@@ -407,32 +457,10 @@ export function createAccounting({
       },
     );
   }
-  function round2(n) {
-    return Math.round(Number(n) * 100) / 100;
-  }
   function varianceText(variance) {
     if (!Number.isFinite(variance) || Math.abs(variance) <= 0.005) return "matches the order";
     const sign = variance > 0 ? "+" : "−";
     return `${sign}${money(Math.abs(variance))} variance (tax, shipping, or price)`;
-  }
-  function rankCharges(txns, bill) {
-    const vendor = String(bill.vendor || "").toLowerCase();
-    const billDate = Date.parse(String(bill.invoice_date || bill.due_date || ""));
-    const scored = txns.map((txn) => {
-      const total = Number(txn.total);
-      const variance = Number.isFinite(Number(txn.variance)) ? Number(txn.variance) : round2(total - Number(bill.amount));
-      const txnDate = Date.parse(String(txn.txn_date || ""));
-      const dayDelta = Number.isFinite(billDate) && Number.isFinite(txnDate) ? Math.abs(txnDate - billDate) / 86400000 : 365;
-      const txnVendor = String(txn.vendor_name || "").toLowerCase();
-      const vendorMatch = Boolean(vendor && txnVendor && (vendor.includes(txnVendor) || txnVendor.includes(vendor)));
-      return { txn, variance, amountDelta: Math.abs(variance), dayDelta, vendorMatch };
-    });
-    scored.sort((a, b) => {
-      if (a.vendorMatch !== b.vendorMatch) return a.vendorMatch ? -1 : 1;
-      if (a.amountDelta !== b.amountDelta) return a.amountDelta - b.amountDelta;
-      return a.dayDelta - b.dayDelta;
-    });
-    return scored;
   }
   function linkBlockReason(bill) {
     if (!bill?.po_id)
@@ -487,15 +515,18 @@ export function createAccounting({
         body.innerHTML = `${truncatedNote}<button class="btn primary" id="ap-link-save" type="button" disabled>Link and do not send again</button>`;
         return;
       }
-      showLinkMessage("A difference for tax or shipping can be linked. The project keeps the order amount, and the variance is shown.");
-      const ranked = rankCharges(txns, bill);
-      const options = ranked
+      showLinkMessage("A difference for tax or shipping can be linked. The project keeps the order amount, and the variance is shown. Nothing is linked until you choose Link.");
+      const ranked = rankCardCharges(txns, billAnchor(bill));
+      const options = ranked.transactions
         .map(
-          (item, index) =>
-            `<option value="${esc(item.txn.txn_type)}:${esc(item.txn.id)}">${index === 0 ? "Suggested · " : ""}${esc(item.txn.txn_type)} ${esc(item.txn.doc_number || item.txn.id)} · ${money(item.txn.total)} · ${esc(item.txn.txn_date || "")}${item.txn.vendor_name ? " · " + esc(item.txn.vendor_name) : ""} · ${esc(varianceText(item.variance))}</option>`,
+          (item) =>
+            `<option value="${esc(item.txn_type)}:${esc(item.id)}">${item.suggested ? "Suggested · " : ""}${esc(item.txn_type)} ${esc(item.doc_number || item.id)} · ${money(item.total)} · ${esc(item.txn_date || "")}${item.vendor_name ? " · " + esc(item.vendor_name) : ""} · ${esc(varianceText(item.variance))}</option>`,
         )
         .join("");
-      body.innerHTML = `${truncatedNote}<label>Transaction<select id="ap-txn">${options}</select></label><button class="btn primary" id="ap-link-save" type="button">Link and do not send again</button>`;
+      const none = ranked.suggestions.length
+        ? ""
+        : `<p id="ap-no-suggestions">No suggested card charges. You can still choose a transaction and link it.</p>`;
+      body.innerHTML = `${truncatedNote}${none}<label>Transaction<select id="ap-txn">${options}</select></label><button class="btn primary" id="ap-link-save" type="button">Link and do not send again</button>`;
       el("ap-link-save").onclick = async () => {
         const select = el("ap-txn");
         const value = select?.value || "";
