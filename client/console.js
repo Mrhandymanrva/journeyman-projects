@@ -274,6 +274,7 @@ function filterProjects() {
           esc(project.id) +
           '">' +
           esc(project.project_number + " — " + project.name) +
+          budgetMark(project) +
           "</option>",
       )
       .join("");
@@ -385,7 +386,8 @@ function render(d) {
     "ServiceTitan is the official project record repository. Publish PM document revisions to ST; saved drafts stay in this workspace.";
 
   renderStats(p, d.margin, d.cost);
-  renderNotice(d.budget, d.drawData);
+  renderBudgetFlag(p);
+  renderNotice(d.budget, d.drawData, p);
   renderStageBar(p, p.gates);
   renderGates(p.gates);
   renderBudget(d.cost, d.budget);
@@ -394,7 +396,7 @@ function render(d) {
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
-  renderBlockers(d.exceptions, d.schedule, d.drawData);
+  renderBlockers(d.exceptions, d.schedule, d.drawData, d.cost, p);
   renderPermits(d.permits);
   renderDraws(d.drawData);
   workspace.render(d);
@@ -417,6 +419,55 @@ function dayLine(p) {
   if (!Number.isFinite(day) || !Number.isFinite(total) || total <= 0)
     return null;
   return `Day ${day} of ${total}`;
+}
+
+function budgetMark(project) {
+  if (project?.budget_alert === "over_budget") return " — Over budget";
+  if (project?.budget_alert === "warning") return " — Budget warning";
+  return "";
+}
+
+function formatPct(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return "—";
+  const rounded = Math.round(n * 10) / 10;
+  return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + "%";
+}
+
+function budgetFlagCopy(alert, pct) {
+  const shown = formatPct(pct);
+  if (alert === "over_budget") {
+    return {
+      className: "tag bad",
+      bannerClass: "banner",
+      title: "Over budget",
+      detail: `Actual cost is ${shown} of budget.`,
+    };
+  }
+  if (alert === "warning") {
+    return {
+      className: "tag warn",
+      bannerClass: "banner warn",
+      title: "Budget warning",
+      detail: `Actual cost has reached ${shown} of budget.`,
+    };
+  }
+  return null;
+}
+
+function renderBudgetFlag(detail) {
+  const flag = el("budget-flag");
+  if (!flag) return;
+  const copy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (!copy) {
+    flag.hidden = true;
+    flag.textContent = "";
+    flag.className = "tag";
+    return;
+  }
+  flag.hidden = false;
+  flag.className = copy.className;
+  flag.textContent = `${copy.title} · ${formatPct(detail.actual_to_budget_pct)} of budget`;
 }
 
 function renderStats(p, margin, cost) {
@@ -447,8 +498,14 @@ function renderStats(p, margin, cost) {
     <div class="stat"><span class="lbl">Projected margin</span>${marginCell}</div>`;
 }
 
-function renderNotice(budget, drawData) {
+function renderNotice(budget, drawData, detail) {
   const notices = [];
+  const budgetCopy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (budgetCopy) {
+    notices.push(
+      `<div class="${budgetCopy.bannerClass}"><b>${esc(budgetCopy.title)}</b>${esc(budgetCopy.detail)}</div>`,
+    );
+  }
   if (budget.baseline_frozen) {
     notices.push(
       `<div class="banner warn"><b>Budget baseline frozen</b>Gate ${budget.frozen_by_gate} was approved, so budget lines are locked. Changes after the freeze belong on a change order.</div>`,
@@ -542,9 +599,16 @@ function renderBudget(cost, budget) {
       const comW = (Math.max(0, within - Math.min(a, b)) / S) * 100;
       const ovrW = (over / S) * 100;
       const cls = v < 0 ? "over" : tot > 0 && v > 0 ? "und" : "";
+      const lineFlag =
+        r.budget_alert === "warning"
+          ? `<span class="tag warn">Budget warning · ${esc(formatPct(r.actual_to_budget_pct))} of budget</span>`
+          : r.budget_alert === "over_budget"
+            ? `<span class="tag bad">Over budget · ${esc(formatPct(r.actual_to_budget_pct))} of budget</span>`
+            : "";
       return `<div class="brow ${editable ? "editable" : ""}" data-code="${esc(r.cost_code)}">
       <div class="btop">
         <div class="bname"><span class="c">${esc(r.cost_code)}</span>${esc(r.description)}
+          ${lineFlag}
           ${editable ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
@@ -631,8 +695,29 @@ const shortDate = (d) => (d ? String(d).slice(5).replace("-", "/") : "");
 const monthYear = (d) =>
   d ? `${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : "";
 
-function renderBlockers(exceptions, schedule, drawData) {
+function renderBlockers(exceptions, schedule, drawData, cost, detail) {
   const rows = [];
+  const projectCopy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (projectCopy) {
+    rows.push({
+      s: detail.budget_alert === "over_budget" ? "bad" : "warn",
+      t: projectCopy.title,
+      m: projectCopy.detail,
+      r: formatPct(detail.actual_to_budget_pct),
+      rc: detail.budget_alert === "over_budget" ? "bad" : "warn",
+    });
+  }
+  for (const line of cost ?? []) {
+    if (line.budget_alert !== "warning" && line.budget_alert !== "over_budget") continue;
+    const over = line.budget_alert === "over_budget";
+    rows.push({
+      s: over ? "bad" : "warn",
+      t: `Cost code ${line.cost_code} ${over ? "over budget" : "at budget warning"}`,
+      m: `${line.description} · actual cost is ${formatPct(line.actual_to_budget_pct)} of budget`,
+      r: formatPct(line.actual_to_budget_pct),
+      rc: over ? "bad" : "warn",
+    });
+  }
 
   for (const s of schedule) {
     if (s.vendor_id && s.vendor_schedulable === false) {
