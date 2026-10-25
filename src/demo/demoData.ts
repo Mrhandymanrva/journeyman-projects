@@ -72,11 +72,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       { key: 'punch', label: 'Punch list walked with the customer' },
       { key: 'inspections', label: 'All inspections passed' },
     ],
-    4: [
-      { key: 'warranty', label: 'Warranty documents issued' },
-      { key: 'final_clean', label: 'Final clean complete' },
-      { key: 'retention', label: 'Retention released to trade partners' },
-    ],
+    4: [...GATE_CHECKLISTS[4]!],
   };
   await db.withTenant(TENANT_ID, async (c) => {
     for (const [gate, items] of Object.entries(CHECKLISTS)) {

@@ -23,18 +23,28 @@ export const GATE_2_CHECKLIST = [
   { key: "site_ready", label: "site access confirmed" },
 ] as const;
 
+export const GATE_4_CHECKLIST = [
+  { key: "punch_list", label: "punch list complete" },
+  { key: "final_photos", label: "final photos filed" },
+  { key: "final_draw_invoice", label: "final draw invoice recorded" },
+  { key: "warranty_start", label: "warranty start date set" },
+  { key: "review_request", label: "review request recorded" },
+] as const;
+
 export const GATE_CHECKLISTS: Record<
   number,
   ReadonlyArray<{ key: string; label: string }>
 > = {
   1: GATE_1_CHECKLIST,
   2: GATE_2_CHECKLIST,
+  4: GATE_4_CHECKLIST,
 };
 
 /** Keys the screen can hint. site_ready is manual and stays false. */
 export const HINTED_GATE_KEYS = [
   ...GATE_1_CHECKLIST.map((item) => item.key),
   ...GATE_2_CHECKLIST.map((item) => item.key),
+  ...GATE_4_CHECKLIST.map((item) => item.key),
 ] as const;
 
 export type GateReadiness = Record<(typeof HINTED_GATE_KEYS)[number], boolean>;
@@ -130,8 +140,25 @@ export async function gateReadiness(
        EXISTS (
          SELECT 1 FROM projects.purchase_orders po
           WHERE po.project_id = p.id AND po.kind = 'material'
-       ) AS materials_ordered
+       ) AS materials_ordered,
+       (c.punch_done_at IS NOT NULL) AS punch_list,
+       (c.photos_done_at IS NOT NULL) AS final_photos,
+       (
+         NULLIF(btrim(c.final_draw_invoice_number), '') IS NOT NULL
+         OR EXISTS (
+           SELECT 1 FROM projects.draws d
+            WHERE d.project_id = p.id
+              AND d.is_retainage
+              AND (
+                NULLIF(btrim(d.external_invoice_number), '') IS NOT NULL
+                OR d.external_invoice_verified_at IS NOT NULL
+              )
+         )
+       ) AS final_draw_invoice,
+       (c.warranty_start_on IS NOT NULL) AS warranty_start,
+       (NULLIF(btrim(c.review_request_note), '') IS NOT NULL) AS review_request
      FROM projects.projects p
+     LEFT JOIN projects.project_closeout c ON c.project_id = p.id
     WHERE p.id = $1`,
     [projectId],
   );
@@ -151,6 +178,11 @@ export async function gateReadiness(
     subs_compliant: flag("subs_compliant"),
     materials_ordered: flag("materials_ordered"),
     site_ready: false,
+    punch_list: flag("punch_list"),
+    final_photos: flag("final_photos"),
+    final_draw_invoice: flag("final_draw_invoice"),
+    warranty_start: flag("warranty_start"),
+    review_request: flag("review_request"),
   };
 }
 

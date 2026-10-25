@@ -35,6 +35,11 @@ export const CAPABILITIES = {
   record_external_invoice: ['owner', 'manager', 'office'],
   send_change_order: ['owner', 'manager', 'project_manager'],
   approve_change_order_over_threshold: ['owner', 'manager'],
+  // Customer amount and cost lines. The coordinator can still describe the
+  // change, record that it was entered in ServiceTitan, and record the signature.
+  price_change_order: ['owner', 'manager'],
+  record_change_order_entered: ['owner', 'manager', 'project_manager'],
+  record_change_order_signed: ['owner', 'manager', 'project_manager'],
   manage_vendors: ['owner', 'manager', 'office'],
   write_daily_log: ['owner', 'manager', 'project_manager'],
   view_margin: ['owner', 'manager', 'project_manager', 'estimator', 'bookkeeper'],

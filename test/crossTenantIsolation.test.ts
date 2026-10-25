@@ -855,6 +855,29 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/change-orders/${f.changeOrderId}/reject`,
     body: () => ({}),
   },
+  {
+    method: "post",
+    template: `${BASE}/change-orders/:id/entered`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/entered`,
+    body: () => ({ st_estimate_number: "E-1044" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/change-orders/:id/signed`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/signed`,
+    body: () => ({ note: "Signed on site" }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/closeout`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/closeout`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout`,
+    body: () => ({ punch_done: true }),
+  },
 
   // --- phase 4: draws -----------------------------------------------------
   {
