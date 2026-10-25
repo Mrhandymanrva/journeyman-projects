@@ -17,7 +17,33 @@ export function fieldReleaseHtml(input: {
   esc: (value: unknown) => string;
   items?: unknown;
   showItems?: boolean;
+  fieldStart?: {
+    date?: string | null;
+    source?: "servicetitan" | "manual" | null;
+    observed_at?: string | null;
+  } | null;
 }): string;
+
+export function fieldStartHtml(input: {
+  fieldStart?: {
+    date?: string | null;
+    source?: string | null;
+    observed_at?: string | null;
+  } | null;
+  canRefresh: boolean;
+  canOverride: boolean;
+  esc: (value: unknown) => string;
+  compact?: boolean;
+}): string;
+
+export function bindFieldStart(
+  root: { querySelector: (selector: string) => any } | null | undefined,
+  handlers: {
+    onRefresh: () => Promise<unknown> | unknown;
+    onOverride: (date: string | null) => Promise<unknown> | unknown;
+    onError?: (err: { message?: string }) => void;
+  },
+): void;
 
 export function bindFieldRelease(
   root: { querySelector: (selector: string) => any } | null | undefined,

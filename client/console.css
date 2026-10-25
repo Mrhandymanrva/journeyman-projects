@@ -386,6 +386,16 @@ body{
 .field-release-status,.field-release-current-note{font-size:12.5px;margin:4px 0 8px}
 .field-release-msg{font-size:11.5px;color:var(--red);font-weight:600;margin:8px 0 0}
 .field-release-msg:empty{display:none}
+.field-start{padding:4px 16px 16px;border-top:1px solid var(--rule-soft)}
+.field-start .lbl{display:block;margin:10px 0 4px}
+.field-start-status{margin:0 0 6px;font-weight:650}
+.field-start .note{color:var(--muted);font-size:12.5px;margin:0 0 8px}
+.field-start label{display:grid;gap:4px;font-size:12px;color:var(--muted)}
+.field-start input{font:inherit;padding:8px;border:1px solid var(--rule);border-radius:6px;background:#fff;color:var(--ink)}
+.field-start-override{display:flex;flex-wrap:wrap;gap:8px;align-items:end}
+.field-start-msg{color:var(--red);font-size:12px;font-weight:650;margin:8px 0 0}
+.field-start-msg:empty{display:none}
+.field-start-line{margin:8px 0 0;font-size:12.5px}
 .drawer-b .field-release{flex:none;border-top:1px solid var(--rule-soft);padding:12px 0 0;background:transparent;margin-bottom:12px}
 @media (max-width:940px){
   .field-release-grid{grid-template-columns:1fr}
