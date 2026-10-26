@@ -1,8 +1,8 @@
 {
-  "name": "Command Center",
-  "short_name": "Command Center",
-  "description": "Mr. Handyman of Richmond employee portal",
-  "start_url": "/portal",
+  "name": "Journeyman Projects",
+  "short_name": "Projects",
+  "description": "Project console",
+  "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#141e2c",

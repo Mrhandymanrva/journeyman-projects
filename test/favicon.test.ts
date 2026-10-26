@@ -13,7 +13,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDir = path.resolve(here, "../client");
 
 /** SHA-256 of the Command Center files copied into client/. */
-const ICONS: Record<string, { file: string; type: string; sha256: string }> = {
+const ICONS: Record<string, { file: string; type: string; sha256?: string }> = {
   "/favicon.svg": {
     file: "favicon.svg",
     type: "image/svg+xml",
@@ -42,7 +42,6 @@ const ICONS: Record<string, { file: string; type: string; sha256: string }> = {
   "/manifest.webmanifest": {
     file: "manifest.webmanifest",
     type: "application/manifest+json",
-    sha256: "4a547c3b1897311404c0f51c3657f97e2d8e37bbef802f01ea6ae6514396ba22",
   },
 };
 
@@ -120,14 +119,28 @@ describe("Command Center favicon", () => {
 
     for (const [route, icon] of Object.entries(ICONS)) {
       const onDisk = readFileSync(path.join(clientDir, icon.file));
-      expect(sha256(onDisk)).toBe(icon.sha256);
+      if (icon.sha256) expect(sha256(onDisk)).toBe(icon.sha256);
 
       const res = await app.get(route).buffer(true).parse(readBody);
       expect(res.status, route).toBe(200);
       expect(res.type, route).toBe(icon.type);
       const body = res.body as Buffer;
       expect(Buffer.isBuffer(body), route).toBe(true);
-      expect(sha256(body), route).toBe(icon.sha256);
+      expect(sha256(body), route).toBe(icon.sha256 ?? sha256(onDisk));
+      if (route === "/manifest.webmanifest") {
+        expect(JSON.parse(body.toString("utf8"))).toMatchObject({
+          name: "Journeyman Projects",
+          short_name: "Projects",
+          start_url: "/",
+          background_color: "#141e2c",
+          theme_color: "#141e2c",
+          icons: [
+            { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+            { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+            { src: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+          ],
+        });
+      }
 
       const authed = await app
         .get(route)
@@ -135,7 +148,7 @@ describe("Command Center favicon", () => {
         .buffer(true)
         .parse(readBody);
       expect(authed.status, route).toBe(200);
-      expect(sha256(authed.body as Buffer), route).toBe(icon.sha256);
+      expect(sha256(authed.body as Buffer), route).toBe(icon.sha256 ?? sha256(onDisk));
     }
   });
 });
