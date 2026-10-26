@@ -587,6 +587,8 @@ export async function markTechnicianRead(
   );
 }
 
+/** Active rows with a missing or zero ServiceTitan hourly or burden rate. */
+// TODO: Exclude non-technicians from this list. Mason, Office Notes, Project Requirements, and Subcontractor must be excluded.
 export async function listActiveRateGaps(db: SqlClient, tenantId: string): Promise<RateGap[]> {
   const { rows } = await db.query<{
     external_technician_id: string;

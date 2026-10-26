@@ -368,6 +368,7 @@ export function createAccounting({
     const error = labor.st_labor_code_error
       ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
       : "";
+    // TODO: Exclude non-technicians from this list. Mason, Office Notes, Project Requirements, and Subcontractor must be excluded.
     const gaps = labor.rate_gaps || [];
     const gapList = gaps.length
       ? `<ul id="labor-rate-gaps">${gaps
