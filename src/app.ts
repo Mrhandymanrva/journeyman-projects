@@ -76,6 +76,8 @@ export interface AppOptions {
   };
   /** Sign in with Command Center (client id, secret, tenant). Absent means no /sso routes and no button. */
   sso?: SsoConfig;
+  /** Setting names that kept SSO off. Reported by /api/v1/auth/config. Never values. */
+  ssoConfigIssue?: string[];
   /** Serve the console from client/. Off in tests. */
   serveConsole?: boolean;
 }
@@ -112,8 +114,19 @@ export function createApp(opts: AppOptions): Express {
   app.use(express.json({ limit: "2mb" }));
   app.use("/api/v1/bid-response", bidResponseRoutes(opts.database));
 
-  app.get('/api/v1/auth/config', (_req,res) => {
-    res.set('Cache-Control','no-store').json({data:{devLoginEnabled: Boolean(opts.devLogin?.enabled && opts.devLogin.nodeEnv !== 'production'), ssoEnabled: Boolean(opts.sso), ssoStart: opts.sso ? '/sso/start' : null}});
+  app.get('/api/v1/auth/config', (_req, res) => {
+    const data: {
+      devLoginEnabled: boolean;
+      ssoEnabled: boolean;
+      ssoStart: string | null;
+      ssoConfigIssue?: string[];
+    } = {
+      devLoginEnabled: Boolean(opts.devLogin?.enabled && opts.devLogin.nodeEnv !== 'production'),
+      ssoEnabled: Boolean(opts.sso),
+      ssoStart: opts.sso ? '/sso/start' : null,
+    };
+    if (opts.ssoConfigIssue?.length) data.ssoConfigIssue = opts.ssoConfigIssue;
+    res.set('Cache-Control', 'no-store').json({ data });
   });
   const sessions = new PasswordSessions(opts.database, opts.staffSessions);
   const deps = { database: opts.database, sessions };
