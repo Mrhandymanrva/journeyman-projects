@@ -58,7 +58,8 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/045_labor_refresh_scheduled.sql"),
   path.join(repoRoot, "db/046_st_labor_code.sql"),
   path.join(repoRoot, "db/047_unbudgeted_labor.sql"),
-  path.join(repoRoot, "db/048_csr_handoff.sql"),
+  path.join(repoRoot, "db/048_pricebook_labor_code.sql"),
+  path.join(repoRoot, "db/049_csr_handoff.sql"),
 ];
 
 export interface TenantFixture {
@@ -284,7 +285,7 @@ export function estimatePayload(
         },
         {
           code: "1110",
-          description: "Tile â€” material",
+          description: "Tile — material",
           quantity: 220,
           unit: "sf",
           cost_type: "M",
@@ -307,7 +308,7 @@ export function estimatePayload(
 export function projectBody(overrides: Record<string, unknown> = {}) {
   return {
     project_number: `MHR-2026-${Math.floor(Math.random() * 9000 + 1000)}`,
-    name: "Whitfield â€” Primary Bath",
+    name: "Whitfield — Primary Bath",
     address_line1: "4412 Grove Avenue",
     city: "Richmond",
     region: "VA",

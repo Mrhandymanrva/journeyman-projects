@@ -27,12 +27,11 @@ import { today } from '../domain/projectControls.js';
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
 
-/** The one labor type the fake ServiceTitan client returns. Not a setting. */
-export const DEMO_ST_LABOR_TYPE = {
-  id: '9001',
-  name: 'Field labor',
-  code: 'ST-LAB',
-  serviceCodeId: '7001',
+/** The one pricebook service the fake ServiceTitan client returns. Not a setting. */
+export const DEMO_ST_LABOR_SERVICE = {
+  id: '91025',
+  code: 'MHM.25PLFE',
+  name: 'Project Labor From Estimate',
   active: true,
 };
 
@@ -139,6 +138,15 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     }
 
     const costCodes = new Map<string, string>();
+    await c.query(
+      `INSERT INTO projects.cost_codes
+         (tenant_id, code, division_code, division_name, description,
+          default_cost_type, sort_order, active, external_source, external_id)
+       VALUES ($1, 'MHM.25PLFE', 'ST', 'ServiceTitan', 'Project Labor From Estimate',
+               'L'::projects.cost_type, 0, true, 'servicetitan_pricebook_service', '91025')
+       ON CONFLICT (tenant_id, code) DO NOTHING`,
+      [TENANT_ID],
+    );
     const codeRows = await c.query<{ id: string; code: string }>(
       `SELECT id, code FROM projects.cost_codes WHERE tenant_id = $1`,
       [TENANT_ID],
@@ -405,6 +413,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     { code: '1030', budget: 1850, billed: 0, committed: 1850 },
     { code: '1210', budget: 1400, billed: 0, committed: 1400 },
     { code: '1410', budget: 800, billed: 0, committed: 0 },
+    { code: 'MHM.25PLFE', budget: 4800, billed: 0, committed: 0 },
   ];
 
   const whitfield = await buildProject({
@@ -620,16 +629,8 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   log('precon: Whitfield checklist, with materials overdue and subs due today');
 
   await db.withTenant(TENANT_ID, async (c) => {
-    const mirrored = await c.query<{ id: string }>(
-      `INSERT INTO projects.cost_codes
-         (tenant_id, code, division_code, division_name, description,
-          default_cost_type, sort_order, active, external_source, external_id)
-       VALUES ($1, $2, 'ST', 'ServiceTitan', $3, 'L'::projects.cost_type, 0, true,
-               'servicetitan_labor_type', $4)
-       RETURNING id`,
-      [TENANT_ID, DEMO_ST_LABOR_TYPE.code, DEMO_ST_LABOR_TYPE.name, DEMO_ST_LABOR_TYPE.id],
-    );
-    const laborCode = mirrored.rows[0]!.id;
+    const laborCode = ids.costCodes.get('MHM.25PLFE');
+    if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
     await c.query(
       `INSERT INTO projects.technician_labor_rates
          (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
