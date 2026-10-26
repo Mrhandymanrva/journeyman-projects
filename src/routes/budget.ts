@@ -200,7 +200,7 @@ export function budgetRoutes(deps: StaffRouterDeps): Router {
       );
 
       // Division order, as in GET /cost-position — see the note there.
-      // The left join keeps the Unbudgeted labor row, which has no cost code.
+      // The left join keeps the Unbudgeted labor row. That row carries its cost code.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
                 v.baseline, v.budget_amount, v.actual_cost, v.committed_open,

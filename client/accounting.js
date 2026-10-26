@@ -362,9 +362,9 @@ export function createAccounting({
   }
   function laborSettingsCard(labor) {
     const code = labor.st_labor_code;
-    const codeLine = code
-      ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(code.code)} ${esc(code.name)}`
-      : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+    const codeLine = !code
+      ? "Labor code: unavailable"
+      : `Labor code: ${esc(code.code)} ${esc(code.name)}`;
     const error = labor.st_labor_code_error
       ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
       : "";
@@ -377,7 +377,7 @@ export function createAccounting({
           )
           .join("")}</ul>`
       : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`;
-    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. The labor code is the one active labor type in ServiceTitan. It is not chosen here. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. The labor code is ServiceTitan pricebook service MHM.25PLFE. It is not chosen here. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(

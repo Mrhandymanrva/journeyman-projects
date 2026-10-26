@@ -436,45 +436,46 @@ describe("job timesheets", () => {
   });
 });
 
-describe("labor types", () => {
-  const laborType = (id: number, code: string) => ({
+describe("pricebook labor service", () => {
+  const service = (id: number, code: string, active: boolean) => ({
     id,
-    name: "Field labor",
     code,
-    serviceCodeId: 7,
-    active: true,
-    createdOn: "2026-01-01T00:00:00Z",
-    modifiedOn: "2026-01-02T00:00:00Z",
+    displayName: "Project Labor From Estimate",
+    active,
+    description: "must not be kept",
     hourlyRate: 40,
   });
 
-  it("pages labor types with GET and keeps the documented fields", async () => {
+  it("reads MHM.25PLFE with GET and keeps the documented fields", async () => {
     const { client, fetcher } = setup([
-      { data: [laborType(1, "ST-LAB")], hasMore: true },
-      { data: [laborType(2, "ST-SHOP")], hasMore: false },
+      { data: [service(1, "MHM.25PLFE", true)], hasMore: true },
+      { data: [service(2, "mhm.25plfe", false)], hasMore: false },
     ]);
-    const read = await client.readLaborTypes();
-    expect(read.forbidden).toBe(false);
-    expect(read.laborTypes).toEqual([
-      { id: "1", name: "Field labor", code: "ST-LAB", serviceCodeId: "7", active: true },
-      { id: "2", name: "Field labor", code: "ST-SHOP", serviceCodeId: "7", active: true },
+    const read = await client.readLaborService();
+    expect(read.services).toEqual([
+      { id: "1", code: "MHM.25PLFE", name: "Project Labor From Estimate", active: true },
+      { id: "2", code: "mhm.25plfe", name: "Project Labor From Estimate", active: false },
     ]);
-    expect(read.laborTypes[0]).not.toHaveProperty("hourlyRate");
-    const calls = fetcher.mock.calls.filter((call) => String(call[0]).includes("/labor-types"));
+    expect(read.services[0]).not.toHaveProperty("hourlyRate");
+    expect(read.services[0]).not.toHaveProperty("description");
+    const calls = fetcher.mock.calls.filter((call) => String(call[0]).includes("/services"));
     expect(calls).toHaveLength(2);
     expect(calls.every((call) => call[1]?.method === "GET")).toBe(true);
-    expect(String(calls[0]?.[0])).toContain("/payroll/v2/tenant/10/labor-types");
-    expect(String(calls[0]?.[0])).toContain("active=True");
+    expect(String(calls[0]?.[0])).toContain("/pricebook/v2/tenant/10/services");
+    expect(String(calls[0]?.[0])).toContain("code=MHM.25PLFE");
+    expect(String(calls[0]?.[0])).toContain("active=Any");
     expect(String(calls[0]?.[0])).toContain("pageSize=50");
     expect(String(calls[1]?.[0])).toContain("page=2");
-    expect(fetcher.mock.calls.some((call) => call[1]?.method && call[1].method !== "GET" && call[1].method !== "POST")).toBe(
-      false,
-    );
+    expect(
+      fetcher.mock.calls.some(
+        (call) => call[1]?.method && call[1].method !== "GET" && call[1].method !== "POST",
+      ),
+    ).toBe(false);
   });
 
-  it("returns forbidden on a labor-types 403 instead of throwing", async () => {
+  it("throws on a pricebook 403", async () => {
     const { client } = setup([json({ secret: "must not escape" }, 403)]);
-    await expect(client.readLaborTypes()).resolves.toEqual({ forbidden: true, laborTypes: [] });
+    await expect(client.readLaborService()).rejects.toThrow(/HTTP 403/);
   });
 });
 

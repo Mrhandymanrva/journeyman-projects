@@ -1,0 +1,190 @@
+/* Home uses the console tokens (--paper, --card, --ink, --muted, --rule,
+   --blue, --green, --red, --orange). A theme that redefines those variables
+   restyles this page with the rest of the console. */
+
+.home {
+  padding-top: 8px;
+}
+.home-heading {
+  margin-bottom: 18px;
+}
+.home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 20px;
+  align-items: start;
+}
+.home-side {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.home-card-h {
+  align-items: flex-start;
+}
+.home-card-h h2 {
+  margin: 0;
+}
+.home-count {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.home-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: end;
+  margin-left: auto;
+}
+.home-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.home-filters select,
+.home-filters input[type="search"] {
+  font: inherit;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 7px 8px;
+  min-width: 0;
+}
+.home-search-label input {
+  width: 220px;
+}
+.home-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.home-table-wrap {
+  overflow-x: auto;
+  padding-top: 6px;
+}
+.home-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.home-table th,
+.home-table td {
+  text-align: left;
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+.home-table thead th {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+.home-row {
+  cursor: pointer;
+}
+.home-row:hover,
+.home-row:focus-visible {
+  background: var(--paper);
+}
+.home-row a {
+  color: var(--ink);
+  font-weight: 700;
+  display: block;
+}
+.home-row small,
+.due-row .due-type {
+  display: block;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+}
+.health-band {
+  display: inline-block;
+  border-radius: 20px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.health-green {
+  color: var(--green);
+  background: #e5f4ec;
+  background: color-mix(in srgb, var(--green) 14%, var(--card));
+}
+.health-yellow {
+  color: var(--orange);
+  background: #fff4e8;
+  background: color-mix(in srgb, var(--orange) 16%, var(--card));
+}
+.health-red {
+  color: var(--red);
+  background: #fdecec;
+  background: color-mix(in srgb, var(--red) 14%, var(--card));
+}
+.due-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) auto;
+  gap: 2px 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink);
+  text-decoration: none;
+}
+.due-row:last-child {
+  border-bottom: 0;
+}
+.due-row:hover {
+  text-decoration: none;
+}
+.due-title {
+  font-weight: 700;
+}
+.due-project,
+.due-date,
+.due-owner {
+  color: var(--muted);
+  font-size: 12px;
+}
+.due-flag {
+  justify-self: end;
+  align-self: start;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--blue);
+}
+.due-row.overdue .due-flag,
+.due-row.overdue .due-date {
+  color: var(--red);
+}
+.home-empty {
+  margin: 0;
+  color: var(--muted);
+}
+.home-handoff-slot {
+  min-height: 0;
+}
+@media (max-width: 1100px) {
+  .home-layout {
+    grid-template-columns: 1fr;
+  }
+  .home-filters {
+    margin-left: 0;
+  }
+  .home-search-label input {
+    width: min(220px, 70vw);
+  }
+}

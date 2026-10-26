@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 
 const sourceId = z
   .union([z.string().regex(/^\d+$/), z.number().int().nonnegative().safe()])
@@ -171,7 +172,16 @@ export class ServiceTitanReadAdapter {
     }
   }
   private async get(
-    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll" | "accounting" | "sales",
+    family:
+      | "jpm"
+      | "dispatch"
+      | "settings"
+      | "crm"
+      | "forms"
+      | "payroll"
+      | "accounting"
+      | "sales"
+      | "pricebook",
     resource: string,
     query?: URLSearchParams,
   ) {
@@ -1054,72 +1064,62 @@ export class ServiceTitanReadAdapter {
   }
 
   /**
-   * Payroll labor types. GET only. A 403 is returned as forbidden so hours
-   * can stay uncoded. The caller keeps a type only when exactly one is active.
+   * Pricebook service MHM.25PLFE. GET only. Inactive rows are returned so the
+   * caller can tell a missing service from an inactive one. HTTP errors,
+   * including 403, throw. Nothing is written to ServiceTitan.
    */
-  async readLaborTypes(): Promise<{
-    forbidden: boolean;
-    laborTypes: Array<{
+  async readLaborService(): Promise<{
+    services: Array<{
       id: string;
-      name: string | null;
       code: string | null;
-      serviceCodeId: string | null;
+      name: string | null;
       active: boolean;
     }>;
   }> {
-    const laborTypeSchema = z
+    const serviceSchema = z
       .object({
         id: sourceId,
-        name: z.string().nullish(),
         code: z.string().nullish(),
-        serviceCodeId: sourceId.nullish(),
+        displayName: z.string().nullish(),
         active: z.boolean(),
       })
       .strip();
-    try {
-      const rows: Array<z.infer<typeof laborTypeSchema>> = [];
-      for (let page = 1; page <= 100; page++) {
-        const raw = await this.get(
-          "payroll",
-          "labor-types",
-          new URLSearchParams({
-            active: "True",
-            page: String(page),
-            pageSize: "50",
-          }),
-        );
-        const parsed = z
-          .object({ data: z.array(laborTypeSchema), hasMore: z.boolean() })
-          .safeParse(raw);
-        if (!parsed.success) {
-          throw new ServiceTitanReadError("Unexpected ServiceTitan labor-types response.");
-        }
-        rows.push(...parsed.data.data);
-        if (!parsed.data.hasMore) {
-          if (new Set(rows.map((row) => row.id)).size !== rows.length) {
-            throw new ServiceTitanReadError("Duplicate ServiceTitan labor type ids.");
-          }
-          return {
-            forbidden: false,
-            laborTypes: rows.map((row) => ({
-              id: row.id,
-              name: row.name ?? null,
-              code: row.code ?? null,
-              serviceCodeId: row.serviceCodeId ?? null,
-              active: row.active,
-            })),
-          };
-        }
-      }
-      throw new ServiceTitanReadError(
-        "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
+    const rows: Array<z.infer<typeof serviceSchema>> = [];
+    for (let page = 1; page <= 100; page++) {
+      const raw = await this.get(
+        "pricebook",
+        "services",
+        new URLSearchParams({
+          code: LABOR_SERVICE_CODE,
+          active: "Any",
+          page: String(page),
+          pageSize: "50",
+        }),
       );
-    } catch (err) {
-      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
-        return { forbidden: true, laborTypes: [] };
+      const parsed = z
+        .object({ data: z.array(serviceSchema), hasMore: z.boolean() })
+        .safeParse(raw);
+      if (!parsed.success) {
+        throw new ServiceTitanReadError("Unexpected ServiceTitan pricebook services response.");
       }
-      throw err;
+      rows.push(...parsed.data.data);
+      if (!parsed.data.hasMore) {
+        if (new Set(rows.map((row) => row.id)).size !== rows.length) {
+          throw new ServiceTitanReadError("Duplicate ServiceTitan pricebook service ids.");
+        }
+        return {
+          services: rows.map((row) => ({
+            id: row.id,
+            code: row.code?.trim() ? row.code.trim() : null,
+            name: row.displayName?.trim() ? row.displayName.trim() : null,
+            active: row.active,
+          })),
+        };
+      }
     }
+    throw new ServiceTitanReadError(
+      "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
+    );
   }
 
   /**

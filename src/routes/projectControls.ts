@@ -11,7 +11,9 @@ import { ApiError, notFound } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseBody, parseUuidParam } from "./shared.js";
 import {
+  attachControlRollups,
   controlData,
+  preserveDerivedControlFields,
   today,
   leafTasks,
   validateTaskGraph,
@@ -185,7 +187,7 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
         throw new ApiError("validation_failed", (e as Error).message);
       }
     }
-    if (["task", "milestone"].includes(row.kind)) {
+    if (row.kind === "task") {
       if (b.state === "complete") {
         b.completed_on ??= today();
         if (
@@ -221,7 +223,11 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
             )
           ).rows
         : [];
-      sendData(ctx.res, { records: rows, baseline, history });
+      sendData(ctx.res, {
+        records: attachControlRollups(rows, today()),
+        baseline,
+        history,
+      });
     }),
   );
   r.post(
@@ -233,7 +239,11 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
         ctx.req.body,
       );
       write(ctx, b.kind);
-      const data = parseBody(controlData[b.kind], b.data);
+      const data = preserveDerivedControlFields(
+        b.kind,
+        parseBody(controlData[b.kind], b.data),
+        null,
+      );
       const row: ControlRecord = {
         id: randomUUID(),
         kind: b.kind,
@@ -296,7 +306,11 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
           "conflict",
           "This record changed. Reload it before saving.",
         );
-      const data = parseBody(controlData[old.kind], b.data);
+      const data = preserveDerivedControlFields(
+        old.kind,
+        parseBody(controlData[old.kind], b.data),
+        old.data,
+      );
       const updated = {
         ...old,
         data,

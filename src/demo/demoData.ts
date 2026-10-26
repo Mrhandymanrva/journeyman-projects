@@ -21,16 +21,17 @@ import { activateModule, writePlatformRows } from '../db/activation.js';
 import { storeProjectAr } from '../domain/arMatch.js';
 import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
+import { seedPreconTasks } from '../domain/preconTasks.js';
+import { today } from '../domain/projectControls.js';
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
 
-/** The one labor type the fake ServiceTitan client returns. Not a setting. */
-export const DEMO_ST_LABOR_TYPE = {
-  id: '9001',
-  name: 'Field labor',
-  code: 'ST-LAB',
-  serviceCodeId: '7001',
+/** The one pricebook service the fake ServiceTitan client returns. Not a setting. */
+export const DEMO_ST_LABOR_SERVICE = {
+  id: '91025',
+  code: 'MHM.25PLFE',
+  name: 'Project Labor From Estimate',
   active: true,
 };
 
@@ -137,6 +138,15 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     }
 
     const costCodes = new Map<string, string>();
+    await c.query(
+      `INSERT INTO projects.cost_codes
+         (tenant_id, code, division_code, division_name, description,
+          default_cost_type, sort_order, active, external_source, external_id)
+       VALUES ($1, 'MHM.25PLFE', 'ST', 'ServiceTitan', 'Project Labor From Estimate',
+               'L'::projects.cost_type, 0, true, 'servicetitan_pricebook_service', '91025')
+       ON CONFLICT (tenant_id, code) DO NOTHING`,
+      [TENANT_ID],
+    );
     const codeRows = await c.query<{ id: string; code: string }>(
       `SELECT id, code FROM projects.cost_codes WHERE tenant_id = $1`,
       [TENANT_ID],
@@ -274,6 +284,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: number;
     lengthDays: number;
     budget: BudgetSpec[];
+    customer?: string;
   }) {
     return db.withTenant(TENANT_ID, async (c) => {
       const { rows } = await c.query<{ id: string }>(
@@ -304,6 +315,12 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
         ],
       );
       const projectId = rows[0]!.id;
+      if (spec.customer) {
+        await c.query(
+          `UPDATE projects.projects SET source_customer_name = $2 WHERE id = $1`,
+          [projectId, spec.customer],
+        );
+      }
 
       await c.query(
         `INSERT INTO projects.stage_gates (tenant_id, project_id, gate_number, title, checklist)
@@ -396,6 +413,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     { code: '1030', budget: 1850, billed: 0, committed: 1850 },
     { code: '1210', budget: 1400, billed: 0, committed: 1400 },
     { code: '1410', budget: 800, billed: 0, committed: 0 },
+    { code: 'MHM.25PLFE', budget: 4800, billed: 0, committed: 0 },
   ];
 
   const whitfield = await buildProject({
@@ -413,6 +431,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 19,
     lengthDays: 24,
     budget: whitfieldBudget,
+    customer: 'Ada Whitfield',
   });
   await spendAgainst(whitfield, 'PO-W', [
     ...whitfieldBudget.map((b) => ({
@@ -464,17 +483,154 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
 
+  // Goals and milestones whose stored status is deliberately stale. The plan
+  // screen calculates over those values: milestone status from linked tasks,
+  // goal percent from milestones that are done.
   await db.withTenant(TENANT_ID, async (c) => {
-    const mirrored = await c.query<{ id: string }>(
-      `INSERT INTO projects.cost_codes
-         (tenant_id, code, division_code, division_name, description,
-          default_cost_type, sort_order, active, external_source, external_id)
-       VALUES ($1, $2, 'ST', 'ServiceTitan', $3, 'L'::projects.cost_type, 0, true,
-               'servicetitan_labor_type', $4)
-       RETURNING id`,
-      [TENANT_ID, DEMO_ST_LABOR_TYPE.code, DEMO_ST_LABOR_TYPE.name, DEMO_ST_LABOR_TYPE.id],
+    const asOf = today();
+    const on = (days: number) => {
+      const date = new Date(asOf + 'T12:00:00Z');
+      date.setUTCDate(date.getUTCDate() + days);
+      return date.toISOString().slice(0, 10);
+    };
+    const insert = async (kind: string, data: Record<string, unknown>) => {
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+         VALUES ($1,$2,$3,$4::jsonb) RETURNING id`,
+        [TENANT_ID, whitfield, kind, JSON.stringify(data)],
+      );
+      return rows[0]!.id;
+    };
+    const bath = await insert('goal', {
+      title: 'Finish the primary bath',
+      description: 'The room is ready for the customer to use.',
+      owner_id: ids.staff.pm,
+      due_on: on(21),
+      state: 'complete',
+      key_results: [
+        { name: 'Open punch items', start: 12, target: 0, current: 4, unit: 'items' },
+      ],
+    });
+    const signoff = await insert('goal', {
+      title: 'Homeowner sign-off',
+      description: 'The customer has walked the finished room.',
+      owner_id: ids.staff.pm,
+      due_on: on(24),
+      state: 'in_progress',
+      key_results: [],
+    });
+    const milestone = async (
+      title: string,
+      goalId: string,
+      due: string,
+      criteria: string,
+      stored: string,
+    ) =>
+      insert('milestone', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        due_on: due,
+        state: stored,
+        completed_on: null,
+        goal_id: goalId,
+        success_criteria: criteria,
+      });
+    const work = async (
+      title: string,
+      milestoneId: string,
+      start: string,
+      due: string,
+      state: string,
+      order: number,
+    ) =>
+      insert('task', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        start_on: start,
+        due_on: due,
+        completed_on: state === 'complete' ? on(-1) : null,
+        state,
+        parent_id: null,
+        dependency_ids: [],
+        milestone_id: milestoneId,
+        resource_id: null,
+        job_link_id: null,
+        sort_order: order,
+      });
+    const demo = await milestone(
+      'Demo and protection',
+      bath,
+      on(-2),
+      'Room is protected and the old fixtures are out.',
+      'not_started',
     );
-    const laborCode = mirrored.rows[0]!.id;
+    await work('Protect floors and remove the vanity', demo, on(-12), on(-6), 'complete', 1);
+    await work('Haul debris', demo, on(-8), on(-4), 'complete', 2);
+    const tile = await milestone(
+      'Tile and fixtures',
+      bath,
+      on(5),
+      'Walls are tiled and the new fixtures are set.',
+      'complete',
+    );
+    await work('Set wall tile', tile, on(-2), on(4), 'complete', 1);
+    await work('Set the vanity and toilet', tile, on(1), on(6), 'in_progress', 2);
+    const inspection = await milestone(
+      'Final inspection',
+      bath,
+      on(3),
+      'The inspector has signed the bath.',
+      'in_progress',
+    );
+    await work('Schedule the inspection', inspection, on(-10), on(-4), 'in_progress', 1);
+    await work('Close the punch list', inspection, on(-1), on(4), 'not_started', 2);
+    const selections = await milestone(
+      'Material selections',
+      signoff,
+      on(8),
+      'The customer has approved the remaining finishes.',
+      'not_started',
+    );
+    await work('Confirm the faucet finish', selections, on(-1), on(6), 'blocked', 1);
+    await milestone(
+      'Weekly check-in',
+      signoff,
+      on(10),
+      'A walkthrough is on the calendar. No tasks are linked yet.',
+      'complete',
+    );
+  });
+  log('project controls: Whitfield goals and milestones roll up from tasks');
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    const start = (
+      await c.query<{ scheduled_start: string | null }>(
+        `SELECT scheduled_start::text AS scheduled_start FROM projects.projects WHERE id = $1`,
+        [whitfield],
+      )
+    ).rows[0]?.scheduled_start ?? null;
+    await seedPreconTasks(c, TENANT_ID, whitfield, start);
+    const asOf = today();
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date - 1
+        WHERE project_id = $1 AND title = 'Materials ordered'`,
+      [whitfield, asOf],
+    );
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date
+        WHERE project_id = $1 AND title = 'Subs booked'`,
+      [whitfield, asOf],
+    );
+  });
+  log('precon: Whitfield checklist, with materials overdue and subs due today');
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    const laborCode = ids.costCodes.get('MHM.25PLFE');
+    if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
     await c.query(
       `INSERT INTO projects.technician_labor_rates
          (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
@@ -597,6 +753,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 15,
     lengthDays: 60,
     budget: okonkwoBudget,
+    customer: 'Chidi Okonkwo',
   });
   await spendAgainst(
     okonkwo,
@@ -669,6 +826,7 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
     startedDaysAgo: 31,
     lengthDays: 38,
     budget: delaneyBudget,
+    customer: 'Pat Delaney',
   });
   await spendAgainst(
     delaney,
