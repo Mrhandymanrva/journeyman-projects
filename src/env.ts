@@ -6,8 +6,18 @@ export interface Env {
   devLogin: boolean;
   /** Shared secret every dev sign-in must present. Required when devLogin is on. */
   devLoginToken: string;
-  /** Sign in with Command Center; absent when CC_SSO_* is not set. */
+  /**
+   * Sign in with Command Center. Absent when CC_SSO_* is unset, or when the
+   * values are incomplete or not a usable http(s) URL. Those cases leave SSO
+   * off instead of refusing to boot.
+   */
   sso?: { url: string; clientId: string; clientSecret: string; tenantId: string };
+  /**
+   * Why Sign in with Command Center was left off. Setting names only, never
+   * values (`CC_SSO_CLIENT_SECRET missing`). Absent when SSO is unconfigured
+   * or valid.
+   */
+  ssoConfigIssue?: string[];
   /**
    * Optional webhook for an unhandled 500. Absent when ALERT_WEBHOOK_URL is
    * unset or blank. Nothing is sent in that case.
@@ -36,6 +46,41 @@ export class MissingConfigError extends Error {
     super(message);
     this.name = 'MissingConfigError';
   }
+}
+
+/** http(s) with a host. A bad CC_SSO_URL must not be treated as configured. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Partial or invalid Command Center settings used to refuse to boot. A typo
+ * now logs one warning (names only, never values) and leaves SSO off.
+ */
+function commandCenterSso(source: NodeJS.ProcessEnv): { sso?: Env['sso']; ssoConfigIssue?: string[] } {
+  const ccUrl = (source.CC_SSO_URL ?? '').trim().replace(/\/$/, '');
+  const ccClientId = (source.CC_SSO_CLIENT_ID ?? '').trim();
+  const ccClientSecret = (source.CC_SSO_CLIENT_SECRET ?? '').trim();
+  const ssoTenantId = (source.SSO_TENANT_ID ?? source.PM_PORTFOLIO_TENANT_ID ?? '').trim();
+  if (!ccUrl && !ccClientId && !ccClientSecret) return {};
+
+  const issues: string[] = [];
+  if (!ccUrl) issues.push('CC_SSO_URL missing');
+  else if (!isHttpUrl(ccUrl)) issues.push('CC_SSO_URL invalid');
+  if (!ccClientId) issues.push('CC_SSO_CLIENT_ID missing');
+  if (!ccClientSecret) issues.push('CC_SSO_CLIENT_SECRET missing');
+  if (!ssoTenantId) issues.push('SSO_TENANT_ID or PM_PORTFOLIO_TENANT_ID missing');
+  if (issues.length === 0) {
+    return { sso: { url: ccUrl, clientId: ccClientId, clientSecret: ccClientSecret, tenantId: ssoTenantId } };
+  }
+
+  console.warn(`Sign in with Command Center is off: ${issues.join(', ')}. Regular login is unchanged.`);
+  return { ssoConfigIssue: issues };
 }
 
 export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
@@ -76,13 +121,7 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const devLoginToken = source.DEV_LOGIN_TOKEN ?? '';
   // Sign in with Command Center: this deployment is a registered client there (Settings → Connected apps gives the three values);
   // the people it signs in belong to the portfolio tenant unless SSO_TENANT_ID says otherwise.
-  const ccUrl = (source.CC_SSO_URL ?? '').trim().replace(/\/$/, '');
-  const ccClientId = (source.CC_SSO_CLIENT_ID ?? '').trim();
-  const ccClientSecret = (source.CC_SSO_CLIENT_SECRET ?? '').trim();
-  const ssoTenantId = (source.SSO_TENANT_ID ?? source.PM_PORTFOLIO_TENANT_ID ?? '').trim();
-  const ssoOn = Boolean(ccUrl || ccClientId || ccClientSecret);
-  if (ssoOn && !(ccUrl && ccClientId && ccClientSecret)) throw new MissingConfigError('Sign in with Command Center needs all three of CC_SSO_URL, CC_SSO_CLIENT_ID and CC_SSO_CLIENT_SECRET.', 'Register this deployment in Command Center under Settings → Connected apps and copy the three values here.');
-  if (ssoOn && !ssoTenantId) throw new MissingConfigError('CC_SSO_* is set but no tenant is named.', 'Set SSO_TENANT_ID (or PM_PORTFOLIO_TENANT_ID) to the tenant Command Center users belong to.');
+  const { sso, ssoConfigIssue } = commandCenterSso(source);
 
   if (devLogin && !devLoginToken) {
     throw new MissingConfigError(
@@ -107,7 +146,8 @@ export function readEnv(source: NodeJS.ProcessEnv = process.env): Env {
     nodeEnv,
     devLogin,
     devLoginToken,
-    sso: ssoOn ? { url: ccUrl, clientId: ccClientId, clientSecret: ccClientSecret, tenantId: ssoTenantId } : undefined,
+    sso,
+    ...(ssoConfigIssue ? { ssoConfigIssue } : {}),
     alertWebhookUrl: alertWebhookUrl(source),
   };
 }

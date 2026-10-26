@@ -109,6 +109,7 @@ const app = createApp({
   sources,
   portfolio,
   sso: env.sso,
+  ssoConfigIssue: env.ssoConfigIssue,
   devLogin: {
     enabled: env.devLogin,
     sessions: staffSessions,
