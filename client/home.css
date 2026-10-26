@@ -120,17 +120,14 @@
 }
 .health-green {
   color: var(--green);
-  background: #e5f4ec;
   background: color-mix(in srgb, var(--green) 14%, var(--card));
 }
 .health-yellow {
   color: var(--orange);
-  background: #fff4e8;
   background: color-mix(in srgb, var(--orange) 16%, var(--card));
 }
 .health-red {
   color: var(--red);
-  background: #fdecec;
   background: color-mix(in srgb, var(--red) 14%, var(--card));
 }
 .due-row {
