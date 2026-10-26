@@ -2,10 +2,12 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import supertest from "supertest";
 import type { SourceConnections } from "../src/adapters/sourceConnections.js";
+import { readSourceConnections } from "../src/adapters/sourceConnections.js";
 import { createApp } from "../src/app.js";
 import { MemoryStaffSessions } from "../src/http/memoryStaffSessions.js";
 import {
   LABOR_REFRESH_LOCK_KEY,
+  laborRefreshTenantId,
   runHourlyLaborRefresh,
   startLaborRefreshScheduler,
 } from "../src/workers/laborRefresh.js";
@@ -198,7 +200,7 @@ describe("hourly labor refresh", () => {
     const owner = h.as(tenant.staff.owner!.token);
     const ok = await owner.get(`/api/v1/projects/projects/${ids.get("A-100")}/labor`);
     expect(ok.status).toBe(200);
-    expect(ok.body.data.source).toBe("auto-hourly");
+    expect(ok.body.data.source).toBe("scheduled");
     expect(ok.body.data.hours_source).toBe("timesheet");
     expect(ok.body.data.observed_at).toBe(WHEN);
     expect(ok.body.data.hours).toBe(2);
@@ -234,7 +236,7 @@ describe("hourly labor refresh", () => {
       (feed.body.data.projects as Array<{ project_number: string; labor: Record<string, unknown> }>)
         .find((project) => project.project_number === number)?.labor;
     expect(laborOf("A-100")).toMatchObject({
-      source: "auto-hourly",
+      source: "scheduled",
       hours_source: "timesheet",
       observed_at: WHEN,
       labor_hours: 2,
@@ -250,13 +252,13 @@ describe("hourly labor refresh", () => {
       now: () => new Date("2026-01-01T00:00:00.000Z"),
       tryLock: async () => null,
     });
-    expect(report).toEqual({ skipped: "locked", refreshed: [], failed: [] });
+    expect(report).toEqual({ skipped: "locked", projects: 0, refreshed: [], failed: [] });
     expect(jobsSeen).toHaveLength(before);
     const row = await h.as(tenant.staff.owner!.token).get(
       `/api/v1/projects/projects/${ids.get("A-100")}/labor`,
     );
     expect(row.body.data.observed_at).toBe(WHEN);
-    expect(row.body.data.source).toBe("auto-hourly");
+    expect(row.body.data.source).toBe("scheduled");
   });
 
   it("keeps the Refresh hours button on manual", async () => {
@@ -283,4 +285,263 @@ describe("hourly labor refresh", () => {
       spy.mockRestore();
     }
   });
+
+  it("schedules the first run 15 seconds after boot", () => {
+    const spy = vi.spyOn(global, "setTimeout");
+    let timer: ReturnType<typeof setInterval> | undefined;
+    try {
+      timer = startLaborRefreshScheduler(h.db, { serviceTitan: connection }, { env: {} });
+      expect(timer).toBeDefined();
+      expect(spy.mock.calls.map((call) => call[1])).toContain(15_000);
+    } finally {
+      for (const result of spy.mock.results) {
+        const handle = result.value as ReturnType<typeof setTimeout> | undefined;
+        if (handle) clearTimeout(handle);
+      }
+      if (timer) clearInterval(timer);
+      spy.mockRestore();
+    }
+  });
 });
+
+const PORTFOLIO_TENANT = "11111111-1111-4111-8111-111111111111";
+const CONNECTOR_TENANT = "22222222-2222-4222-8222-222222222222";
+
+describe("labor refresh tenant", () => {
+  it("uses the sign-in tenant, not the ServiceTitan connector tenant", () => {
+    expect(
+      laborRefreshTenantId(
+        {
+          SSO_TENANT_ID: PORTFOLIO_TENANT,
+          PM_PORTFOLIO_TENANT_ID: CONNECTOR_TENANT,
+          PM_ST_TENANT_ID: CONNECTOR_TENANT,
+        },
+        CONNECTOR_TENANT,
+      ),
+    ).toBe(PORTFOLIO_TENANT);
+    expect(
+      laborRefreshTenantId(
+        { PM_PORTFOLIO_TENANT_ID: PORTFOLIO_TENANT, PM_ST_TENANT_ID: CONNECTOR_TENANT },
+        CONNECTOR_TENANT,
+      ),
+    ).toBe(PORTFOLIO_TENANT);
+    expect(laborRefreshTenantId({ PM_ST_TENANT_ID: CONNECTOR_TENANT }, CONNECTOR_TENANT)).toBe(
+      CONNECTOR_TENANT,
+    );
+    expect(
+      laborRefreshTenantId(
+        { SSO_TENANT_ID: "not-a-uuid", PM_PORTFOLIO_TENANT_ID: PORTFOLIO_TENANT },
+        CONNECTOR_TENANT,
+      ),
+    ).toBe(PORTFOLIO_TENANT);
+  });
+});
+
+describe("scheduler uses the manual refresh env", () => {
+  let h: Harness;
+  let portfolio: TenantFixture;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const ids = new Map<string, string>();
+  const calls: Array<{ url: string; method: string }> = [];
+  const secret = "scheduler-fix-client-secret";
+
+  beforeAll(async () => {
+    h = await startHarness(SCHEMA_FILES);
+    portfolio = await createTenant(h, { slug: "labor-sign-in", displayName: "Sign-in Co" });
+    const connector = await createTenant(h, { slug: "labor-connector", displayName: "Connector Co" });
+    const env = {
+      SSO_TENANT_ID: "",
+      PM_PORTFOLIO_TENANT_ID: portfolio.id,
+      PM_ST_TENANT_ID: connector.id,
+      PM_ST_EXTERNAL_SYSTEM_ID: SYSTEM_ID,
+      ST_ENV: "integration",
+      ST_TENANT_ID: "99887766",
+      ST_CLIENT_ID: "labor-refresh-client",
+      ST_CLIENT_SECRET: secret,
+      ST_APP_KEY: "labor-refresh-app-key",
+    };
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      calls.push({ url, method });
+      if (url.includes("/connect/token")) {
+        return Response.json({ access_token: "test-token", expires_in: 900 });
+      }
+      if (url.includes("/timesheets")) {
+        const jobId = url.match(/jobs\/(\d+)\/timesheets/)?.[1] ?? "0";
+        return Response.json({
+          data: [
+            {
+              id: Number(jobId),
+              appointmentId: 4,
+              technicianId: 6,
+              technicianName: "Casey Nguyen",
+              arrivedOn: "2026-10-25T13:00:00Z",
+              doneOn: "2026-10-25T15:00:00Z",
+              canceledOn: null,
+              hourlyRate: 99,
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      if (url.includes("/technicians")) {
+        return Response.json({
+          data: [
+            { id: 6, name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
+          ],
+          hasMore: false,
+        });
+      }
+      return Response.json({ data: [], hasMore: false }, { status: 404 });
+    };
+    vi.stubGlobal("fetch", fetchMock);
+    const sources = readSourceConnections(env);
+    expect(sources.serviceTitan?.tenantId).toBe(connector.id);
+    expect(sources.serviceTitan?.tenantId).not.toBe(portfolio.id);
+    const owner = h.as(portfolio.staff.owner!.token);
+    for (const number of ["H-1", "M-1", "P-1", "C-1", "X-1"]) {
+      const created = await owner.post("/api/v1/projects/projects").send(
+        projectBody({
+          project_number: number,
+          name: `Sample ${number}`,
+          scheduled_start: "2026-10-19",
+        }),
+      );
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      ids.set(number, created.body.data.id as string);
+    }
+    await h.db.withTenant(portfolio.id, async (db) => {
+      await db.query(
+        `INSERT INTO projects.external_systems (id, tenant_id, adapter_key, display_name)
+         VALUES ($1, $2, 'servicetitan', 'ServiceTitan')`,
+        [SYSTEM_ID, portfolio.id],
+      );
+      for (const [number, jobId] of [
+        ["H-1", "100"],
+        ["M-1", "200"],
+        ["P-1", "300"],
+        ["C-1", "400"],
+        ["X-1", "500"],
+      ] as const) {
+        await db.query(
+          `INSERT INTO projects.project_job_links
+             (tenant_id, project_id, external_system_id, external_job_id, title)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [portfolio.id, ids.get(number), SYSTEM_ID, jobId, `Sample job ${jobId}`],
+        );
+        if (stageOf(number) !== "handoff") {
+          await db.query(
+            `UPDATE projects.projects SET stage = $2::projects.project_stage WHERE id = $1`,
+            [ids.get(number), stageOf(number)],
+          );
+        }
+      }
+    });
+
+    const lines: string[] = [];
+    const errors: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((message) => {
+      lines.push(String(message));
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation((message) => {
+      errors.push(String(message));
+    });
+    try {
+      timer = startLaborRefreshScheduler(h.db, sources, {
+        env,
+        firstTickMs: 0,
+        gapMs: 0,
+        now: () => new Date(WHEN),
+      });
+      expect(timer).toBeDefined();
+      await vi.waitFor(() => {
+        if (!lines.includes("Labor refresh run: 3 projects, 3 stamped, 0 failed")) {
+          throw new Error(`logs=${lines.join(" | ")} errors=${errors.join(" | ")}`);
+        }
+      }, { timeout: 5000 });
+      expect(lines.join("\n")).not.toContain(secret);
+      expect(errors.join("\n")).not.toContain(secret);
+      expect(calls.some((call) => call.method !== "GET" && !call.url.includes("/connect/token"))).toBe(
+        false,
+      );
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+
+    const manualApp = supertest(
+      createApp({
+        database: h.db,
+        staffSessions: h.sessions,
+        serveConsole: false,
+        sources,
+      }),
+    );
+    const manual = await manualApp
+      .post(`/api/v1/projects/projects/${ids.get("H-1")}/labor/refresh`)
+      .set("Authorization", `Bearer ${portfolio.staff.owner!.token}`);
+    expect(manual.status, JSON.stringify(manual.body)).toBe(200);
+    expect(manual.body.data.source).toBe("manual");
+    expect(manual.body.data.hours).toBe(2);
+  });
+
+  afterAll(async () => {
+    if (timer) clearInterval(timer);
+    vi.unstubAllGlobals();
+    await h?.close();
+  });
+
+  it("stamps handoff, mobilization, and precon, and leaves other project fields", async () => {
+    const owner = h.as(portfolio.staff.owner!.token);
+    const stamped = await owner.get(`/api/v1/projects/projects/${ids.get("M-1")}/labor`);
+    expect(stamped.status).toBe(200);
+    expect(stamped.body.data.source).toBe("scheduled");
+    expect(stamped.body.data.hours).toBe(2);
+    expect(stamped.body.data.observed_at).toBe(WHEN);
+
+    const precon = await owner.get(`/api/v1/projects/projects/${ids.get("P-1")}/labor`);
+    expect(precon.body.data.source).toBe("scheduled");
+    expect(precon.body.data.hours).toBe(2);
+
+    const handoff = await owner.get(`/api/v1/projects/projects/${ids.get("H-1")}/labor`);
+    expect(handoff.body.data.source).toBe("manual");
+
+    for (const number of ["C-1", "X-1"]) {
+      const closed = await owner.get(`/api/v1/projects/projects/${ids.get(number)}/labor`);
+      expect(closed.body.data.source).toBeNull();
+      expect(closed.body.data.observed_at).toBeNull();
+    }
+
+    const row = await h.db.withTenant(portfolio.id, (db) =>
+      db.query<{
+        project_number: string;
+        name: string;
+        stage: string;
+        scheduled_start: string;
+        contract_value: string;
+        labor_refresh_source: string;
+      }>(
+        `SELECT project_number, name, stage::text AS stage, scheduled_start::text AS scheduled_start,
+                contract_value::text AS contract_value, labor_refresh_source
+           FROM projects.projects WHERE id = $1`,
+        [ids.get("M-1")],
+      ),
+    );
+    expect(row.rows[0]).toMatchObject({
+      project_number: "M-1",
+      name: "Sample M-1",
+      stage: "mobilization",
+      scheduled_start: "2026-10-19",
+      labor_refresh_source: "scheduled",
+    });
+  });
+});
+
+function stageOf(number: string): string {
+  if (number.startsWith("M-")) return "mobilization";
+  if (number.startsWith("P-")) return "precon";
+  if (number.startsWith("C-")) return "complete";
+  if (number.startsWith("X-")) return "cancelled";
+  return "handoff";
+}

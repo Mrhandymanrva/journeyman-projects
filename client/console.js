@@ -2279,6 +2279,7 @@ function laborMoney(n) {
 function laborRefreshLine(data) {
   if (!data || !data.observed_at) return "Not refreshed yet.";
   const when = stamp(data.observed_at);
+  if (data.source === "scheduled") return `Last refreshed ${when} (scheduled)`;
   if (data.source === "auto-hourly") return `Last refreshed ${when} (automatic)`;
   if (data.source === "manual") return `Last refreshed ${when} (manual)`;
   return `Last refreshed ${when}`;
