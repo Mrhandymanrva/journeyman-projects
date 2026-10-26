@@ -477,23 +477,37 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     const laborCode = mirrored.rows[0]!.id;
     await c.query(
       `INSERT INTO projects.technician_labor_rates
-         (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
+         (tenant_id, external_technician_id, technician_name, active,
+          hourly_rate, burden_rate, pay_basis, burden_unset)
        VALUES
-         ($1, 'tech-casey', 'Casey Nguyen', true, 40, 12),
-         ($1, 'tech-jordan', 'Jordan Hale', true, 36, 0),
-         ($1, 'tech-riley', 'Riley Cho', true, 0, 8)`,
+         ($1, 'tech-casey', 'Casey Nguyen', true, NULL, NULL, 'commission', false),
+         ($1, 'tech-justin', 'Justin M.', true, NULL, NULL, 'hourly', true),
+         ($1, 'tech-mason', 'Mason', true, NULL, NULL, 'commission', true),
+         ($1, 'tech-riley', 'Riley Cho', true, NULL, NULL, 'missing', true),
+         ($1, 'tech-office', 'Office Notes', true, NULL, NULL, 'missing', true),
+         ($1, 'tech-req', 'Project Requirements', true, NULL, NULL, 'missing', true),
+         ($1, 'tech-sub', 'Subcontractor', true, NULL, NULL, 'missing', true)`,
       [TENANT_ID],
     );
+    // 4 h × $188 × 25% = $188 labor, 4 h × $12 burden = $48.
+    // Justin is hourly: 2 h × $36 = $72, burden not set.
+    // The rates themselves are not stored.
     await c.query(
       `INSERT INTO projects.labor_actuals
          (tenant_id, project_id, external_job_id, external_timesheet_id,
           external_technician_id, technician_name, work_date, hours, source,
-          cost_code_id, observed_at)
+          cost_code_id, observed_at, labor_amount, burden_amount, pay_basis,
+          burden_unset, priced_billable_rate)
        VALUES
          ($1,$2,'demo-job','demo-ts-casey','tech-casey','Casey Nguyen',
-          CURRENT_DATE - 2, 6.50, 'timesheet', $3, now()),
-         ($1,$2,'demo-job','demo-ts-jordan','tech-jordan','Jordan Hale',
-          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now())`,
+          CURRENT_DATE - 2, 4.00, 'timesheet', $3, now(), 188.00, 48.00,
+          'commission', false, 188),
+         ($1,$2,'demo-job','demo-ts-justin','tech-justin','Justin M.',
+          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now(), 72.00, NULL,
+          'hourly', true, NULL),
+         ($1,$2,'demo-job','demo-ts-former','11000041', NULL,
+          CURRENT_DATE - 1, 2.07, 'timesheet', $3, now(), NULL, NULL,
+          NULL, false, NULL)`,
       [TENANT_ID, whitfield, laborCode],
     );
     await c.query(

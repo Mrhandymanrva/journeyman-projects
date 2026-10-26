@@ -1,12 +1,22 @@
 import { Router } from "express";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { z } from "zod";
+import {
+  payrollReaderFrom,
+  resolvePayForTechnicians,
+} from "../domain/commissionLabor.js";
+import { runCommissionProbe } from "../domain/commissionProbe.js";
 import {
   listActiveRateGaps,
+  listBurdenNotices,
   portfolioLaborColumns,
   presentPortfolioLabor,
+  readBillableRate,
   readLaborJobs,
   readTechnicianDirectory,
   saveLaborRefresh,
+  updateBillableRate,
+  withResolvedTechnicianNames,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
 import {
@@ -24,7 +34,7 @@ import {
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
-import { loadVisibleProject, num, parseUuidParam } from "./shared.js";
+import { loadVisibleProject, num, parseBody, parseUuidParam } from "./shared.js";
 
 export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): Router {
   const router = Router();
@@ -35,6 +45,63 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       requireCapability(ctx.staff.role, "manage_company_settings");
       sendData(ctx.res, await loadSettings(ctx, sources.serviceTitan?.client));
     }),
+  );
+
+  router.put(
+    "/settings/labor/billable-rate",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_company_settings");
+      const body = parseBody(
+        z.object({
+          labor_billable_rate: z.number().finite().gte(0).lte(100000),
+        }),
+        ctx.req.body,
+      );
+      await updateBillableRate(ctx.db, ctx.staff.tenantId, body.labor_billable_rate);
+      sendData(ctx.res, await loadSettings(ctx, sources.serviceTitan?.client));
+    }),
+  );
+
+  router.get(
+    "/settings/labor/commission-probe",
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        if (ctx.staff.role !== "owner") {
+          throw new ApiError("forbidden", "Only an owner can run the commission probe.");
+        }
+        const raw = ctx.req.query.technician_id;
+        const ids = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+          .map((value) => String(value).trim())
+          .filter((value) => value.length > 0);
+        if (ids.some((id) => !/^\d+$/.test(id))) {
+          throw new ApiError("validation_failed", "Technician ids must be numeric.");
+        }
+        const client = sources.serviceTitan?.client;
+        if (!client?.readAllowlistedGet || client.sourceTenantId == null) {
+          throw new ApiError(
+            "conflict",
+            "ServiceTitan is not configured for this account. Nothing was read.",
+          );
+        }
+        return { tenantId: String(client.sourceTenantId), ids, client };
+      },
+      async (prepared) =>
+        runCommissionProbe(
+          {
+            tenantId: prepared.tenantId,
+            readAllowlistedGet: (family, resource, query) =>
+              prepared.client.readAllowlistedGet!(family, resource, query),
+          },
+          prepared.ids,
+        ),
+      async (ctx, _prepared, report) => {
+        if (ctx.staff.role !== "owner") {
+          throw new ApiError("forbidden", "Only an owner can run the commission probe.");
+        }
+        sendData(ctx.res, report);
+      },
+    ),
   );
 
   router.get(
@@ -73,6 +140,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           readJobTimesheets: (jobId: string) => source.client.readJobTimesheets!(jobId),
           readJob: (jobId: string) => source.client.readJob(jobId),
           readTechnicians: source.client.readTechnicians?.bind(source.client),
+          readStaffName: source.client.readStaffName?.bind(source.client),
           laborClient: source.client,
         };
       },
@@ -84,8 +152,17 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
         const directory = await readTechnicianDirectory({
           readTechnicians: prepared.readTechnicians,
         });
+        const technicians = await resolvePayForTechnicians(
+          directory.technicians,
+          payrollReaderFrom(prepared.laborClient),
+        );
+        const namedJobs = await withResolvedTechnicianNames(
+          jobs,
+          technicians,
+          prepared.readStaffName,
+        );
         const laborCode = await resolveStLaborCode(prepared.laborClient);
-        return { jobs, directory, laborCode };
+        return { jobs: namedJobs, directory: { ...directory, technicians }, laborCode };
       },
       async (ctx, prepared, read) => {
         requireCapability(ctx.staff.role, "refresh_labor");
@@ -121,7 +198,9 @@ async function loadSettings(
   return {
     st_labor_code: shown.st_labor_code,
     st_labor_code_error: shown.st_labor_code_error,
+    labor_billable_rate: await readBillableRate(ctx.db, ctx.staff.tenantId),
     rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId),
+    burden_notices: await listBurdenNotices(ctx.db, ctx.staff.tenantId),
   };
 }
 
@@ -173,7 +252,7 @@ async function presentLabor(
           total: labor.total,
         }
       : {}),
-    ...(showRates ? { rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId) } : {}),
+    ...(showMoney ? { billable_rate: await readBillableRate(ctx.db, ctx.staff.tenantId) } : {}),
     st_labor_code: shown.st_labor_code,
     st_labor_code_error: shown.st_labor_code_error,
     cost_code: shown.st_labor_code
@@ -200,14 +279,15 @@ function presentTechnician(tech: PricedTechnician, showRates: boolean) {
     external_technician_id: tech.external_technician_id,
     technician_name: tech.technician_name,
     hours: tech.hours,
-    missing: tech.missing,
+    burden_unset: tech.burden_unset,
+    notices: tech.notices,
     ...(showRates
       ? {
-          hourly_rate: tech.hourly_rate,
-          burden_rate: tech.burden_rate,
+          pay_basis: tech.pay_basis,
           wage: tech.wage,
           burden: tech.burden,
-          amount: tech.wage === null || tech.burden === null ? null : round2(tech.wage + tech.burden),
+          amount:
+            tech.wage === null ? null : round2(tech.wage + (tech.burden ?? 0)),
         }
       : {}),
   };

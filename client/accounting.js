@@ -376,8 +376,18 @@ export function createAccounting({
               `<li>${esc(gap.technician_name)}: ${(gap.messages || []).map((line) => esc(line)).join(" ")}</li>`,
           )
           .join("")}</ul>`
-      : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`;
-    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. The labor code is the one active labor type in ServiceTitan. It is not chosen here. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
+      : `<p id="labor-rate-gaps">No active technician is missing a commission percent and an hourly rate.</p>`;
+    const notices = labor.burden_notices || [];
+    const noticeList = notices.length
+      ? `<ul id="labor-burden-notices">${notices
+          .map(
+            (gap) =>
+              `<li>${esc(gap.technician_name)}: ${(gap.messages || []).map((line) => esc(line)).join(" ")}</li>`,
+          )
+          .join("")}</ul>`
+      : `<p id="labor-burden-notices">Every active technician has a burden rate.</p>`;
+    const rate = Number(labor.labor_billable_rate ?? 188);
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Commission labor is timesheet hours × this billable rate × the technician's ServiceTitan commission percent. Hourly technicians use timesheet hours × their ServiceTitan hourly rate instead. Labor burden is a separate line: the same hours × that technician's ServiceTitan burden rate. Pay rates are read from ServiceTitan and are not stored here. Nothing on this page is written to ServiceTitan. The labor code is the one active labor type in ServiceTitan. It is not chosen here.</p><label for="labor-billable-rate">Billable rate</label><input id="labor-billable-rate" type="number" min="0" step="0.01" value="${Number.isFinite(rate) ? rate : 188}"><button class="btn primary" id="labor-billable-save" type="button">Save billable rate</button><p class="msg" id="labor-billable-error"></p><p id="labor-st-code">${codeLine}</p>${error}<h4>Technicians missing a commission percent and an hourly rate</h4>${gapList}<h4>Burden not set</h4><p class="note">Informational. A burden of 0 does not remove labor cost.</p>${noticeList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(
@@ -560,6 +570,26 @@ export function createAccounting({
       api("/settings/labor"),
     ]);
     host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor);
+    const saveBillable = el("labor-billable-save");
+    if (saveBillable) {
+      saveBillable.onclick = async () => {
+        saveBillable.disabled = true;
+        const error = el("labor-billable-error");
+        if (error) error.textContent = "";
+        try {
+          await api("/settings/labor/billable-rate", {
+            method: "PUT",
+            body: JSON.stringify({
+              labor_billable_rate: Number(el("labor-billable-rate").value),
+            }),
+          });
+          await renderSettings();
+        } catch (err) {
+          saveBillable.disabled = false;
+          if (error) error.textContent = err.message || "The billable rate was not saved.";
+        }
+      };
+    }
     if (!el("ap-save-accounts")) return;
     for (const type of ["L", "M", "S", "O"]) {
       const use = el(`ap-use-${type}`);

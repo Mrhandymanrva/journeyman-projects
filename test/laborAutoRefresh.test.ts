@@ -69,8 +69,22 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
     readTechnicians: async () => {
       methods.push("GET");
       return [
-        { id: "tech-casey", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
-        { id: "tech-jordan", name: "Jordan Hale", active: true, hourlyRate: 36, burdenRate: 0 },
+        {
+          id: "tech-casey",
+          name: "Casey Nguyen",
+          active: true,
+          hourlyRate: 40,
+          burdenRate: 12,
+          commissionRate: null,
+        },
+        {
+          id: "tech-jordan",
+          name: "Jordan Hale",
+          active: true,
+          hourlyRate: 36,
+          burdenRate: 0,
+          commissionRate: null,
+        },
       ];
     },
   },
@@ -219,10 +233,15 @@ describe("hourly labor refresh", () => {
       wage: 80,
       burden: 24,
     });
-    expect(ok.body.data.rate_gaps).toEqual([
+    expect(ok.body.data).not.toHaveProperty("rate_gaps");
+    expect(ok.body.data).not.toHaveProperty("burden_notices");
+    const settings = await owner.get("/api/v1/projects/settings/labor");
+    expect(settings.status, JSON.stringify(settings.body)).toBe(200);
+    expect(settings.body.data.rate_gaps).toEqual([]);
+    expect(settings.body.data.burden_notices).toEqual([
       expect.objectContaining({
         technician_name: "Jordan Hale",
-        messages: ["Missing from ServiceTitan: burden rate is 0 for Jordan Hale"],
+        messages: ["burden not set"],
       }),
     ]);
 

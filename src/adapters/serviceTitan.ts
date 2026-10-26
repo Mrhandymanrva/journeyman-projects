@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { allowlistedGet } from "../domain/commissionProbe.js";
 
 const sourceId = z
   .union([z.string().regex(/^\d+$/), z.number().int().nonnegative().safe()])
@@ -210,6 +211,83 @@ export class ServiceTitanReadAdapter {
       return response.json() as Promise<unknown>;
     }
     throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 429).");
+  }
+
+  /**
+   * GET that returns the status instead of throwing.
+   * Used by the commission probe and payroll-settings fallback.
+   * The method is GET. There is no write path on this adapter method.
+   */
+  private async getRaw(
+    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll" | "accounting" | "sales",
+    resource: string,
+    query?: URLSearchParams,
+  ): Promise<{ status: number; body: unknown }> {
+    const path = `/${family}/v2/tenant/${this.config.tenantId}/${resource}`;
+    const url = this.apiHost + path + (query ? "?" + query.toString() : "");
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const token = await this.accessToken();
+      let response: Response;
+      try {
+        response = await this.fetcher(url, {
+          method: "GET",
+          redirect: "error",
+          signal: AbortSignal.timeout(20000),
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+            "ST-App-Key": this.config.appKey,
+          },
+        });
+      } catch {
+        throw new ServiceTitanReadError(
+          "ServiceTitan read could not complete. The previous snapshot should be retained.",
+        );
+      }
+      if (response.status === 401 && attempt < maxAttempts) {
+        this.token = undefined;
+        continue;
+      }
+      if (response.status === 429 && attempt < maxAttempts) {
+        await this.sleep(retryAfterMs(response.headers.get("Retry-After")));
+        continue;
+      }
+      const text = await response.text();
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          body = { unparsed: true };
+        }
+      }
+      return { status: response.status, body };
+    }
+    return { status: 429, body: null };
+  }
+
+  /**
+   * GET a settings or payroll document on the commission-probe allowlist.
+   * Any other path is rejected before a request is made.
+   */
+  async readAllowlistedGet(
+    family: "payroll" | "settings",
+    resource: string,
+    query?: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; body: unknown }> {
+    if (!allowlistedGet(family, resource) || resource.includes("..") || resource.startsWith("/")) {
+      throw new ServiceTitanReadError("That ServiceTitan read is not allowed.");
+    }
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query ?? {})) {
+      if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key) || value.length > 4000 || /[\r\n]/.test(value)) {
+        throw new ServiceTitanReadError("That ServiceTitan read is not allowed.");
+      }
+      params.set(key, value);
+    }
+    const result = await this.getRaw(family, resource, params);
+    return { ok: result.status >= 200 && result.status < 300, status: result.status, body: result.body };
   }
   private async pages<T>(
     family: "jpm" | "dispatch" | "settings",
@@ -879,6 +957,7 @@ export class ServiceTitanReadAdapter {
       active: boolean;
       hourlyRate: number | null;
       burdenRate: number | null;
+      commissionRate: number | null;
     }[]
   > {
     const rows: {
@@ -887,6 +966,7 @@ export class ServiceTitanReadAdapter {
       active: boolean;
       hourlyRate: number | null;
       burdenRate: number | null;
+      commissionRate: number | null;
     }[] = [];
       const schema = z.object({
         data: z.array(
@@ -896,6 +976,7 @@ export class ServiceTitanReadAdapter {
             active: z.boolean(),
             hourlyRate: z.number().finite().nullish(),
             burdenRate: z.number().finite().nullish(),
+            commissionRate: z.number().finite().nullish(),
           }),
         ),
         hasMore: z.boolean(),
@@ -908,6 +989,7 @@ export class ServiceTitanReadAdapter {
           new URLSearchParams({
             page: String(page),
             pageSize: "200",
+            // Any, not True: inactive technicians still name the hours they already worked.
             active: "Any",
           }),
         ),
@@ -923,6 +1005,7 @@ export class ServiceTitanReadAdapter {
           active: person.active,
           hourlyRate: person.hourlyRate ?? null,
           burdenRate: person.burdenRate ?? null,
+          commissionRate: person.commissionRate ?? null,
         })),
       );
       if (!result.data.hasMore) {
@@ -932,6 +1015,34 @@ export class ServiceTitanReadAdapter {
       }
     }
     throw new ServiceTitanReadError("Technician pagination incomplete.");
+  }
+
+  /**
+   * Name for one timesheet id the technician directory did not carry.
+   * GET technicians/{id} first (inactive records included), then employees/{id}.
+   * A 404 or a failed read returns null. Nothing is written.
+   */
+  async readStaffName(id: string): Promise<string | null> {
+    if (!/^\d+$/.test(id)) return null;
+    for (const resource of [`technicians/${id}`, `employees/${id}`] as const) {
+      let result: { status: number; body: unknown };
+      try {
+        result = await this.getRaw("settings", resource);
+      } catch {
+        return null;
+      }
+      if (result.status === 404) continue;
+      if (result.status < 200 || result.status >= 300) continue;
+      const parsed = z
+        .object({
+          id: sourceId,
+          name: z.string().min(1),
+        })
+        .safeParse(result.body);
+      const name = parsed.success ? parsed.data.name.trim() : "";
+      if (parsed.success && parsed.data.id === id && name) return name;
+    }
+    return null;
   }
   async readJob(jobId: string): Promise<{
     job: ServiceTitanJob;

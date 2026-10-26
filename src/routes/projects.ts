@@ -1,4 +1,5 @@
 import { deleteLocalProject } from '../domain/deleteProject.js';
+import { laborCostSplits, laborLines } from '../domain/laborActuals.js';
 import { presentFieldRelease, readFieldRelease } from '../domain/fieldRelease.js';
 import {
   fieldStartColumns,
@@ -486,17 +487,37 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           ORDER BY cc.sort_order NULLS LAST, v.cost_code NULLS LAST`,
         [id],
       );
+      const splits = await laborCostSplits(ctx.db, id);
+      const openLabor = splits
+        .filter((split) => !split.budgeted)
+        .reduce((sum, split) => sum + split.labor, 0);
+      const openBurden = splits
+        .filter((split) => !split.budgeted)
+        .reduce((sum, split) => sum + split.burden, 0);
+      const budgeted = new Map(
+        splits.filter((split) => split.budgeted).map((split) => [split.costCode, split]),
+      );
       sendData(
         ctx.res,
-        rows.map((r) => ({
-          ...r,
-          baseline: num(r.baseline),
-          budget_amount: num(r.budget_amount),
-          actual_cost: num(r.actual_cost),
-          committed_open: num(r.committed_open),
-          total_committed: num(r.total_committed),
-          variance: num(r.variance),
-        })),
+        rows.map((r) => {
+          const priced = {
+            ...r,
+            baseline: num(r.baseline),
+            budget_amount: num(r.budget_amount),
+            actual_cost: num(r.actual_cost),
+            committed_open: num(r.committed_open),
+            total_committed: num(r.total_committed),
+            variance: num(r.variance),
+          };
+          if (r.description === "Unbudgeted labor") {
+            return { ...priced, lines: laborLines(openLabor, openBurden) };
+          }
+          const split = r.cost_type === "L" && r.cost_code ? budgeted.get(String(r.cost_code)) : undefined;
+          if (split && split.labor + split.burden > 0) {
+            return { ...priced, lines: laborLines(split.labor, split.burden) };
+          }
+          return priced;
+        }),
       );
     }),
   );

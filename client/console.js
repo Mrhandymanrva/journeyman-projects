@@ -603,13 +603,22 @@ function renderBudget(cost, budget) {
       const label = unbudgeted
         ? "Unbudgeted labor"
         : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
-      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true"' : ""}>
+      const detail = Array.isArray(r.lines)
+        ? `<ul class="labor-lines">${r.lines
+            .map(
+              (line) =>
+                `<li><span>${esc(line.description)}</span><span>${laborMoney(line.amount)}</span></li>`,
+            )
+            .join("")}</ul>`
+        : "";
+      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true" id="unbudgeted-labor"' : ""}>
       <div class="btop">
         <div class="bname">${label}
           ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
+      ${detail}
       <div class="track">
         <div class="seg act" style="width:${actW}%"></div>
         <div class="seg com" style="left:${actW}%;width:${comW}%"></div>
@@ -2323,38 +2332,21 @@ function renderLabor(row) {
       const wage =
         tech.wage == null
           ? ""
-          : `<div class="row-m">Wage ${laborMoney(tech.wage)} · ${laborMoney(
-              tech.hourly_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician hourlyRate</div>`;
-      const burden =
-        tech.burden == null
+          : `<div class="row-m">Labor ${laborMoney(tech.wage)} · ${esc(tech.hours)} h · ${
+              tech.pay_basis === "hourly"
+                ? "ServiceTitan hourly rate"
+                : `${laborMoney(data.billable_rate || 188)} billable × commission`
+            }</div>`;
+      const burden = tech.burden_unset
+        ? `<p class="note">burden not set</p>`
+        : tech.burden == null
           ? ""
-          : `<div class="row-m">Burden ${laborMoney(tech.burden)} · ${laborMoney(
-              tech.burden_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician burdenRate</div>`;
-      const flags = (tech.missing || [])
-        .map((line) => `<p class="msg">${esc(line)}</p>`)
-        .join("");
+          : `<div class="row-m">Labor burden ${laborMoney(tech.burden)} · ${esc(tech.hours)} h × ServiceTitan burden rate</div>`;
       return `<div class="row"><div class="row-b"><div class="row-t">${esc(
         tech.technician_name || "Technician",
-      )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}${flags}</div></div>`;
+      )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}</div></div>`;
     })
     .join("");
-  const gaps =
-    data.rate_gaps === undefined
-      ? ""
-      : `<h4>Active technicians missing a ServiceTitan rate</h4>${
-          data.rate_gaps.length
-            ? `<ul id="labor-rate-gaps">${data.rate_gaps
-                .map(
-                  (gap) =>
-                    `<li>${esc(gap.technician_name)}: ${(gap.messages || [])
-                      .map((line) => esc(line))
-                      .join(" ")}</li>`,
-                )
-                .join("")}</ul>`
-            : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`
-        }`;
   const stCode = data.st_labor_code;
   const codeText = stCode
     ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(stCode.code)} ${esc(stCode.name || "")}`
@@ -2368,10 +2360,10 @@ function renderLabor(row) {
       ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
       : "";
   el("labor").innerHTML = `
-    <p class="note">Hours come from ServiceTitan timesheets. Wage is hours times that technician's ServiceTitan hourly rate. Burden is the same hours times that technician's burden rate, added on top. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
+    <p class="note">Hours come from ServiceTitan timesheets. Commission labor is those hours times the company billable rate times the technician's ServiceTitan commission percent. Hourly technicians use those hours times their ServiceTitan hourly rate instead. Labor burden is a separate line, the same hours times the technician's burden rate. A zero hourly rate is not a missing rate when commission is set. Pay rates are not stored here. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
     ${
       data.rates_forbidden
-        ? `<p class="msg">The latest ServiceTitan technician read was denied. Rates from the last successful read are still used. A technician with no saved rate stays out of actual cost.</p>`
+        ? `<p class="msg">The latest ServiceTitan technician read was denied. Labor dollars already priced were left as they are. A technician with neither a commission percent nor an hourly rate stays out of labor cost.</p>`
         : ""
     }
     <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
@@ -2380,8 +2372,7 @@ function renderLabor(row) {
       <div class="row-m" id="labor-st-code">${codeText}</div></div></div>
     ${laborError}
     ${uncodedNote}
-    ${techs}
-    ${gaps}`;
+    ${techs}`;
   refresh?.addEventListener("click", async () => {
     refresh.disabled = true;
     try {

@@ -73,23 +73,27 @@ describe("unbudgeted labor in the cost position", () => {
     timesheetId: string,
     technicianId = "tech-1",
   ) {
+    const laborAmount =
+      hourly != null && hourly > 0 ? Math.round(hours * hourly * 100) / 100 : 0;
+    const burdenAmount =
+      burden != null && burden > 0 ? Math.round(hours * burden * 100) / 100 : 0;
     await h.db.withTenant(tenant.id, async (db) => {
-      if (hourly !== null && burden !== null) {
-        await db.query(
-          `INSERT INTO projects.technician_labor_rates
-             (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
-           VALUES ($1, $2, 'Alex', true, $3, $4)
-           ON CONFLICT (tenant_id, external_technician_id) DO UPDATE
-             SET hourly_rate = EXCLUDED.hourly_rate, burden_rate = EXCLUDED.burden_rate`,
-          [tenant.id, technicianId, hourly, burden],
-        );
-      }
       await db.query(
         `INSERT INTO projects.labor_actuals
            (tenant_id, project_id, external_job_id, external_timesheet_id,
-            external_technician_id, technician_name, work_date, hours, source, cost_code_id)
-         VALUES ($1,$2,'job-1',$3,$4,'Alex','2026-10-23',$5,'timesheet',$6)`,
-        [tenant.id, projectId, timesheetId, technicianId, hours, codeId],
+            external_technician_id, technician_name, work_date, hours, source, cost_code_id,
+            labor_amount, burden_amount, pay_basis)
+         VALUES ($1,$2,'job-1',$3,$4,'Alex','2026-10-23',$5,'timesheet',$6,$7,$8,'hourly')`,
+        [
+          tenant.id,
+          projectId,
+          timesheetId,
+          technicianId,
+          hours,
+          codeId,
+          laborAmount,
+          burdenAmount,
+        ],
       );
     });
   }
@@ -154,6 +158,10 @@ describe("unbudgeted labor in the cost position", () => {
         committed_open: 0,
         total_committed: 208,
         variance: -208,
+        lines: [
+          { description: "Labor", amount: 160 },
+          { description: "Labor burden", amount: 48 },
+        ],
       },
     ]);
     const after = await margin(owner, projectId);

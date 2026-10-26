@@ -69,6 +69,7 @@ const db = await PgliteDatabase.create([
   "db/045_labor_refresh_scheduled.sql",
   "db/046_st_labor_code.sql",
   "db/047_unbudgeted_labor.sql",
+  "db/048_commission_labor.sql",
 ]);
 
 await assertDatabaseContract(db);

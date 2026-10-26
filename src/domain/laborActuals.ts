@@ -1,4 +1,15 @@
 import type { SqlClient } from "../db/database.js";
+import {
+  BURDEN_NOT_SET_MESSAGE,
+  DEFAULT_BILLABLE_RATE,
+  MISSING_PAY_MESSAGE,
+  PLACEHOLDER_TECHNICIAN_SQL,
+  classifyTechnician,
+  isPlaceholderTechnician,
+  technicianDisplayName,
+  type PayBasis,
+  type ResolvedTechPay,
+} from "./commissionLabor.js";
 import { newYorkDate } from "./fieldStart.js";
 
 /** Read batches match the schedule route. */
@@ -244,6 +255,14 @@ export interface TechnicianRate {
   active: boolean;
   hourlyRate: number | null;
   burdenRate: number | null;
+  commissionRate?: number | null;
+  /** Set when payroll settings were already resolved. Not a stored column. */
+  payBasis?: PayBasis | null;
+  commissionFraction?: number | null;
+  appliedHourlyRate?: number | null;
+  appliedBurdenRate?: number | null;
+  burdenUnset?: boolean;
+  excluded?: boolean;
 }
 
 export interface TechnicianDirectory {
@@ -256,8 +275,6 @@ export interface TechnicianDirectory {
 export interface RateGap {
   external_technician_id: string;
   technician_name: string;
-  hourly_rate: number | null;
-  burden_rate: number | null;
   messages: string[];
 }
 
@@ -266,14 +283,15 @@ export interface PricedTechnician {
   technician_name: string;
   hours: number;
   coded_hours: number;
-  hourly_rate: number | null;
-  burden_rate: number | null;
+  pay_basis: PayBasis | null;
   wage: number | null;
   burden: number | null;
   /** Coded hours only. This is what actual cost and the portfolio totals use. */
   budget_wage: number | null;
   budget_burden: number | null;
+  burden_unset: boolean;
   missing: string[];
+  notices: string[];
 }
 
 export type LaborRefreshSource = "manual" | "scheduled" | "auto-hourly";
@@ -284,6 +302,7 @@ export interface PortfolioLabor {
   labor_burden: number;
   total: number;
   missing: string[];
+  notices: string[];
   technicians: PricedTechnician[];
   uncoded_hours: number;
   /** Who last refreshed this project. Null until a refresh is recorded. */
@@ -312,20 +331,21 @@ export function portfolioLaborColumns(alias = "p"): string {
               'technician_name', g.technician_name,
               'hours', g.hours,
               'coded_hours', g.coded_hours,
-              'hourly_rate', g.hourly_rate,
-              'burden_rate', g.burden_rate
+              'coded_labor', g.coded_labor,
+              'coded_burden', g.coded_burden,
+              'pay_basis', g.pay_basis,
+              'burden_unset', g.burden_unset
             )), '[]'::json)
              FROM (
                SELECT a.external_technician_id AS technician_id,
                       MAX(a.technician_name) AS technician_name,
                       SUM(a.hours) AS hours,
                       COALESCE(SUM(a.hours) FILTER (WHERE a.cost_code_id IS NOT NULL), 0) AS coded_hours,
-                      MAX(r.hourly_rate) AS hourly_rate,
-                      MAX(r.burden_rate) AS burden_rate
+                      SUM(a.labor_amount) FILTER (WHERE a.cost_code_id IS NOT NULL) AS coded_labor,
+                      SUM(a.burden_amount) FILTER (WHERE a.cost_code_id IS NOT NULL) AS coded_burden,
+                      MAX(a.pay_basis) AS pay_basis,
+                      BOOL_OR(a.burden_unset) AS burden_unset
                  FROM projects.labor_actuals a
-                 LEFT JOIN projects.technician_labor_rates r
-                   ON r.tenant_id = a.tenant_id
-                  AND r.external_technician_id = a.external_technician_id
                 WHERE a.project_id = ${alias}.id
                 GROUP BY a.external_technician_id
              ) g) AS labor_techs,
@@ -349,23 +369,78 @@ export function roundMoney(value: number): number {
 }
 
 export function technicianLabel(name: string | null | undefined, id: string | null): string {
-  const trimmed = name?.trim();
-  if (trimmed) return trimmed;
-  return id ? `Technician ${id}` : "Technician";
+  return technicianDisplayName(name, id);
 }
 
-/** A usable rate is a positive number. Null is missing. Zero is called out as zero. */
-export function rateGap(
-  kind: "hourly rate" | "burden rate",
-  name: string,
-  value: number | null,
-): string | null {
-  if (value === null || !Number.isFinite(value)) {
-    return `Missing from ServiceTitan: ${kind} for ${name}`;
+/** Timesheet rows whose technician id arrived without a name. */
+export function unnamedTechnicianIds(results: readonly LaborJobResult[]): string[] {
+  const ids = new Set<string>();
+  for (const result of results) {
+    for (const draft of result.drafts) {
+      const id = draft.externalTechnicianId?.trim();
+      if (id && !draft.technicianName?.trim()) ids.add(id);
+    }
   }
-  if (value === 0) return `Missing from ServiceTitan: ${kind} is 0 for ${name}`;
-  if (value < 0) return `Missing from ServiceTitan: ${kind} for ${name}`;
-  return null;
+  return [...ids];
+}
+
+/**
+ * Fill a blank timesheet name from the technician directory first.
+ * The directory is read with active=Any, so an inactive technician is included.
+ * Ids still missing are left for an employees/{id} lookup.
+ */
+export async function resolveTechnicianNames(
+  ids: readonly string[],
+  technicians: readonly { id: string; name: string | null }[],
+  readStaffName?: (id: string) => Promise<string | null>,
+): Promise<Map<string, string>> {
+  const known = new Map<string, string>();
+  for (const tech of technicians) {
+    const name = tech.name?.trim();
+    if (tech.id && name) known.set(tech.id, name);
+  }
+  const names = new Map<string, string>();
+  for (const id of ids) {
+    const fromDirectory = known.get(id);
+    if (fromDirectory) {
+      names.set(id, fromDirectory);
+      continue;
+    }
+    if (!readStaffName || !/^\d+$/.test(id)) continue;
+    try {
+      const fetched = (await readStaffName(id))?.trim();
+      if (fetched) names.set(id, fetched);
+    } catch {
+      // A failed name lookup leaves the hour row unlabeled.
+    }
+  }
+  return names;
+}
+
+export function applyTechnicianNames(
+  results: LaborJobResult[],
+  names: ReadonlyMap<string, string>,
+): LaborJobResult[] {
+  return results.map((result) => ({
+    ...result,
+    drafts: result.drafts.map((draft) => {
+      const id = draft.externalTechnicianId?.trim();
+      if (!id || draft.technicianName?.trim()) return draft;
+      const name = id ? names.get(id) : undefined;
+      return name ? { ...draft, technicianName: name } : draft;
+    }),
+  }));
+}
+
+export async function withResolvedTechnicianNames(
+  results: LaborJobResult[],
+  technicians: readonly { id: string; name: string | null }[],
+  readStaffName?: (id: string) => Promise<string | null>,
+): Promise<LaborJobResult[]> {
+  const ids = unnamedTechnicianIds(results);
+  if (!ids.length) return results;
+  const names = await resolveTechnicianNames(ids, technicians, readStaffName);
+  return applyTechnicianNames(results, names);
 }
 
 function finiteOrNull(value: unknown): number | null {
@@ -379,31 +454,57 @@ function asTechs(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(parsed) ? parsed : [];
 }
 
-export function priceTechnician(
+function payBasisOf(value: unknown): PayBasis | null {
+  return value === "commission" || value === "hourly" || value === "missing" ? value : null;
+}
+
+export function presentStoredTechnician(
   hours: number,
   codedHours: number,
-  hourly: number | null,
-  burden: number | null,
+  laborAmount: number | null,
+  burdenAmount: number | null,
+  payBasis: PayBasis | null,
+  burdenUnset: boolean,
   name: string,
   technicianId: string | null,
 ): PricedTechnician {
-  const missing = [
-    rateGap("hourly rate", name, hourly),
-    rateGap("burden rate", name, burden),
-  ].filter((line): line is string => line !== null);
-  const priced = missing.length === 0 && hourly !== null && burden !== null;
+  if (isPlaceholderTechnician(name)) {
+    return {
+      external_technician_id: technicianId,
+      technician_name: name,
+      hours,
+      coded_hours: codedHours,
+      pay_basis: null,
+      wage: null,
+      burden: null,
+      budget_wage: null,
+      budget_burden: null,
+      burden_unset: false,
+      missing: [],
+      notices: [],
+    };
+  }
+  const known = payBasis === "commission" || payBasis === "hourly";
+  const missing =
+    !known && (payBasis === "missing" || (hours > 0 && laborAmount == null))
+      ? [`${MISSING_PAY_MESSAGE} for ${name}`]
+      : [];
+  const notices = burdenUnset ? [`${BURDEN_NOT_SET_MESSAGE} for ${name}`] : [];
+  const wage = known ? roundMoney(laborAmount ?? 0) : null;
+  const burden = burdenUnset || burdenAmount == null ? null : roundMoney(burdenAmount);
   return {
     external_technician_id: technicianId,
     technician_name: name,
     hours,
     coded_hours: codedHours,
-    hourly_rate: hourly,
-    burden_rate: burden,
-    wage: priced ? roundMoney(hours * hourly) : null,
-    burden: priced ? roundMoney(hours * burden) : null,
-    budget_wage: priced ? roundMoney(codedHours * hourly) : null,
-    budget_burden: priced ? roundMoney(codedHours * burden) : null,
+    pay_basis: payBasis,
+    wage,
+    burden,
+    budget_wage: wage,
+    budget_burden: burden,
+    burden_unset: burdenUnset,
     missing,
+    notices,
   };
 }
 
@@ -429,15 +530,18 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
         typeof tech.technician_name === "string" ? tech.technician_name : null,
         id,
       );
-      return priceTechnician(
+      return presentStoredTechnician(
         Number(tech.hours ?? 0),
         Number(tech.coded_hours ?? 0),
-        finiteOrNull(tech.hourly_rate),
-        finiteOrNull(tech.burden_rate),
+        finiteOrNull(tech.coded_labor),
+        finiteOrNull(tech.coded_burden),
+        payBasisOf(tech.pay_basis),
+        tech.burden_unset === true,
         name,
         id,
       );
     })
+    .filter((tech) => !isPlaceholderTechnician(tech.technician_name))
     .sort((a, b) => a.technician_name.localeCompare(b.technician_name));
   const labor_wage = roundMoney(
     technicians.reduce((sum, tech) => sum + (tech.budget_wage ?? 0), 0),
@@ -451,6 +555,7 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     labor_burden,
     total: roundMoney(labor_wage + labor_burden),
     missing: technicians.flatMap((tech) => tech.missing),
+    notices: technicians.flatMap((tech) => tech.notices),
     technicians,
     uncoded_hours: uncoded,
     source: refreshStamp(row.labor_refresh_source),
@@ -486,44 +591,242 @@ export async function readTechnicianDirectory(client: {
   }
 }
 
+const PLACEHOLDER_NAME_SQL = PLACEHOLDER_TECHNICIAN_SQL;
+
+function asResolved(tech: TechnicianRate): ResolvedTechPay {
+  if (tech.payBasis === "commission" || tech.payBasis === "hourly" || tech.payBasis === "missing") {
+    return {
+      id: tech.id,
+      name: technicianLabel(tech.name, tech.id),
+      active: tech.active,
+      hourlyRate: tech.hourlyRate,
+      burdenRate: tech.burdenRate,
+      commissionRate: tech.commissionRate ?? null,
+      excluded: false,
+      payBasis: tech.payBasis,
+      commissionFraction: tech.commissionFraction ?? null,
+      commissionSource: null,
+      appliedHourlyRate: tech.appliedHourlyRate ?? null,
+      appliedBurdenRate: tech.appliedBurdenRate ?? null,
+      burdenUnset: tech.burdenUnset ?? tech.appliedBurdenRate == null,
+    };
+  }
+  return classifyTechnician(
+    {
+      id: tech.id,
+      name: tech.name,
+      active: tech.active,
+      hourlyRate: tech.hourlyRate,
+      burdenRate: tech.burdenRate,
+      commissionRate: tech.commissionRate ?? null,
+    },
+    null,
+  );
+}
+
+export async function readBillableRate(db: SqlClient, tenantId: string): Promise<number> {
+  const { rows } = await db.query<{ labor_billable_rate: string | null }>(
+    `SELECT labor_billable_rate::text AS labor_billable_rate
+       FROM projects.tenant_settings WHERE tenant_id = $1`,
+    [tenantId],
+  );
+  const value = Number(rows[0]?.labor_billable_rate);
+  return Number.isFinite(value) ? value : DEFAULT_BILLABLE_RATE;
+}
+
+async function clearPlaceholderLabor(db: SqlClient, tenantId: string): Promise<void> {
+  await db.query(
+    `UPDATE projects.labor_actuals
+        SET labor_amount = NULL,
+            burden_amount = NULL,
+            pay_basis = NULL,
+            burden_unset = false,
+            priced_billable_rate = NULL
+      WHERE tenant_id = $1
+        AND lower(trim(coalesce(technician_name, ''))) ~ $2`,
+    [tenantId, PLACEHOLDER_NAME_SQL],
+  );
+  await db.query(
+    `UPDATE projects.technician_labor_rates
+        SET active = false,
+            hourly_rate = NULL,
+            burden_rate = NULL,
+            pay_basis = NULL,
+            burden_unset = false
+      WHERE tenant_id = $1
+        AND lower(trim(coalesce(technician_name, ''))) ~ $2`,
+    [tenantId, PLACEHOLDER_NAME_SQL],
+  );
+}
+
+async function priceTechnicianHours(
+  db: SqlClient,
+  tenantId: string,
+  tech: ResolvedTechPay,
+  billableRate: number,
+): Promise<void> {
+  if (tech.excluded || isPlaceholderTechnician(tech.name)) {
+    await db.query(
+      `UPDATE projects.labor_actuals
+          SET labor_amount = NULL,
+              burden_amount = NULL,
+              pay_basis = NULL,
+              burden_unset = false,
+              priced_billable_rate = NULL
+        WHERE tenant_id = $1 AND external_technician_id = $2`,
+      [tenantId, tech.id],
+    );
+    return;
+  }
+  const basis = tech.payBasis ?? "missing";
+  await db.query(
+    `UPDATE projects.labor_actuals
+        SET labor_amount = CASE
+              WHEN $3::text = 'commission' AND $5::numeric > 0
+                THEN ROUND(hours * $4::numeric * $5::numeric, 2)
+              WHEN $3::text = 'hourly' AND $6::numeric > 0
+                THEN ROUND(hours * $6::numeric, 2)
+              ELSE NULL
+            END,
+            burden_amount = CASE
+              WHEN $7::numeric > 0 THEN ROUND(hours * $7::numeric, 2)
+              ELSE NULL
+            END,
+            burden_unset = $8::boolean,
+            pay_basis = $3,
+            priced_billable_rate = CASE
+              WHEN $3::text = 'commission' THEN $4::numeric
+              ELSE NULL
+            END
+      WHERE tenant_id = $1
+        AND external_technician_id = $2
+        AND lower(trim(coalesce(technician_name, ''))) !~ $9`,
+    [
+      tenantId,
+      tech.id,
+      basis,
+      billableRate.toFixed(2),
+      (tech.commissionFraction ?? 0).toFixed(8),
+      (tech.appliedHourlyRate ?? 0).toFixed(4),
+      (tech.appliedBurdenRate ?? 0).toFixed(4),
+      tech.burdenUnset,
+      PLACEHOLDER_NAME_SQL,
+    ],
+  );
+}
+
+/**
+ * Remembers who is commission, hourly, or missing, and prices stored hours.
+ * Hourly, burden, and commission numbers are query parameters only. The
+ * columns that used to keep them are written as null.
+ */
 export async function storeTechnicianRates(
   db: SqlClient,
   tenantId: string,
   technicians: TechnicianRate[],
   observedAt: Date,
 ): Promise<void> {
+  const billableRate = await readBillableRate(db, tenantId);
   const ids: string[] = [];
-  for (const tech of technicians) {
+  for (const raw of technicians) {
+    const tech = asResolved(raw);
+    if (tech.excluded || isPlaceholderTechnician(raw.name)) continue;
     ids.push(tech.id);
     await db.query(
       `INSERT INTO projects.technician_labor_rates
          (tenant_id, external_technician_id, technician_name, active,
-          hourly_rate, burden_rate, observed_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+          hourly_rate, burden_rate, pay_basis, burden_unset, observed_at)
+       VALUES ($1,$2,$3,$4,NULL,NULL,$5,$6,$7)
        ON CONFLICT (tenant_id, external_technician_id) DO UPDATE
          SET technician_name = EXCLUDED.technician_name,
              active = EXCLUDED.active,
-             hourly_rate = EXCLUDED.hourly_rate,
-             burden_rate = EXCLUDED.burden_rate,
+             hourly_rate = NULL,
+             burden_rate = NULL,
+             pay_basis = EXCLUDED.pay_basis,
+             burden_unset = EXCLUDED.burden_unset,
              observed_at = EXCLUDED.observed_at`,
-      [
-        tenantId,
-        tech.id,
-        tech.name,
-        tech.active,
-        tech.hourlyRate,
-        tech.burdenRate,
-        observedAt,
-      ],
+      [tenantId, tech.id, tech.name, tech.active, tech.payBasis, tech.burdenUnset, observedAt],
     );
+    await priceTechnicianHours(db, tenantId, tech, billableRate);
   }
   await db.query(
     `UPDATE projects.technician_labor_rates
-        SET active = false, observed_at = $3
+        SET active = false, hourly_rate = NULL, burden_rate = NULL, observed_at = $3
       WHERE tenant_id = $1
         AND external_technician_id <> ALL($2::text[])`,
     [tenantId, ids, observedAt],
   );
+  await clearPlaceholderLabor(db, tenantId);
+}
+
+export async function updateBillableRate(
+  db: SqlClient,
+  tenantId: string,
+  nextRate: number,
+): Promise<number> {
+  const next = roundMoney(nextRate);
+  await db.query(
+    `UPDATE projects.tenant_settings SET labor_billable_rate = $2 WHERE tenant_id = $1`,
+    [tenantId, next],
+  );
+  await db.query(
+    `UPDATE projects.labor_actuals
+        SET labor_amount = ROUND((labor_amount * $2::numeric) / priced_billable_rate, 2),
+            priced_billable_rate = $2
+      WHERE tenant_id = $1
+        AND pay_basis = 'commission'
+        AND labor_amount IS NOT NULL
+        AND priced_billable_rate IS NOT NULL
+        AND priced_billable_rate > 0
+        AND priced_billable_rate IS DISTINCT FROM $2::numeric`,
+    [tenantId, next],
+  );
+  return next;
+}
+
+export interface LaborCostSplit {
+  costCode: string;
+  budgeted: boolean;
+  labor: number;
+  burden: number;
+}
+
+export async function laborCostSplits(db: SqlClient, projectId: string): Promise<LaborCostSplit[]> {
+  const { rows } = await db.query<{
+    cost_code: string;
+    budgeted: boolean;
+    labor_amount: string | null;
+    burden_amount: string | null;
+  }>(
+    `SELECT cc.code AS cost_code,
+            EXISTS (
+              SELECT 1 FROM projects.budget_lines b
+               WHERE b.project_id = a.project_id
+                 AND b.cost_code_id = a.cost_code_id
+                 AND b.cost_type = 'L'
+            ) AS budgeted,
+            COALESCE(SUM(a.labor_amount), 0)::text AS labor_amount,
+            COALESCE(SUM(a.burden_amount), 0)::text AS burden_amount
+       FROM projects.labor_actuals a
+       JOIN projects.cost_codes cc ON cc.id = a.cost_code_id
+      WHERE a.project_id = $1
+        AND a.cost_code_id IS NOT NULL
+      GROUP BY cc.code, a.project_id, a.cost_code_id`,
+    [projectId],
+  );
+  return rows.map((row) => ({
+    costCode: row.cost_code,
+    budgeted: row.budgeted,
+    labor: Number(row.labor_amount ?? 0),
+    burden: Number(row.burden_amount ?? 0),
+  }));
+}
+
+export function laborLines(labor: number, burden: number): Array<{ description: string; amount: number }> {
+  return [
+    { description: "Labor", amount: roundMoney(labor) },
+    { description: "Labor burden", amount: roundMoney(burden) },
+  ];
 }
 
 export async function applyTechnicianDirectory(
@@ -590,32 +893,47 @@ export async function listActiveRateGaps(db: SqlClient, tenantId: string): Promi
   const { rows } = await db.query<{
     external_technician_id: string;
     technician_name: string | null;
-    hourly_rate: string | null;
-    burden_rate: string | null;
+    pay_basis: string | null;
   }>(
-    `SELECT external_technician_id, technician_name, hourly_rate::text, burden_rate::text
+    `SELECT external_technician_id, technician_name, pay_basis
        FROM projects.technician_labor_rates
-      WHERE tenant_id = $1 AND active
+      WHERE tenant_id = $1 AND active AND pay_basis = 'missing'
       ORDER BY technician_name NULLS LAST, external_technician_id`,
     [tenantId],
   );
   const gaps: RateGap[] = [];
   for (const row of rows) {
-    const hourly = finiteOrNull(row.hourly_rate);
-    const burden = finiteOrNull(row.burden_rate);
     const name = technicianLabel(row.technician_name, row.external_technician_id);
-    const messages = [
-      rateGap("hourly rate", name, hourly),
-      rateGap("burden rate", name, burden),
-    ].filter((line): line is string => line !== null);
-    if (!messages.length) continue;
+    if (isPlaceholderTechnician(name)) continue;
     gaps.push({
       external_technician_id: row.external_technician_id,
       technician_name: name,
-      hourly_rate: hourly,
-      burden_rate: burden,
-      messages,
+      messages: [MISSING_PAY_MESSAGE],
     });
   }
   return gaps;
+}
+
+export async function listBurdenNotices(db: SqlClient, tenantId: string): Promise<RateGap[]> {
+  const { rows } = await db.query<{
+    external_technician_id: string;
+    technician_name: string | null;
+  }>(
+    `SELECT external_technician_id, technician_name
+       FROM projects.technician_labor_rates
+      WHERE tenant_id = $1 AND active AND burden_unset
+      ORDER BY technician_name NULLS LAST, external_technician_id`,
+    [tenantId],
+  );
+  const notices: RateGap[] = [];
+  for (const row of rows) {
+    const name = technicianLabel(row.technician_name, row.external_technician_id);
+    if (isPlaceholderTechnician(name)) continue;
+    notices.push({
+      external_technician_id: row.external_technician_id,
+      technician_name: name,
+      messages: [BURDEN_NOT_SET_MESSAGE],
+    });
+  }
+  return notices;
 }

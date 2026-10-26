@@ -1,10 +1,12 @@
 import { z } from "zod";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import type { AdvisoryLock, Database } from "../db/database.js";
+import { payrollReaderFrom, resolvePayForTechnicians } from "../domain/commissionLabor.js";
 import {
   readLaborJobs,
   readTechnicianDirectory,
   saveLaborRefresh,
+  withResolvedTechnicianNames,
 } from "../domain/laborActuals.js";
 import { applyResolvedLaborCode, resolveStLaborCode } from "../domain/stLaborCode.js";
 
@@ -170,14 +172,23 @@ async function refreshProject(
   const directory = await readTechnicianDirectory({
     readTechnicians: connection.client.readTechnicians?.bind(connection.client),
   });
+  const technicians = await resolvePayForTechnicians(
+    directory.technicians,
+    payrollReaderFrom(connection.client),
+  );
+  const namedResults = await withResolvedTechnicianNames(
+    results,
+    technicians,
+    connection.client.readStaffName?.bind(connection.client),
+  );
   const laborCode = await resolveStLaborCode(connection.client);
   await db.withTenant(tenantId, async (client) => {
     await saveLaborRefresh(client, {
       tenantId,
       projectId,
       jobs: jobs.rows,
-      results,
-      directory,
+      results: namedResults,
+      directory: { ...directory, technicians },
       source: "scheduled",
       observedAt,
     });

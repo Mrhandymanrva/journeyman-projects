@@ -93,16 +93,6 @@ describe("labor actuals", () => {
         `UPDATE projects.tenant_settings SET labor_burdened_hourly_rate = 999 WHERE tenant_id = $1`,
         [t.id],
       );
-      await storeTechnicianRates(
-        db,
-        t.id,
-        [
-          { id: "tech-1", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
-          { id: "tech-2", name: "Jordan Hale", active: true, hourlyRate: 36, burdenRate: 0 },
-          { id: "tech-3", name: "Riley Cho", active: true, hourlyRate: 0, burdenRate: 8 },
-        ],
-        new Date("2026-10-25T12:00:00Z"),
-      );
       await storeJobLabor(db, {
         tenantId: t.id,
         projectId,
@@ -135,35 +125,52 @@ describe("labor actuals", () => {
         },
       });
       await stampLaborCodes(db, t.id, laborCodeId);
+      await storeTechnicianRates(
+        db,
+        t.id,
+        [
+          { id: "tech-1", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
+          { id: "tech-2", name: "Jordan Hale", active: true, hourlyRate: 36, burdenRate: 0 },
+          { id: "tech-3", name: "Riley Cho", active: true, hourlyRate: 0, burdenRate: 8 },
+        ],
+        new Date("2026-10-25T12:00:00Z"),
+      );
     });
 
     const shown = await owner().get(`/api/v1/projects/projects/${projectId}/labor`);
     expect(shown.body.data.hours).toBe(6);
-    expect(shown.body.data.labor_wage).toBe(160);
+    expect(shown.body.data.labor_wage).toBe(232);
     expect(shown.body.data.labor_burden).toBe(48);
-    expect(shown.body.data.total).toBe(208);
+    expect(shown.body.data.total).toBe(280);
     expect(shown.body.data.uncoded_hours).toBe(0);
+    expect(shown.body.data.billable_rate).toBe(188);
     const casey = shown.body.data.technicians.find(
       (tech: { technician_name: string }) => tech.technician_name === "Casey Nguyen",
     );
-    expect(casey).toMatchObject({ hours: 4, hourly_rate: 40, burden_rate: 12, wage: 160, burden: 48 });
+    expect(casey).toMatchObject({ hours: 4, pay_basis: "hourly", wage: 160, burden: 48 });
+    expect(casey).not.toHaveProperty("hourly_rate");
+    expect(casey).not.toHaveProperty("burden_rate");
     const jordan = shown.body.data.technicians.find(
       (tech: { technician_name: string }) => tech.technician_name === "Jordan Hale",
     );
-    expect(jordan.wage).toBeNull();
-    expect(jordan.missing).toEqual(["Missing from ServiceTitan: burden rate is 0 for Jordan Hale"]);
-    expect(shown.body.data.missing).toEqual(["Missing from ServiceTitan: burden rate is 0 for Jordan Hale"]);
-    expect(shown.body.data.rate_gaps.map((gap: { technician_name: string }) => gap.technician_name)).toEqual([
-      "Jordan Hale",
+    expect(jordan).toMatchObject({ hours: 2, pay_basis: "hourly", wage: 72, burden: null, burden_unset: true });
+    expect(jordan).not.toHaveProperty("missing");
+    expect(jordan.notices).toEqual(["burden not set for Jordan Hale"]);
+    expect(shown.body.data.missing).toEqual([]);
+    expect(shown.body.data).not.toHaveProperty("rate_gaps");
+    expect(shown.body.data).not.toHaveProperty("burden_notices");
+    const settings = await owner().get("/api/v1/projects/settings/labor");
+    expect(settings.body.data.rate_gaps.map((gap: { technician_name: string }) => gap.technician_name)).toEqual([
       "Riley Cho",
+    ]);
+    expect(settings.body.data.burden_notices.map((gap: { technician_name: string }) => gap.technician_name)).toEqual([
+      "Jordan Hale",
     ]);
 
     const coordinator = await pm().get(`/api/v1/projects/projects/${projectId}/labor`);
-    expect(coordinator.body.data.labor_wage).toBe(160);
-    expect(coordinator.body.data.total).toBe(208);
-    expect(coordinator.body.data.missing).toEqual([
-      "Missing from ServiceTitan: burden rate is 0 for Jordan Hale",
-    ]);
+    expect(coordinator.body.data.labor_wage).toBe(232);
+    expect(coordinator.body.data.total).toBe(280);
+    expect(coordinator.body.data.missing).toEqual([]);
     expect(coordinator.body.data).not.toHaveProperty("rate_gaps");
     for (const tech of coordinator.body.data.technicians) {
       expect(tech).not.toHaveProperty("hourly_rate");
@@ -187,7 +194,13 @@ describe("labor actuals", () => {
     const row = (cost.body.data as Array<{ cost_code: string; cost_type: string; actual_cost: number }>).find(
       (line) => line.cost_code === "210" && line.cost_type === "L",
     );
-    expect(Number(row?.actual_cost)).toBe(208);
+    expect(Number(row?.actual_cost)).toBe(280);
+    expect(row).toMatchObject({
+      lines: [
+        { description: "Labor", amount: 232 },
+        { description: "Labor burden", amount: 48 },
+      ],
+    });
 
     const removed = await owner().put("/api/v1/projects/settings/labor").send({
       labor_cost_code_id: null,
@@ -248,8 +261,7 @@ describe("labor actuals", () => {
     expect(shown.body.data.labor_wage).toBe(0);
     expect(shown.body.data.total).toBe(0);
     expect(shown.body.data.missing).toEqual([
-      "Missing from ServiceTitan: hourly rate for Alex",
-      "Missing from ServiceTitan: burden rate for Alex",
+      "No ServiceTitan commission percent or hourly rate for Alex",
     ]);
     expect(shown.body.data.lines).toHaveLength(1);
     expect(shown.body.data.lines[0].source).toBe("timesheet");
@@ -330,7 +342,14 @@ describe("a denied technician read", () => {
             throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 403).");
           }
           return [
-            { id: "tech-casey", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
+            {
+              id: "tech-casey",
+              name: "Casey Nguyen",
+              active: true,
+              hourlyRate: 40,
+              burdenRate: 12,
+              commissionRate: null,
+            },
           ];
         },
       },
@@ -405,8 +424,7 @@ describe("a denied technician read", () => {
     expect(denied.body.data.labor_burden).toBe(0);
     expect(denied.body.data.total).toBe(0);
     expect(denied.body.data.missing).toEqual([
-      "Missing from ServiceTitan: hourly rate for Casey Nguyen",
-      "Missing from ServiceTitan: burden rate for Casey Nguyen",
+      "No ServiceTitan commission percent or hourly rate for Casey Nguyen",
     ]);
     const deniedCost = await asOwner.get(`/api/v1/projects/projects/${id}/cost-position`);
     const deniedRows = deniedCost.body.data as Array<{
@@ -431,7 +449,9 @@ describe("a denied technician read", () => {
     expect(typeof priced.body.data.observed_at).toBe("string");
     expect(priced.body.data.missing).toEqual([]);
     const casey = priced.body.data.technicians[0];
-    expect(casey).toMatchObject({ hourly_rate: 40, burden_rate: 12, wage: 160, burden: 48 });
+    expect(casey).toMatchObject({ pay_basis: "hourly", wage: 160, burden: 48 });
+    expect(casey).not.toHaveProperty("hourly_rate");
+    expect(casey).not.toHaveProperty("burden_rate");
     expect(priced.body.data.uncoded_hours).toBe(0);
     expect(priced.body.data.st_labor_code).toEqual({
       code: "ST-LAB",
