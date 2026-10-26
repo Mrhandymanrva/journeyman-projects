@@ -124,6 +124,10 @@ export class ServiceTitanReadAdapter {
         ? "https://auth.servicetitan.io"
         : "https://auth-integration.servicetitan.io";
   }
+  /** ServiceTitan tenant id. The labor-code cache is keyed on this. */
+  get sourceTenantId(): string {
+    return this.config.tenantId;
+  }
   private async accessToken(): Promise<string> {
     if (this.token && this.token.expiresAt > Date.now() + 60000)
       return this.token.value;
@@ -1044,6 +1048,75 @@ export class ServiceTitanReadAdapter {
     } catch (err) {
       if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
         return { jobId, forbidden: true, timesheets: [] };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Payroll labor types. GET only. A 403 is returned as forbidden so hours
+   * can stay uncoded. The caller keeps a type only when exactly one is active.
+   */
+  async readLaborTypes(): Promise<{
+    forbidden: boolean;
+    laborTypes: Array<{
+      id: string;
+      name: string | null;
+      code: string | null;
+      serviceCodeId: string | null;
+      active: boolean;
+    }>;
+  }> {
+    const laborTypeSchema = z
+      .object({
+        id: sourceId,
+        name: z.string().nullish(),
+        code: z.string().nullish(),
+        serviceCodeId: sourceId.nullish(),
+        active: z.boolean(),
+      })
+      .strip();
+    try {
+      const rows: Array<z.infer<typeof laborTypeSchema>> = [];
+      for (let page = 1; page <= 100; page++) {
+        const raw = await this.get(
+          "payroll",
+          "labor-types",
+          new URLSearchParams({
+            active: "True",
+            page: String(page),
+            pageSize: "50",
+          }),
+        );
+        const parsed = z
+          .object({ data: z.array(laborTypeSchema), hasMore: z.boolean() })
+          .safeParse(raw);
+        if (!parsed.success) {
+          throw new ServiceTitanReadError("Unexpected ServiceTitan labor-types response.");
+        }
+        rows.push(...parsed.data.data);
+        if (!parsed.data.hasMore) {
+          if (new Set(rows.map((row) => row.id)).size !== rows.length) {
+            throw new ServiceTitanReadError("Duplicate ServiceTitan labor type ids.");
+          }
+          return {
+            forbidden: false,
+            laborTypes: rows.map((row) => ({
+              id: row.id,
+              name: row.name ?? null,
+              code: row.code ?? null,
+              serviceCodeId: row.serviceCodeId ?? null,
+              active: row.active,
+            })),
+          };
+        }
+      }
+      throw new ServiceTitanReadError(
+        "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
+      );
+    } catch (err) {
+      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
+        return { forbidden: true, laborTypes: [] };
       }
       throw err;
     }

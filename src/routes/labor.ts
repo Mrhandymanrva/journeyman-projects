@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { z } from "zod";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import {
   listActiveRateGaps,
@@ -8,9 +7,14 @@ import {
   readLaborJobs,
   readTechnicianDirectory,
   saveLaborRefresh,
-  stampLaborCodes,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
+import {
+  applyResolvedLaborCode,
+  presentStLaborCode,
+  readStLaborCode,
+  resolveStLaborCode,
+} from "../domain/stLaborCode.js";
 import { can, requireCapability } from "../http/capabilities.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
@@ -20,15 +24,7 @@ import {
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
-import { loadVisibleProject, num, parseBody, parseUuidParam, requireOwnedRow } from "./shared.js";
-
-const settingsSchema = z.object({
-  labor_cost_code_id: z.string().uuid().nullable(),
-});
-
-const projectCodeSchema = z.object({
-  cost_code_id: z.string().uuid().nullable(),
-});
+import { loadVisibleProject, num, parseUuidParam } from "./shared.js";
 
 export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): Router {
   const router = Router();
@@ -37,26 +33,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
     "/settings/labor",
     staffRoute(deps, async (ctx) => {
       requireCapability(ctx.staff.role, "manage_company_settings");
-      sendData(ctx.res, await loadSettings(ctx));
-    }),
-  );
-
-  router.put(
-    "/settings/labor",
-    staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, "manage_company_settings");
-      const body = parseBody(settingsSchema, ctx.req.body);
-      if (body.labor_cost_code_id) {
-        await requireOwnedRow(ctx.db, "cost_codes", body.labor_cost_code_id, "labor_cost_code_id");
-      }
-      await ctx.db.query(
-        `UPDATE projects.tenant_settings
-            SET labor_cost_code_id = $2
-          WHERE tenant_id = $1`,
-        [ctx.staff.tenantId, body.labor_cost_code_id],
-      );
-      await stampLaborCodes(ctx.db, ctx.staff.tenantId);
-      sendData(ctx.res, await loadSettings(ctx));
+      sendData(ctx.res, await loadSettings(ctx, sources.serviceTitan?.client));
     }),
   );
 
@@ -65,26 +42,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
     staffRoute(deps, async (ctx) => {
       const projectId = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, projectId, "id");
-      sendData(ctx.res, await presentLabor(ctx, projectId));
-    }),
-  );
-
-  router.put(
-    "/projects/:id/labor-cost-code",
-    staffRoute(deps, async (ctx) => {
-      const projectId = parseUuidParam(ctx.req.params.id, "Project");
-      await loadVisibleProject(ctx, projectId, "id");
-      requireCapability(ctx.staff.role, "set_labor_cost_code");
-      const body = parseBody(projectCodeSchema, ctx.req.body);
-      if (body.cost_code_id) {
-        await requireOwnedRow(ctx.db, "cost_codes", body.cost_code_id, "cost_code_id");
-      }
-      await ctx.db.query(
-        `UPDATE projects.projects SET labor_cost_code_id = $2 WHERE id = $1`,
-        [projectId, body.cost_code_id],
-      );
-      await stampLaborCodes(ctx.db, ctx.staff.tenantId, projectId);
-      sendData(ctx.res, await presentLabor(ctx, projectId));
+      sendData(ctx.res, await presentLabor(ctx, projectId, sources.serviceTitan?.client));
     }),
   );
 
@@ -115,6 +73,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           readJobTimesheets: (jobId: string) => source.client.readJobTimesheets!(jobId),
           readJob: (jobId: string) => source.client.readJob(jobId),
           readTechnicians: source.client.readTechnicians?.bind(source.client),
+          laborClient: source.client,
         };
       },
       async (prepared) => {
@@ -125,7 +84,8 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
         const directory = await readTechnicianDirectory({
           readTechnicians: prepared.readTechnicians,
         });
-        return { jobs, directory };
+        const laborCode = await resolveStLaborCode(prepared.laborClient);
+        return { jobs, directory, laborCode };
       },
       async (ctx, prepared, read) => {
         requireCapability(ctx.staff.role, "refresh_labor");
@@ -139,7 +99,11 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           source: "manual",
           observedAt: new Date(),
         });
-        sendData(ctx.res, await presentLabor(ctx, prepared.projectId));
+        const applied = await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, read.laborCode);
+        if (!applied.ok) {
+          console.error(`Labor code was not applied: ${applied.message}`);
+        }
+        sendData(ctx.res, await presentLabor(ctx, prepared.projectId, prepared.laborClient));
       },
     ),
   );
@@ -147,37 +111,33 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
   return router;
 }
 
-async function loadSettings(ctx: StaffContext) {
-  const { rows } = await ctx.db.query<{
-    labor_cost_code_id: string | null;
-    code: string | null;
-    description: string | null;
-  }>(
-    `SELECT s.labor_cost_code_id, c.code, c.description
-       FROM projects.tenant_settings s
-       LEFT JOIN projects.cost_codes c ON c.id = s.labor_cost_code_id
-      WHERE s.tenant_id = $1`,
-    [ctx.staff.tenantId],
+async function loadSettings(
+  ctx: StaffContext,
+  client: Parameters<typeof readStLaborCode>[2],
+) {
+  const shown = presentStLaborCode(
+    await readStLaborCode(ctx.db, ctx.staff.tenantId, client),
   );
-  const row = rows[0];
   return {
-    labor_cost_code_id: row?.labor_cost_code_id ?? null,
-    labor_cost_code: row?.code ?? null,
-    labor_cost_code_description: row?.description ?? null,
+    st_labor_code: shown.st_labor_code,
+    st_labor_code_error: shown.st_labor_code_error,
     rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId),
   };
 }
 
-async function presentLabor(ctx: StaffContext, projectId: string) {
+async function presentLabor(
+  ctx: StaffContext,
+  projectId: string,
+  client: Parameters<typeof readStLaborCode>[2],
+) {
+  const shown = presentStLaborCode(
+    await readStLaborCode(ctx.db, ctx.staff.tenantId, client),
+  );
   const summary = await ctx.db.query<Record<string, unknown>>(
     `SELECT ${portfolioLaborColumns("p")},
-            s.labor_rates_forbidden,
-            COALESCE(p.labor_cost_code_id, s.labor_cost_code_id) AS effective_code_id,
-            c.code AS effective_code, c.description AS effective_description
+            s.labor_rates_forbidden
        FROM projects.projects p
        JOIN projects.tenant_settings s ON s.tenant_id = p.tenant_id
-       LEFT JOIN projects.cost_codes c
-         ON c.id = COALESCE(p.labor_cost_code_id, s.labor_cost_code_id)
       WHERE p.id = $1`,
     [projectId],
   );
@@ -214,11 +174,13 @@ async function presentLabor(ctx: StaffContext, projectId: string) {
         }
       : {}),
     ...(showRates ? { rate_gaps: await listActiveRateGaps(ctx.db, ctx.staff.tenantId) } : {}),
-    cost_code: summary.rows[0]?.effective_code
+    st_labor_code: shown.st_labor_code,
+    st_labor_code_error: shown.st_labor_code_error,
+    cost_code: shown.st_labor_code
       ? {
-          id: summary.rows[0]?.effective_code_id ?? null,
-          code: summary.rows[0]?.effective_code,
-          description: summary.rows[0]?.effective_description ?? null,
+          id: shown.costCodeId,
+          code: shown.st_labor_code.code,
+          description: shown.st_labor_code.name,
         }
       : null,
     technicians: labor.technicians.map((tech) => presentTechnician(tech, showRates)),

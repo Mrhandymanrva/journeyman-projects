@@ -22,11 +22,11 @@ import {
   applyTechnicianDirectory,
   readLaborJobs,
   readTechnicianDirectory,
-  stampLaborCodes,
   storeJobLabor,
   type LaborJobResult,
   type TechnicianDirectory,
 } from "../domain/laborActuals.js";
+import { applyResolvedLaborCode, resolveStLaborCode, type StLaborResolve } from "../domain/stLaborCode.js";
 import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
 import {
@@ -243,8 +243,9 @@ export function stProjectRoutes(
           details.jobs.map((job) => job.id),
         );
         const directory = await readTechnicianDirectory(p.c.client);
+        const laborCode = await resolveStLaborCode(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, directory, ar };
+        return { details, fieldStart, labor, directory, laborCode, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
@@ -290,7 +291,7 @@ export function stProjectRoutes(
           id = created.id as string;
         }
         await applySource(ctx, id, c, result.details);
-        await storeReadLabor(ctx, id, result.labor, result.directory);
+        await storeReadLabor(ctx, id, result.labor, result.directory, result.laborCode);
         await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
         if (!p.manual) {
           await storeComputedFieldStart(ctx.db, id, result.fieldStart);
@@ -401,8 +402,9 @@ export function stProjectRoutes(
           details.jobs.map((job) => job.id),
         );
         const directory = await readTechnicianDirectory(p.c.client);
+        const laborCode = await resolveStLaborCode(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, directory, ar };
+        return { details, fieldStart, labor, directory, laborCode, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
@@ -414,7 +416,7 @@ export function stProjectRoutes(
             "ServiceTitan connection changed; refresh before linking.",
           );
         await applySource(ctx, p.id, c, result.details);
-        await storeReadLabor(ctx, p.id, result.labor, result.directory);
+        await storeReadLabor(ctx, p.id, result.labor, result.directory, result.laborCode);
         await storeReadAr(
           ctx,
           p.id,
@@ -608,6 +610,7 @@ async function storeReadLabor(
   projectId: string,
   labor: LaborJobResult[] | null,
   directory: TechnicianDirectory,
+  laborCode: StLaborResolve,
 ): Promise<void> {
   const observedAt = new Date();
   if (labor?.length) {
@@ -628,7 +631,10 @@ async function storeReadLabor(
     }
   }
   await applyTechnicianDirectory(ctx.db, ctx.staff.tenantId, directory, observedAt);
-  await stampLaborCodes(ctx.db, ctx.staff.tenantId, projectId);
+  const applied = await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, laborCode);
+  if (!applied.ok) {
+    console.error(`Labor code was not applied: ${applied.message}`);
+  }
 }
 
 async function readLinkedAr(
