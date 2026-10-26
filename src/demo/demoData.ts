@@ -21,6 +21,7 @@ import { activateModule, writePlatformRows } from '../db/activation.js';
 import { storeProjectAr } from '../domain/arMatch.js';
 import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
+import { seedPreconTasks } from '../domain/preconTasks.js';
 import { today } from '../domain/projectControls.js';
 
 export const DEMO_SLUG = 'demo';
@@ -275,6 +276,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: number;
     lengthDays: number;
     budget: BudgetSpec[];
+    customer?: string;
   }) {
     return db.withTenant(TENANT_ID, async (c) => {
       const { rows } = await c.query<{ id: string }>(
@@ -305,6 +307,12 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
         ],
       );
       const projectId = rows[0]!.id;
+      if (spec.customer) {
+        await c.query(
+          `UPDATE projects.projects SET source_customer_name = $2 WHERE id = $1`,
+          [projectId, spec.customer],
+        );
+      }
 
       await c.query(
         `INSERT INTO projects.stage_gates (tenant_id, project_id, gate_number, title, checklist)
@@ -414,6 +422,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 19,
     lengthDays: 24,
     budget: whitfieldBudget,
+    customer: 'Ada Whitfield',
   });
   await spendAgainst(whitfield, 'PO-W', [
     ...whitfieldBudget.map((b) => ({
@@ -587,6 +596,30 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   log('project controls: Whitfield goals and milestones roll up from tasks');
 
   await db.withTenant(TENANT_ID, async (c) => {
+    const start = (
+      await c.query<{ scheduled_start: string | null }>(
+        `SELECT scheduled_start::text AS scheduled_start FROM projects.projects WHERE id = $1`,
+        [whitfield],
+      )
+    ).rows[0]?.scheduled_start ?? null;
+    await seedPreconTasks(c, TENANT_ID, whitfield, start);
+    const asOf = today();
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date - 1
+        WHERE project_id = $1 AND title = 'Materials ordered'`,
+      [whitfield, asOf],
+    );
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date
+        WHERE project_id = $1 AND title = 'Subs booked'`,
+      [whitfield, asOf],
+    );
+  });
+  log('precon: Whitfield checklist, with materials overdue and subs due today');
+
+  await db.withTenant(TENANT_ID, async (c) => {
     const mirrored = await c.query<{ id: string }>(
       `INSERT INTO projects.cost_codes
          (tenant_id, code, division_code, division_name, description,
@@ -719,6 +752,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 15,
     lengthDays: 60,
     budget: okonkwoBudget,
+    customer: 'Chidi Okonkwo',
   });
   await spendAgainst(
     okonkwo,
@@ -791,6 +825,7 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
     startedDaysAgo: 31,
     lengthDays: 38,
     budget: delaneyBudget,
+    customer: 'Pat Delaney',
   });
   await spendAgainst(
     delaney,

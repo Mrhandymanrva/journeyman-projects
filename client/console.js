@@ -6,8 +6,10 @@ import {
   bindPrecon,
   preconHtml,
 } from "./precon.js";
+import { createHome, landingChoice, revealLinkedItem } from "./home.js";
 import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
+import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { createPlanning } from "./planning.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
@@ -192,27 +194,35 @@ async function boot() {
       "manage_company_settings",
     );
     projects = await loadProjects();
+    renderSwitch();
     if (projects.length === 0) {
-      el("boot").textContent =
-        "No projects yet. Choose Add from ServiceTitan to get started.";
+      el("boot").hidden = true;
       if (location.hash === "#users") await workspace.openUsers();
+      else await workspace.openHome();
       return;
     }
-    renderSwitch();
     const linkedProject = new URLSearchParams(location.search).get("project");
     if (linkedProject && !projects.some((p) => p.id === linkedProject))
       throw Error(
         "You do not have access to the project in this document link.",
       );
-    current =
-      projects.find((p) => p.id === linkedProject) ??
-      projects.find(
-        (p) =>
-          p.id ===
-          localStorage.getItem("jp.activeProject." + session.tenant.id),
-      ) ??
-      projects[0];
-    await select(current.id);
+    const choice = landingChoice({
+      search: location.search,
+      hash: location.hash,
+      rememberedProjectId: localStorage.getItem(
+        "jp.activeProject." + session.tenant.id,
+      ),
+      projectPages: Object.keys(workspacePages),
+    });
+    if (
+      choice.kind === "project" &&
+      projects.some((p) => p.id === choice.projectId)
+    ) {
+      await select(choice.projectId);
+      return;
+    }
+    el("boot").hidden = true;
+    await workspace.openHome();
   } catch (err) {
     if (err.status === 401) {
       showSignIn(token ? "That session is no longer valid." : "");
@@ -347,8 +357,18 @@ async function select(projectId) {
     if (revision !== selectionRevision) return;
     current = { id: projectId, ...detail };
     localStorage.setItem("jp.activeProject." + session.tenant.id, projectId);
+    const projectUrl = new URL(location.href);
+    projectUrl.searchParams.set("project", projectId);
+    if (!projectUrl.hash || projectUrl.hash === "#home")
+      projectUrl.hash = "dashboard";
+    history.replaceState(
+      null,
+      "",
+      projectUrl.pathname + projectUrl.search + projectUrl.hash,
+    );
     if (el("project-search")) filterProjects();
     el("boot").hidden = true;
+    if (el("home")) el("home").hidden = true;
     el("shell").hidden = false;
     render({
       detail,
@@ -418,6 +438,7 @@ function render(d) {
   renderDraws(d.drawData);
   workspace.render(d);
   renderPrecon(d.detail);
+  revealLinkedItem();
 }
 
 function addressLine(p) {
@@ -906,6 +927,7 @@ function inspectionDrawer(task) {
 function renderPermits(permits) {
   const links = permits.flatMap((p) =>
     (p.milestones || []).map((m) => ({
+      id: m.id,
       s:
         m.status === "complete"
           ? "done"
@@ -929,7 +951,7 @@ function renderPermits(permits) {
   el("permits").innerHTML = links
     .map(
       (x) => `
-    <div class="link ${x.s}"><div class="t">${esc(x.t)}</div>${
+    <div class="link ${x.s}" id="item-${esc(x.id)}"><div class="t">${esc(x.t)}</div>${
       x.d ? `<div class="d">${esc(x.d)}</div>` : ""
     }</div>`,
     )
@@ -2594,6 +2616,13 @@ el("st-project-open").addEventListener("click", () =>
   stProjectConnector.open(),
 );
 
+const home = createHome({
+  api,
+  el,
+  esc,
+  openProject: (id) => select(id),
+});
+
 const workspace = createWorkspace({
   api,
   el,
@@ -2605,16 +2634,27 @@ const workspace = createWorkspace({
   closeDrawer,
   field,
   reload: () => select(current.id),
+  renderHome: () => home.render(),
+  onNeedProject: async () => {
+    const linked = new URLSearchParams(location.search).get("project");
+    const remembered = session
+      ? localStorage.getItem("jp.activeProject." + session.tenant.id)
+      : null;
+    const id = [linked, remembered].find(
+      (value) => value && projects.some((project) => project.id === value),
+    );
+    if (!id) return false;
+    await select(id);
+    return true;
+  },
   onProjectDeleted: async () => {
     ++selectionRevision;
-    current=null;
-    localStorage.removeItem('jp.activeProject.'+session.tenant.id);
-    const url=new URL(location.href);url.searchParams.delete('project');history.replaceState(null,'',url);
-    el('shell').hidden=true;
-    projects=await loadProjects();
+    current = null;
+    localStorage.removeItem("jp.activeProject." + session.tenant.id);
+    projects = await loadProjects();
     renderSwitch();
-    if(projects.length) await select(projects[0].id);
-    else {el('boot').hidden=false;el('boot').className='state';el('boot').textContent='Project deleted. No projects remain. Choose Add from ServiceTitan to get started.';}
+    el("boot").hidden = true;
+    await workspace.openHome();
   },
 });
 

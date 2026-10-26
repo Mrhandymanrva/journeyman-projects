@@ -111,7 +111,7 @@ function taskHtml(task, canEdit, esc) {
   const actions = canEdit
     ? `<div class="actions"><button class="btn sm" type="button" data-precon-edit="${esc(task.id)}">Edit</button>${task.type === "permit" ? `<button class="btn sm" type="button" data-precon-inspect="${esc(task.id)}">Add inspection</button>` : ""}</div>`
     : "";
-  return `<article class="precon-task${overdue ? " overdue" : ""}" data-task="${esc(task.id)}">
+  return `<article class="precon-task${overdue ? " overdue" : ""}" id="item-${esc(task.id)}" data-task="${esc(task.id)}">
     <div class="precon-head">
       <div>
         <strong>${esc(task.title)}</strong>
