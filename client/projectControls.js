@@ -1,3 +1,4 @@
+import { goalKeyResultHelpHtml } from "./goalHelp.js";
 import { projectTemplates, templateContent } from "./projectTemplates.js";
 const day = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -192,25 +193,25 @@ export function createProjectControls({
     return (
       header(
         "Objectives & key results",
-        "Define the outcome and measure progress with one or more key results.",
+        "Name the outcome and a target date. Key results are optional.",
         "goal",
       ) +
       `<div class="control-roadmap">${
         active("goal")
           .map(
             (r) =>
-              `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${status(r.data.state)}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${r.data.key_results
+              `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${status(r.data.state)}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${(r.data.key_results ?? []).length ? (r.data.key_results ?? [])
                 .map((k) => {
                   const p = pct(
                     (100 * (k.current - k.start)) / (k.target - k.start),
                   );
                   return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
                 })
-                .join("")}${edits(r)}</article>`,
+                .join("") : '<p class="hint">No key results. Add start, target, current, and a unit when you want a measured number.</p>'}${edits(r)}</article>`,
           )
           .join("") ||
         empty(
-          "Add an objective, then define measurable key results and a target date.",
+          "Add an objective and a target date. Key results are optional.",
         )
       }</div>`
     );
@@ -547,7 +548,9 @@ export function createProjectControls({
     if (k === "goal")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
-        '<h3>Measurable key results</h3><div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button>';
+        "<h3>Measurable key results</h3>" +
+        goalKeyResultHelpHtml() +
+        '<div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button>';
     if (k === "milestone")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
@@ -682,11 +685,7 @@ export function createProjectControls({
         row.querySelector("button").onclick = () => row.remove();
         el("cf-key-results").append(row);
       };
-      (
-        d.key_results ?? [
-          { name: "", start: 0, target: 100, current: 0, unit: "%" },
-        ]
-      ).forEach(add);
+      (d.key_results ?? []).forEach(add);
       el("cf-add-kr").onclick = () => add();
     }
     el("control-form").onsubmit = async (e) => {
@@ -728,14 +727,16 @@ export function createProjectControls({
       }
       if (k === "document") data.template = d.template ?? template;
       if (k === "goal")
-        data.key_results = [...el("cf-key-results").children].map((row) =>
-          Object.fromEntries(
-            [...row.querySelectorAll("[data-kr]")].map((n) => [
-              n.dataset.kr,
-              n.type === "number" ? Number(n.value) : n.value,
-            ]),
-          ),
-        );
+        data.key_results = [...el("cf-key-results").children]
+          .map((row) =>
+            Object.fromEntries(
+              [...row.querySelectorAll("[data-kr]")].map((n) => [
+                n.dataset.kr,
+                n.type === "number" ? Number(n.value) : n.value,
+              ]),
+            ),
+          )
+          .filter((row) => String(row.name ?? "").trim());
       el("cf-save").disabled = true;
       try {
         await save(r, data, r ? el("cf-active").checked : true);
@@ -1272,31 +1273,10 @@ export function createProjectControls({
     );
   }
   async function dashboard(targetId) {
-    const id = current()?.id;
-    if (!id) return;
-    try {
-      const data = await api("/projects/" + id + "/controls");
-      if (current()?.id !== id) return;
-      const rows = data.records.filter((r) => r.active),
-        reports = rows
-          .filter((r) => r.kind === "report")
-          .sort(
-            (a, b) =>
-              b.data.as_of.localeCompare(a.data.as_of) ||
-              b.created_at.localeCompare(a.created_at),
-          );
-      const tasks = rows.filter(
-        (r) =>
-          r.kind === "task" &&
-          !rows.some((c) => c.kind === "task" && c.data.parent_id === r.id),
-      );
-      el(targetId).innerHTML =
-        `<div class="card control-dashboard"><h2>Project health & delivery</h2><div class="control-metrics"><a href="#plan">${status(reports[0]?.data.overall ?? "not_assessed")}<small>Latest reported RAG${reports[0] ? " · " + reports[0].data.as_of : ""}</small></a><a href="#plan"><strong>${tasks.filter((r) => r.data.state === "complete").length} / ${tasks.length}</strong><small>Tasks complete</small></a><a href="#risks"><strong>${rows.filter((r) => r.kind === "risk" && r.data.roam !== "resolved").length}</strong><small>Open risks</small></a><a href="#communications"><strong>${rows.filter((r) => r.kind === "communication" && r.data.next_on && r.data.next_on <= day()).length}</strong><small>Updates due</small></a></div></div>`;
-    } catch (e) {
-      if (current()?.id === id)
-        el(targetId).textContent =
-          "Project controls could not load: " + e.message;
-    }
+    // The schedule tile is the only project-progress number.
+    // This slot used to render a second row from WBS task counts.
+    const node = el(targetId);
+    if (node) node.replaceChildren();
   }
   return {
     mount,

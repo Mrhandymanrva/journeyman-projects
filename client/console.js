@@ -6,6 +6,7 @@ import {
   bindPrecon,
   preconHtml,
 } from "./precon.js";
+import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { createPlanning } from "./planning.js";
@@ -182,7 +183,7 @@ async function boot() {
     el("tenant").textContent = session.tenant.display_name;
     el("who").hidden = false;
     el("who").innerHTML =
-      `${esc(session.staff.full_name)} · ${esc(session.staff.role.replace(/_/g, " "))}` +
+      `${esc(session.staff.full_name)} · ${esc(roleTitle(session.staff.role))}` +
       `<button type="button" id="signout">sign out</button>`;
     el("signout").addEventListener("click", signOut);
 
@@ -374,6 +375,8 @@ async function select(projectId) {
 // ------------------------------------------------------------------- render
 
 function render(d) {
+  if (current && d.cos)
+    current.sold_estimates = d.cos.unmatched_sold_estimates ?? [];
   const p = d.detail;
 
   el("pcode").textContent = [
@@ -512,10 +515,11 @@ function renderGates(project) {
             ? " · Field release recorded"
             : " · No field release"
           : "";
+      const approver = roleTitle(g.approver_role);
       return `<div class="gate ${cls} actionable" data-gate="${g.gate_number}">
       <div class="stamp">${i < stage ? "✓" : g.gate_number}</div>
       <div class="gate-t"><span class="n">${esc(g.title)}</span>
-      <span class="m">Gate ${g.gate_number} · ${meta}${detail}${releaseMark}</span></div>
+      <span class="m">Gate ${g.gate_number} · ${meta}${detail}${approver ? ` · ${esc(approver)}` : ""}${releaseMark}</span></div>
     </div>`;
     })
     .join("");
@@ -1269,9 +1273,7 @@ function gateDrawer(gate) {
     `${messageSlot}
      <p class="note">
        Approved by <b>${esc(
-         gate.approver_role
-           ? gate.approver_role.replace(/_/g, " ")
-           : "owner only",
+         roleTitle(gate.approver_role) || "Owner",
        )}</b>, which comes from this account's gate template rather than a fixed
        role. Currently <b>${esc(gate.status)}</b>.
        ${gate.freezes_baseline ? " Approving this gate freezes the budget baseline." : ""}
@@ -1307,7 +1309,7 @@ function gateDrawer(gate) {
        mayApprove
          ? ""
          : `<p class="msg">Gate ${gate.gate_number} is approved by ${esc(
-             gate.approver_role ?? "an owner",
+             roleTitle(gate.approver_role) || "an owner",
            )}. You can tick the checklist but not sign it off.</p>`
      }
      <div class="actions right">
