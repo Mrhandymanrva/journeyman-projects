@@ -51,6 +51,22 @@ export function createProjectControls({
     });
   const status = (s) =>
     `<span class="control-status status-${esc(s)}">${esc(label(s))}</span>`;
+  const rollupTone = {
+    done: "complete",
+    late: "red",
+    at_risk: "amber",
+    on_track: "green",
+  };
+  const rollupText = {
+    done: "Done",
+    late: "Late",
+    at_risk: "At risk",
+    on_track: "On track",
+  };
+  const rollupBadge = (rollup) =>
+    rollup?.status
+      ? `<span class="control-status status-${esc(rollupTone[rollup.status] ?? rollup.status)}">${esc(rollupText[rollup.status] ?? label(rollup.status))}</span>`
+      : "";
   const btn = (text, action, id = "", extra = "") =>
     `<button class="btn" data-control-action="${action}" data-record="${id}" ${extra}>${text}</button>`;
   const edits = (r) =>
@@ -183,36 +199,60 @@ export function createProjectControls({
     return (
       header(
         "Roadmap & milestones",
-        "Major deliverables, acceptance criteria and target dates, linked to project goals.",
+        "Status is calculated from linked tasks. Done when every linked task is done, otherwise late, at risk, or on track.",
         "milestone",
       ) +
-      `<div class="control-roadmap">${rows.map((r) => `<article class="card"><small>${esc(r.data.due_on)}</small><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3>${status(r.data.state)}<p>${esc(r.data.success_criteria || r.data.description || "Add acceptance criteria.")}</p><p>${esc(person(r.data.owner_id))}${r.data.goal_id ? " · " + esc(name(r.data.goal_id)) : ""}</p><p>${records().filter((t) => t.kind === "task" && t.data.milestone_id === r.id).length} linked tasks</p>${edits(r)}</article>`).join("") || empty("Add milestones such as permit approval, rough-in inspection, substantial completion and handover.")}</div>`
+      `<div class="control-roadmap">${
+        rows
+          .map((r) => {
+            const linked = records().filter(
+              (t) => t.kind === "task" && t.data.milestone_id === r.id,
+            );
+            const done =
+              r.rollup?.done ??
+              linked.filter((t) => t.data.state === "complete").length;
+            const total = r.rollup?.total ?? linked.length;
+            const count = total
+              ? `${done} of ${total} tasks done`
+              : "No linked tasks";
+            return `<article class="card"><small>${esc(r.data.due_on)}</small><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3>${rollupBadge(r.rollup) || status(r.data.state)}<p>${esc(r.data.success_criteria || r.data.description || "Add acceptance criteria.")}</p><p>${esc(person(r.data.owner_id))}${r.data.goal_id ? " · " + esc(name(r.data.goal_id)) : ""}</p><p>${esc(count)}</p>${edits(r)}</article>`;
+          })
+          .join("") ||
+        empty(
+          "Add milestones such as permit approval, rough-in inspection, substantial completion and handover.",
+        )
+      }</div>`
     );
   }
   function goals() {
     return (
       header(
         "Objectives & key results",
-        "Name the outcome and a target date. Key results are optional.",
+        "The percent is the share of linked milestones that are done. Key results are optional.",
         "goal",
       ) +
       `<div class="control-roadmap">${
         active("goal")
-          .map(
-            (r) =>
-              `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${status(r.data.state)}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${(r.data.key_results ?? []).length ? (r.data.key_results ?? [])
-                .map((k) => {
-                  const p = pct(
-                    (100 * (k.current - k.start)) / (k.target - k.start),
-                  );
-                  return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
-                })
-                .join("") : '<p class="hint">No key results. Add start, target, current, and a unit when you want a measured number.</p>'}${edits(r)}</article>`,
-          )
+          .map((r) => {
+            const roll = r.rollup;
+            const progress =
+              roll && roll.percent != null
+                ? `<div class="control-kr"><strong>Milestones done</strong><p>${roll.done} of ${roll.total} · ${pct(roll.percent)}%</p><progress max="100" value="${pct(roll.percent)}">${pct(roll.percent)}%</progress></div>`
+                : `<p class="hint">No linked milestones yet.</p>`;
+            const results = (r.data.key_results ?? []).length
+              ? (r.data.key_results ?? [])
+                  .map((k) => {
+                    const p = pct(
+                      (100 * (k.current - k.start)) / (k.target - k.start),
+                    );
+                    return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
+                  })
+                  .join("")
+              : '<p class="hint">No key results. Add start, target, current, and a unit when you want a measured number.</p>';
+            return `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${rollupBadge(roll) || status(r.data.state)}${progress}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${results}${edits(r)}</article>`;
+          })
           .join("") ||
-        empty(
-          "Add an objective and a target date. Key results are optional.",
-        )
+        empty("Add an objective and a target date. Key results are optional.")
       }</div>`
     );
   }
@@ -494,13 +534,19 @@ export function createProjectControls({
         d.owner_id,
       ) +
       area("description", "Description / rationale", d.description);
-    if (["task", "goal", "milestone"].includes(k))
+    if (k === "task")
       html += select(
         "state",
         "Status",
         ["not_started", "in_progress", "blocked", "complete"],
         d.state ?? "not_started",
       );
+    if (k === "goal")
+      html +=
+        '<p class="hint">The percent is calculated from milestones that are done. It cannot be typed in.</p>';
+    if (k === "milestone")
+      html +=
+        '<p class="hint">Status is calculated from linked tasks. It cannot be set here.</p>';
     if (k === "task")
       html +=
         `<div class="control-columns">${input("start_on", "Start", d.start_on ?? dt, "date", true)}${input("due_on", "Finish / due", d.due_on ?? dt, "date", true)}${input("completed_on", "Actual completion", d.completed_on, "date")}</div>` +
@@ -554,7 +600,6 @@ export function createProjectControls({
     if (k === "milestone")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
-        input("completed_on", "Actual completion", d.completed_on, "date") +
         select("goal_id", "Project goal", opts("goal"), d.goal_id) +
         area(
           "success_criteria",

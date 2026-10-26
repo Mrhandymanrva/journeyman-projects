@@ -21,6 +21,7 @@ import { activateModule, writePlatformRows } from '../db/activation.js';
 import { storeProjectAr } from '../domain/arMatch.js';
 import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
+import { today } from '../domain/projectControls.js';
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
@@ -463,6 +464,127 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     }
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
+
+  // Goals and milestones whose stored status is deliberately stale. The plan
+  // screen calculates over those values: milestone status from linked tasks,
+  // goal percent from milestones that are done.
+  await db.withTenant(TENANT_ID, async (c) => {
+    const asOf = today();
+    const on = (days: number) => {
+      const date = new Date(asOf + 'T12:00:00Z');
+      date.setUTCDate(date.getUTCDate() + days);
+      return date.toISOString().slice(0, 10);
+    };
+    const insert = async (kind: string, data: Record<string, unknown>) => {
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+         VALUES ($1,$2,$3,$4::jsonb) RETURNING id`,
+        [TENANT_ID, whitfield, kind, JSON.stringify(data)],
+      );
+      return rows[0]!.id;
+    };
+    const bath = await insert('goal', {
+      title: 'Finish the primary bath',
+      description: 'The room is ready for the customer to use.',
+      owner_id: ids.staff.pm,
+      due_on: on(21),
+      state: 'complete',
+      key_results: [
+        { name: 'Open punch items', start: 12, target: 0, current: 4, unit: 'items' },
+      ],
+    });
+    const signoff = await insert('goal', {
+      title: 'Homeowner sign-off',
+      description: 'The customer has walked the finished room.',
+      owner_id: ids.staff.pm,
+      due_on: on(24),
+      state: 'in_progress',
+      key_results: [],
+    });
+    const milestone = async (
+      title: string,
+      goalId: string,
+      due: string,
+      criteria: string,
+      stored: string,
+    ) =>
+      insert('milestone', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        due_on: due,
+        state: stored,
+        completed_on: null,
+        goal_id: goalId,
+        success_criteria: criteria,
+      });
+    const work = async (
+      title: string,
+      milestoneId: string,
+      start: string,
+      due: string,
+      state: string,
+      order: number,
+    ) =>
+      insert('task', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        start_on: start,
+        due_on: due,
+        completed_on: state === 'complete' ? on(-1) : null,
+        state,
+        parent_id: null,
+        dependency_ids: [],
+        milestone_id: milestoneId,
+        resource_id: null,
+        job_link_id: null,
+        sort_order: order,
+      });
+    const demo = await milestone(
+      'Demo and protection',
+      bath,
+      on(-2),
+      'Room is protected and the old fixtures are out.',
+      'not_started',
+    );
+    await work('Protect floors and remove the vanity', demo, on(-12), on(-6), 'complete', 1);
+    await work('Haul debris', demo, on(-8), on(-4), 'complete', 2);
+    const tile = await milestone(
+      'Tile and fixtures',
+      bath,
+      on(5),
+      'Walls are tiled and the new fixtures are set.',
+      'complete',
+    );
+    await work('Set wall tile', tile, on(-2), on(4), 'complete', 1);
+    await work('Set the vanity and toilet', tile, on(1), on(6), 'in_progress', 2);
+    const inspection = await milestone(
+      'Final inspection',
+      bath,
+      on(3),
+      'The inspector has signed the bath.',
+      'in_progress',
+    );
+    await work('Schedule the inspection', inspection, on(-10), on(-4), 'in_progress', 1);
+    await work('Close the punch list', inspection, on(-1), on(4), 'not_started', 2);
+    const selections = await milestone(
+      'Material selections',
+      signoff,
+      on(8),
+      'The customer has approved the remaining finishes.',
+      'not_started',
+    );
+    await work('Confirm the faucet finish', selections, on(-1), on(6), 'blocked', 1);
+    await milestone(
+      'Weekly check-in',
+      signoff,
+      on(10),
+      'A walkthrough is on the calendar. No tasks are linked yet.',
+      'complete',
+    );
+  });
+  log('project controls: Whitfield goals and milestones roll up from tasks');
 
   await db.withTenant(TENANT_ID, async (c) => {
     const mirrored = await c.query<{ id: string }>(
