@@ -2,18 +2,21 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ServiceTitanReadError } from "../src/adapters/serviceTitan.js";
 import type { SourceConnections } from "../src/adapters/sourceConnections.js";
-import { storeJobLabor } from "../src/domain/laborActuals.js";
+import { storeJobLabor, storeTechnicianRates } from "../src/domain/laborActuals.js";
 import {
   clearStLaborCodeCache,
+  LABOR_SERVICE_CODE,
+  LABOR_SERVICE_MISSING_MESSAGE,
+  LABOR_SERVICE_READ_FAILED_MESSAGE,
+  LABOR_SERVICE_SOURCE,
   laborCodeCollisionMessage,
-  laborTypeCountMessage,
+  resetLaborCodeErrorLog,
   resolveStLaborCode,
   ST_LABOR_CODE_FAILURE_TTL_MS,
   ST_LABOR_CODE_SUCCESS_TTL_MS,
-  ST_LABOR_FORBIDDEN_MESSAGE,
-  type StLaborTypeRow,
+  type PricebookServiceRow,
 } from "../src/domain/stLaborCode.js";
-import { runHourlyLaborRefresh } from "../src/workers/laborRefresh.js";
+import { formatLaborRefreshRun, runHourlyLaborRefresh } from "../src/workers/laborRefresh.js";
 import {
   createTenant,
   projectBody,
@@ -23,128 +26,172 @@ import {
   type TenantFixture,
 } from "./support/harness.js";
 
-const type = (id: string, code: string, name = "Field labor"): StLaborTypeRow => ({
-  id,
-  name,
-  code,
-  serviceCodeId: null,
-  active: true,
-});
+const service = (
+  id: string,
+  code = LABOR_SERVICE_CODE,
+  name: string | null = "Project Labor From Estimate",
+  active = true,
+): PricebookServiceRow => ({ id, code, name, active });
 
 describe("ServiceTitan labor code cache", () => {
-  beforeEach(() => clearStLaborCodeCache());
+  beforeEach(() => {
+    clearStLaborCodeCache();
+    resetLaborCodeErrorLog();
+  });
 
-  it("remembers one labor type for an hour and a failure for five minutes", async () => {
+  it("remembers a found service for an hour and a failure for five minutes", async () => {
     let calls = 0;
-    let forbidden = false;
+    let missing = false;
     const client = {
       sourceTenantId: "cache-a",
-      readLaborTypes: async () => {
+      readLaborService: async () => {
         calls += 1;
-        return {
-          forbidden,
-          laborTypes: forbidden ? [] : [type("42", "ST-LAB")],
-        };
+        return { services: missing ? [] : [service("91025")] };
       },
     };
     const start = 1_700_000_000_000;
     const first = await resolveStLaborCode(client, start);
-    expect(first).toMatchObject({ ok: true, code: "ST-LAB", name: "Field labor", stId: "42" });
-    forbidden = true;
+    expect(first).toMatchObject({
+      ok: true,
+      code: LABOR_SERVICE_CODE,
+      name: "Project Labor From Estimate",
+      stId: "91025",
+    });
+    missing = true;
     expect(await resolveStLaborCode(client, start + ST_LABOR_CODE_SUCCESS_TTL_MS - 1)).toMatchObject({
       ok: true,
-      code: "ST-LAB",
+      code: LABOR_SERVICE_CODE,
     });
     expect(calls).toBe(1);
     expect(await resolveStLaborCode(client, start + ST_LABOR_CODE_SUCCESS_TTL_MS)).toMatchObject({
       ok: false,
-      reason: "forbidden",
+      reason: "missing",
+      message: LABOR_SERVICE_MISSING_MESSAGE,
     });
     expect(calls).toBe(2);
     const failedAt = start + ST_LABOR_CODE_SUCCESS_TTL_MS;
     expect(await resolveStLaborCode(client, failedAt + ST_LABOR_CODE_FAILURE_TTL_MS - 1)).toMatchObject({
-      reason: "forbidden",
+      reason: "missing",
     });
     expect(calls).toBe(2);
-    forbidden = false;
+    missing = false;
     expect(await resolveStLaborCode(client, failedAt + ST_LABOR_CODE_FAILURE_TTL_MS)).toMatchObject({
       ok: true,
-      code: "ST-LAB",
+      code: LABOR_SERVICE_CODE,
     });
     expect(calls).toBe(3);
   });
 
-  it("does not share a cached code across ServiceTitan tenants", async () => {
+  it("does not share a cached service across ServiceTitan tenants", async () => {
     const seen: string[] = [];
-    const clientFor = (tenant: string, code: string) => ({
+    const clientFor = (tenant: string) => ({
       sourceTenantId: tenant,
-      readLaborTypes: async () => {
+      readLaborService: async () => {
         seen.push(tenant);
-        return { forbidden: false, laborTypes: [type(tenant, code)] };
+        return { services: [service(tenant)] };
       },
     });
     const now = 50_000;
-    expect(await resolveStLaborCode(clientFor("ten-a", "A"), now)).toMatchObject({ code: "A" });
-    expect(await resolveStLaborCode(clientFor("ten-b", "B"), now)).toMatchObject({ code: "B" });
-    expect(await resolveStLaborCode(clientFor("ten-a", "A"), now)).toMatchObject({ code: "A" });
+    expect(await resolveStLaborCode(clientFor("ten-a"), now)).toMatchObject({ stId: "ten-a" });
+    expect(await resolveStLaborCode(clientFor("ten-b"), now)).toMatchObject({ stId: "ten-b" });
+    expect(await resolveStLaborCode(clientFor("ten-a"), now)).toMatchObject({ stId: "ten-a" });
     expect(seen).toEqual(["ten-a", "ten-b"]);
   });
 
-  it("returns none, many, forbidden, and a blank code without throwing", async () => {
-    const read = async (laborTypes: StLaborTypeRow[], forbidden = false) =>
+  it("accepts an exact case-insensitive active match and rejects the rest", async () => {
+    const read = async (services: PricebookServiceRow[]) =>
       resolveStLaborCode(
         {
-          sourceTenantId: `shape-${laborTypes.map((row) => `${row.id}:${row.code}:${row.active}`).join(",") || "empty"}-${forbidden}`,
-          readLaborTypes: async () => ({ forbidden, laborTypes }),
+          sourceTenantId: `shape-${services.map((row) => `${row.id}:${row.code}:${row.active}`).join(",") || "empty"}`,
+          readLaborService: async () => ({ services }),
         },
         10,
       );
-    expect(await read([])).toEqual({ ok: false, reason: "none", message: laborTypeCountMessage(0) });
-    expect(await read([type("1", "A"), type("2", "B")])).toEqual({
+    expect(await read([])).toEqual({
       ok: false,
-      reason: "many",
-      message: laborTypeCountMessage(2),
+      reason: "missing",
+      message: LABOR_SERVICE_MISSING_MESSAGE,
     });
-    expect(await read([], true)).toEqual({
+    expect(await read([service("1", "MHM.25PLFE-EXTRA")])).toEqual({
       ok: false,
-      reason: "forbidden",
-      message: ST_LABOR_FORBIDDEN_MESSAGE,
+      reason: "missing",
+      message: LABOR_SERVICE_MISSING_MESSAGE,
     });
-    const inactive = await read([{ ...type("1", "A"), active: false }, type("2", "ST-LAB")]);
-    expect(inactive).toMatchObject({ ok: true, code: "ST-LAB", stId: "2" });
-    const blank = await read([type("1", "  ")]);
-    expect(blank).toMatchObject({ ok: false, reason: "read_failed" });
-    await expect(
-      resolveStLaborCode(
-        {
-          sourceTenantId: "throws-403",
-          readLaborTypes: async () => {
-            throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 403).");
-          },
-        },
-        10,
-      ),
-    ).resolves.toMatchObject({ ok: false, reason: "forbidden", message: ST_LABOR_FORBIDDEN_MESSAGE });
+    expect(await read([service("1", LABOR_SERVICE_CODE, "Project Labor From Estimate", false)])).toEqual({
+      ok: false,
+      reason: "inactive",
+      message: LABOR_SERVICE_MISSING_MESSAGE,
+    });
+    expect(await read([service("7", "mhm.25plfe", "Project Labor From Estimate")])).toMatchObject({
+      ok: true,
+      code: LABOR_SERVICE_CODE,
+      name: "Project Labor From Estimate",
+      stId: "7",
+    });
+    expect(
+      await read([
+        service("1", "OTHER", "Other"),
+        service("8", "mhm.25plfe", "  "),
+      ]),
+    ).toMatchObject({ ok: true, code: LABOR_SERVICE_CODE, name: LABOR_SERVICE_CODE, stId: "8" });
     await expect(
       resolveStLaborCode(
         {
           sourceTenantId: "throws-500",
-          readLaborTypes: async () => {
+          readLaborService: async () => {
             throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 500).");
           },
         },
         10,
       ),
-    ).resolves.toMatchObject({ ok: false, reason: "read_failed" });
+    ).resolves.toEqual({
+      ok: false,
+      reason: "read_failed",
+      message: LABOR_SERVICE_READ_FAILED_MESSAGE,
+    });
+    await expect(
+      resolveStLaborCode(
+        {
+          sourceTenantId: "throws-403",
+          readLaborService: async () => {
+            throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 403).");
+          },
+        },
+        10,
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      reason: "read_failed",
+      message: LABOR_SERVICE_READ_FAILED_MESSAGE,
+    });
+  });
+
+  it("logs a read failure once per process, not on a cached miss", async () => {
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((message) => {
+      errors.push(String(message));
+    });
+    const client = {
+      sourceTenantId: "log-once",
+      readLaborService: async () => ({ services: [] as PricebookServiceRow[] }),
+    };
+    try {
+      await resolveStLaborCode(client, 10);
+      await resolveStLaborCode(client, 11);
+      expect(errors).toEqual([LABOR_SERVICE_MISSING_MESSAGE]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
-describe("stamping the ServiceTitan labor code", () => {
+describe("stamping the pricebook labor code", () => {
   let h: Harness;
   let tenant: TenantFixture;
   let activeId: string;
   let doneId: string;
-  let mode: "one" | "none" | "many" | "forbidden" | "throw" | "collision" | "rename" = "one";
+  let mode: "found" | "missing" | "inactive" | "throw" | "rename" = "found";
+  let reads = 0;
 
   const sources: SourceConnections = {
     serviceTitan: {
@@ -161,18 +208,13 @@ describe("stamping the ServiceTitan labor code", () => {
           forbidden: false,
           timesheets: [],
         }),
-        readLaborTypes: async () => {
+        readLaborService: async () => {
+          reads += 1;
           if (mode === "throw") throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 500).");
-          if (mode === "forbidden") return { forbidden: true, laborTypes: [] };
-          if (mode === "none") return { forbidden: false, laborTypes: [] };
-          if (mode === "many") {
-            return { forbidden: false, laborTypes: [type("1", "ST-LAB"), type("2", "ST-SHOP")] };
-          }
-          if (mode === "collision") {
-            return { forbidden: false, laborTypes: [type("9", "210", "Interior demolition — labor")] };
-          }
-          if (mode === "rename") return { forbidden: false, laborTypes: [type("42", "ST-LAB", "Crew labor")] };
-          return { forbidden: false, laborTypes: [type("42", "ST-LAB")] };
+          if (mode === "missing") return { services: [] };
+          if (mode === "inactive") return { services: [service("91025", LABOR_SERVICE_CODE, "Project Labor From Estimate", false)] };
+          if (mode === "rename") return { services: [service("91025", "mhm.25plfe", "Crew labor")] };
+          return { services: [service("91025")] };
         },
       },
     },
@@ -221,7 +263,9 @@ describe("stamping the ServiceTitan labor code", () => {
 
   beforeEach(async () => {
     clearStLaborCodeCache();
-    mode = "one";
+    resetLaborCodeErrorLog();
+    mode = "found";
+    reads = 0;
     await h.db.withTenant(tenant.id, (db) =>
       db.query(`DELETE FROM projects.labor_actuals WHERE tenant_id = $1`, [tenant.id]),
     );
@@ -273,20 +317,20 @@ describe("stamping the ServiceTitan labor code", () => {
     const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
     expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
     expect(refreshed.body.data.st_labor_code).toEqual({
-      code: "ST-LAB",
-      name: "Field labor",
-      st_id: "42",
+      code: LABOR_SERVICE_CODE,
+      name: "Project Labor From Estimate",
+      st_id: "91025",
     });
     expect(refreshed.body.data.st_labor_code_error).toBeNull();
     expect(refreshed.body.data.uncoded_hours).toBe(0);
-    expect(refreshed.body.data.cost_code.code).toBe("ST-LAB");
+    expect(refreshed.body.data.cost_code.code).toBe(LABOR_SERVICE_CODE);
 
     const active = await codes(activeId);
     const done = await codes(doneId);
-    expect(active.rows[0]?.code).toBe("ST-LAB");
-    expect(active.rows[0]?.external_source).toBe("servicetitan_labor_type");
+    expect(active.rows[0]?.code).toBe(LABOR_SERVICE_CODE);
+    expect(active.rows[0]?.external_source).toBe(LABOR_SERVICE_SOURCE);
     expect(done.rows[0]?.cost_code_id).toBe(active.rows[0]?.cost_code_id);
-    expect(done.rows[0]?.code).toBe("ST-LAB");
+    expect(done.rows[0]?.code).toBe(LABOR_SERVICE_CODE);
 
     const dates = await h.db.withTenant(tenant.id, (db) =>
       db.query<{ id: string; scheduled_start: string; field_start: string; field_start_source: string; stage: string }>(
@@ -317,79 +361,234 @@ describe("stamping the ServiceTitan labor code", () => {
     expect(again.body.data.st_labor_code.name).toBe("Crew labor");
     const renamed = await codes(activeId);
     expect(renamed.rows[0]?.description).toBe("Crew labor");
+    expect(renamed.rows[0]?.code).toBe(LABOR_SERVICE_CODE);
     expect(renamed.rows[0]?.cost_code_id).toBe(active.rows[0]?.cost_code_id);
   });
 
-  it("leaves hours uncoded for none, many, forbidden, and a failed read, and the hourly job continues", async () => {
-    await putHours(activeId, "ts-open");
-    await putHours(doneId, "ts-closed");
+  it("codes the burden and the unbudgeted row, then the labor budget line", async () => {
+    await h.db.withTenant(tenant.id, (db) =>
+      storeTechnicianRates(
+        db,
+        tenant.id,
+        [{ id: "tech-1", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 }],
+        new Date("2026-10-25T12:00:00Z"),
+      ),
+    );
+    await putHours(activeId, "ts-priced");
     const owner = h.as(tenant.staff.owner!.token);
-    for (const next of ["none", "many", "forbidden", "throw"] as const) {
+    const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    expect(refreshed.body.data.labor_wage).toBe(160);
+    expect(refreshed.body.data.labor_burden).toBe(48);
+    expect(refreshed.body.data.total).toBe(208);
+
+    const open = await owner.get(`/api/v1/projects/projects/${activeId}/cost-position`);
+    expect(open.status).toBe(200);
+    const unbudgeted = (open.body.data as Array<Record<string, unknown>>).find(
+      (row) => row.description === "Unbudgeted labor",
+    );
+    expect(unbudgeted).toMatchObject({
+      cost_code: LABOR_SERVICE_CODE,
+      description: "Unbudgeted labor",
+      cost_type: "L",
+      baseline: 0,
+      budget_amount: 0,
+      actual_cost: 208,
+      labor_wage: 160,
+      labor_burden: 48,
+    });
+
+    const codeId = (await codes(activeId)).rows[0]?.cost_code_id;
+    const added = await owner.post(`/api/v1/projects/projects/${activeId}/budget`).send({
+      cost_code_id: codeId,
+      cost_type: "L",
+      budget_amount: 4800,
+    });
+    expect(added.status, JSON.stringify(added.body)).toBe(201);
+    const closed = await owner.get(`/api/v1/projects/projects/${activeId}/cost-position`);
+    const rows = closed.body.data as Array<Record<string, unknown>>;
+    expect(rows.find((row) => row.description === "Unbudgeted labor")).toBeUndefined();
+    expect(rows.find((row) => row.cost_code === LABOR_SERVICE_CODE && row.cost_type === "L")).toMatchObject({
+      description: "Project Labor From Estimate",
+      actual_cost: 208,
+      labor_wage: 160,
+      labor_burden: 48,
+      budget_amount: 4800,
+    });
+  });
+
+  it("retires a payroll labor-type row without deleting it or clearing the stamp", async () => {
+    await putHours(activeId, "ts-retire");
+    const oldId = await h.db.withTenant(tenant.id, async (db) => {
+      const inserted = await db.query<{ id: string }>(
+        `INSERT INTO projects.cost_codes
+           (tenant_id, code, division_code, division_name, description,
+            default_cost_type, sort_order, active, external_source, external_id)
+         VALUES ($1, 'ST-LAB', 'ST', 'ServiceTitan', 'Field labor', 'L'::projects.cost_type,
+                 0, true, 'servicetitan_labor_type', '9001')
+         ON CONFLICT (tenant_id, code) DO UPDATE
+           SET active = true, external_source = 'servicetitan_labor_type'
+         RETURNING id::text`,
+        [tenant.id],
+      );
+      await db.query(
+        `UPDATE projects.labor_actuals SET cost_code_id = $2 WHERE project_id = $1`,
+        [activeId, inserted.rows[0]!.id],
+      );
+      return inserted.rows[0]!.id;
+    });
+    const owner = h.as(tenant.staff.owner!.token);
+    const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
+    expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+    const stored = await codes(activeId);
+    expect(stored.rows[0]?.code).toBe(LABOR_SERVICE_CODE);
+    expect(stored.rows[0]?.cost_code_id).not.toBe(oldId);
+    const retired = await h.db.withTenant(tenant.id, (db) =>
+      db.query<{ id: string; active: boolean; external_source: string }>(
+        `SELECT id::text, active, external_source FROM projects.cost_codes WHERE id = $1`,
+        [oldId],
+      ),
+    );
+    expect(retired.rows[0]).toMatchObject({
+      id: oldId,
+      active: false,
+      external_source: "servicetitan_labor_type",
+    });
+  });
+
+  it("leaves hours uncoded when the service is missing, inactive, or unread, and keeps an earlier stamp", async () => {
+    await putHours(activeId, "ts-open");
+    const owner = h.as(tenant.staff.owner!.token);
+    for (const next of ["missing", "inactive", "throw"] as const) {
       clearStLaborCodeCache();
+      resetLaborCodeErrorLog();
       mode = next;
       const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
       expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
       expect(refreshed.body.data.st_labor_code).toBeNull();
       expect(refreshed.body.data.uncoded_hours).toBe(4);
-      expect(refreshed.body.data.st_labor_code_error).toMatch(/Hours stay uncoded/);
-      if (next === "none") expect(refreshed.body.data.st_labor_code_error).toBe(laborTypeCountMessage(0));
-      if (next === "many") expect(refreshed.body.data.st_labor_code_error).toBe(laborTypeCountMessage(2));
-      if (next === "forbidden") expect(refreshed.body.data.st_labor_code_error).toBe(ST_LABOR_FORBIDDEN_MESSAGE);
-      const stored = await codes(activeId);
-      expect(stored.rows[0]?.cost_code_id).toBeNull();
+      if (next === "throw") {
+        expect(refreshed.body.data.st_labor_code_error).toBe(LABOR_SERVICE_READ_FAILED_MESSAGE);
+      } else {
+        expect(refreshed.body.data.st_labor_code_error).toBe(LABOR_SERVICE_MISSING_MESSAGE);
+      }
+      expect((await codes(activeId)).rows[0]?.cost_code_id).toBeNull();
     }
 
-    mode = "forbidden";
+    mode = "found";
     clearStLaborCodeCache();
+    const coded = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
+    expect(coded.body.data.st_labor_code.code).toBe(LABOR_SERVICE_CODE);
+    const kept = (await codes(activeId)).rows[0]?.cost_code_id;
+    expect(kept).toBeTruthy();
+
+    mode = "missing";
+    clearStLaborCodeCache();
+    const again = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
+    expect(again.body.data.st_labor_code).toBeNull();
+    expect(again.body.data.st_labor_code_error).toBe(LABOR_SERVICE_MISSING_MESSAGE);
+    expect((await codes(activeId)).rows[0]?.cost_code_id).toBe(kept);
+  });
+
+  it("reads the service once per refresh run and logs a failure once per process", async () => {
+    await putHours(activeId, "ts-run");
+    const second = await h.as(tenant.staff.owner!.token).post("/api/v1/projects/projects").send(
+      projectBody({ project_number: "L-2", name: "L-2", scheduled_start: "2026-10-19" }),
+    );
+    expect(second.status, JSON.stringify(second.body)).toBe(201);
+    const secondId = second.body.data.id as string;
+    await putHours(secondId, "ts-run-2");
+
+    reads = 0;
+    clearStLaborCodeCache();
+    const report = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
+      tenantId: tenant.id,
+      gapMs: 0,
+      sleep: async () => undefined,
+    });
+    expect(report.failed).toEqual([]);
+    expect(report.refreshed.sort()).toEqual([activeId, secondId].sort());
+    expect(reads).toBe(1);
+    expect(formatLaborRefreshRun(report)).toBe(
+      "Labor refresh run: 2 refreshed, 0 failed; labor code: MHM.25PLFE Project Labor From Estimate",
+    );
+    expect((await codes(activeId)).rows[0]?.code).toBe(LABOR_SERVICE_CODE);
+    expect((await codes(secondId)).rows[0]?.code).toBe(LABOR_SERVICE_CODE);
+
+    mode = "missing";
+    clearStLaborCodeCache();
+    resetLaborCodeErrorLog();
     const errors: string[] = [];
     const spy = vi.spyOn(console, "error").mockImplementation((message) => {
       errors.push(String(message));
     });
     try {
-      const report = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
+      const firstFail = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
         tenantId: tenant.id,
         gapMs: 0,
         sleep: async () => undefined,
       });
-      expect(report.failed).toEqual([]);
-      expect(report.refreshed).toEqual([activeId]);
-      expect(report.projects).toBe(1);
+      const secondFail = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
+        tenantId: tenant.id,
+        gapMs: 0,
+        sleep: async () => undefined,
+      });
+      expect(firstFail.failed).toEqual([]);
+      expect(secondFail.failed).toEqual([]);
+      expect(formatLaborRefreshRun(firstFail)).toBe(
+        `Labor refresh run: 2 refreshed, 0 failed; labor code: ${LABOR_SERVICE_MISSING_MESSAGE}`,
+      );
     } finally {
       spy.mockRestore();
     }
-    expect(errors.some((line) => line.includes(ST_LABOR_FORBIDDEN_MESSAGE))).toBe(true);
-    expect((await codes(activeId)).rows[0]?.cost_code_id).toBeNull();
-    expect((await codes(doneId)).rows[0]?.cost_code_id).toBeNull();
-
-    mode = "throw";
-    clearStLaborCodeCache();
-    const second = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
-      tenantId: tenant.id,
-      gapMs: 0,
-      sleep: async () => undefined,
-    });
-    expect(second.failed).toEqual([]);
-    expect(second.refreshed).toEqual([activeId]);
+    expect(errors.filter((line) => line.includes(LABOR_SERVICE_CODE))).toEqual([
+      LABOR_SERVICE_MISSING_MESSAGE,
+    ]);
+    expect((await codes(activeId)).rows[0]?.code).toBe(LABOR_SERVICE_CODE);
   });
 
   it("refuses a code that already exists as a Journeyman cost code", async () => {
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `INSERT INTO projects.cost_codes
+           (tenant_id, code, division_code, division_name, description,
+            default_cost_type, sort_order, active, external_source)
+         VALUES ($1, $2, 'ST', 'ServiceTitan', 'User entered labor', 'L'::projects.cost_type, 0, true, NULL)
+         ON CONFLICT (tenant_id, code) DO UPDATE
+           SET external_source = NULL,
+               external_id = NULL,
+               description = 'User entered labor',
+               active = true`,
+        [tenant.id, LABOR_SERVICE_CODE],
+      ),
+    );
     await putHours(activeId, "ts-collision");
-    mode = "collision";
+    mode = "found";
+    clearStLaborCodeCache();
     const owner = h.as(tenant.staff.owner!.token);
     const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.data.st_labor_code).toBeNull();
-    expect(refreshed.body.data.st_labor_code_error).toBe(laborCodeCollisionMessage("210"));
+    expect(refreshed.body.data.st_labor_code_error).toBe(laborCodeCollisionMessage(LABOR_SERVICE_CODE));
     expect(refreshed.body.data.uncoded_hours).toBe(4);
     const seeded = await h.db.withTenant(tenant.id, (db) =>
       db.query<{ description: string; external_source: string | null }>(
-        `SELECT description, external_source FROM projects.cost_codes WHERE code = '210'`,
+        `SELECT description, external_source FROM projects.cost_codes WHERE code = $1`,
+        [LABOR_SERVICE_CODE],
       ),
     );
     expect(seeded.rows[0]).toEqual({
-      description: "Interior demolition — labor",
+      description: "User entered labor",
       external_source: null,
     });
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.cost_codes
+            SET external_source = $3, description = 'Project Labor From Estimate', active = true
+          WHERE tenant_id = $1 AND code = $2`,
+        [tenant.id, LABOR_SERVICE_CODE, LABOR_SERVICE_SOURCE],
+      ),
+    );
     const settings = await owner.put("/api/v1/projects/settings/labor").send({ labor_cost_code_id: null });
     expect(settings.status).toBe(404);
     const override = await owner
@@ -398,16 +597,25 @@ describe("stamping the ServiceTitan labor code", () => {
     expect(override.status).toBe(404);
   });
 
-  it("adds the mirror columns without clearing stored hours or dropping the old columns", () => {
-    const file = SCHEMA_FILES.find((item) => item.endsWith("046_st_labor_code.sql"));
-    expect(file).toBeTruthy();
-    const sql = readFileSync(file!, "utf8");
-    expect(sql).toMatch(/external_source/);
-    expect(sql).toMatch(/external_id/);
-    expect(sql).toMatch(/Retired/);
+  it("retires the old mirror in place and does not add a check constraint", () => {
+    const current = SCHEMA_FILES.find((item) => item.endsWith("048_pricebook_labor_code.sql"));
+    expect(current).toBeTruthy();
+    const sql = readFileSync(current!, "utf8");
+    expect(sql).toMatch(/servicetitan_labor_type/);
+    expect(sql).toMatch(/SET active = false/);
+    expect(sql).toMatch(/labor_wage/);
+    expect(sql).toMatch(/labor_burden/);
+    expect(sql).toMatch(/Unbudgeted labor/);
+    expect(sql).not.toMatch(/ADD CONSTRAINT/i);
     expect(sql).not.toMatch(/DELETE FROM/i);
     expect(sql).not.toMatch(/DROP COLUMN/i);
-    expect(sql).not.toMatch(/labor_actuals/);
     expect(sql).not.toMatch(/scheduled_start/);
+
+    const previous = SCHEMA_FILES.find((item) => item.endsWith("046_st_labor_code.sql"));
+    const old = readFileSync(previous!, "utf8");
+    expect(old).toMatch(/external_source/);
+    expect(old).toMatch(/external_id/);
+    expect(old).not.toMatch(/DELETE FROM/i);
+    expect(old).not.toMatch(/DROP COLUMN/i);
   });
 });
