@@ -474,14 +474,16 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       // of 110 and 210 — the divisions interleave and the sheet stops reading
       // like a estimate. v_cost_position does not carry sort_order, hence the
       // join back to cost_codes, which RLS has already scoped to this tenant.
+      // Unbudgeted labor has no cost code, so the join stays a left join and
+      // that row sorts last. Its description is exactly "Unbudgeted labor".
       const { rows } = await ctx.db.query(
         `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
                 v.baseline, v.budget_amount, v.actual_cost, v.committed_open,
                 v.total_committed, v.variance
            FROM projects.v_cost_position v
-           JOIN projects.cost_codes cc ON cc.code = v.cost_code
+           LEFT JOIN projects.cost_codes cc ON cc.code = v.cost_code
           WHERE v.project_id = $1
-          ORDER BY cc.sort_order, v.cost_code`,
+          ORDER BY cc.sort_order NULLS LAST, v.cost_code NULLS LAST`,
         [id],
       );
       sendData(

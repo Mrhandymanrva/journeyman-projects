@@ -595,10 +595,14 @@ function renderBudget(cost, budget) {
       const comW = (Math.max(0, within - Math.min(a, b)) / S) * 100;
       const ovrW = (over / S) * 100;
       const cls = v < 0 ? "over" : tot > 0 && v > 0 ? "und" : "";
-      return `<div class="brow ${editable ? "editable" : ""}" data-code="${esc(r.cost_code)}">
+      const unbudgeted = r.description === "Unbudgeted labor";
+      const label = unbudgeted
+        ? "Unbudgeted labor"
+        : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
+      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true"' : ""}>
       <div class="btop">
-        <div class="bname"><span class="c">${esc(r.cost_code)}</span>${esc(r.description)}
-          ${editable ? '<span class="edit-hint">edit</span>' : ""}</div>
+        <div class="bname">${label}
+          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
@@ -615,6 +619,7 @@ function renderBudget(cost, budget) {
   if (editable) {
     document.querySelectorAll("#budget .brow").forEach((node) =>
       node.addEventListener("click", () => {
+        if (node.dataset.unbudgeted) return;
         const line = (budget?.lines ?? []).find(
           (l) => l.code === node.dataset.code,
         );

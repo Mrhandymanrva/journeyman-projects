@@ -409,10 +409,15 @@ describe("a denied technician read", () => {
       "Missing from ServiceTitan: burden rate for Casey Nguyen",
     ]);
     const deniedCost = await asOwner.get(`/api/v1/projects/projects/${id}/cost-position`);
-    const deniedLabor = (deniedCost.body.data as Array<{ cost_code: string; cost_type: string; actual_cost: number }>).find(
-      (line) => line.cost_code === "210" && line.cost_type === "L",
-    );
+    const deniedRows = deniedCost.body.data as Array<{
+      cost_code: string | null;
+      description: string;
+      cost_type: string;
+      actual_cost: number;
+    }>;
+    const deniedLabor = deniedRows.find((line) => line.cost_code === "210" && line.cost_type === "L");
     expect(Number(deniedLabor?.actual_cost ?? 0)).toBe(0);
+    expect(deniedRows.find((line) => line.description === "Unbudgeted labor")).toBeUndefined();
 
     mode = "rates";
     const priced = await asOwner.post(`/api/v1/projects/projects/${id}/labor/refresh`);
@@ -435,9 +440,23 @@ describe("a denied technician read", () => {
     });
     expect(priced.body.data.st_labor_code_error).toBeNull();
     const pricedCost = await asOwner.get(`/api/v1/projects/projects/${id}/cost-position`);
-    const rows = pricedCost.body.data as Array<{ cost_code: string; cost_type: string; actual_cost: number }>;
+    const rows = pricedCost.body.data as Array<{
+      cost_code: string | null;
+      description: string;
+      cost_type: string;
+      baseline: number;
+      budget_amount: number;
+      actual_cost: number;
+    }>;
     expect(rows.find((line) => line.cost_code === "ST-LAB")).toBeUndefined();
     const pricedLabor = rows.find((line) => line.cost_code === "210" && line.cost_type === "L");
     expect(Number(pricedLabor?.actual_cost ?? 0)).toBe(0);
+    expect(rows.find((line) => line.description === "Unbudgeted labor")).toMatchObject({
+      description: "Unbudgeted labor",
+      cost_type: "L",
+      baseline: 0,
+      budget_amount: 0,
+      actual_cost: 208,
+    });
   });
 });
