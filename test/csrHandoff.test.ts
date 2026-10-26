@@ -132,7 +132,13 @@ describe("CSR hand-off validation", () => {
     );
     expect(html).toContain("Customer name");
     expect(html).toContain("Scope summary");
-    expect(html).toContain("Handoff project link / id");
+    expect(html).toContain("ServiceTitan project #");
+    expect(html).toContain("Estimate amount (ServiceTitan)");
+    expect(html).toContain(
+      "Internal handover of a sold job to the Project Coordinator. Doesn't send anything to ServiceTitan or Handoff.",
+    );
+    expect(html).not.toContain("Handoff project link / id");
+    expect(html).not.toContain("Handoff estimate amount");
     expect(html).toContain("Permits likely");
     expect(html).toContain("Submit hand-off");
     expect(html).toContain("Nothing is emailed");

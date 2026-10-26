@@ -58,7 +58,8 @@ export function csrHandoffHtml(view, { esc, canSave }) {
   const buttons = canSave
     ? `<div class="csr-actions"><button class="btn" type="submit" data-submit="false">Save</button><button class="btn primary" type="submit" data-submit="true">Submit hand-off</button></div>`
     : `<p class="hint">You can read this hand-off. Saving it is limited to office, the project coordinator, and leadership.</p>`;
-  return `<p class="csr-status" role="status">${esc(state)}</p>
+  return `<p class="hint">Internal handover of a sold job to the Project Coordinator. Doesn't send anything to ServiceTitan or Handoff.</p>
+<p class="csr-status" role="status">${esc(state)}</p>
 ${gateLine}
 <p class="hint">Required to submit: customer name, phone or email, service address, office, and scope summary. Submit records the hand-off for the Project Coordinator. Nothing is emailed.</p>
 <form id="csr-handoff-form" class="csr-form">
@@ -70,8 +71,8 @@ ${gateLine}
     <label>Office<select id="csr-office"${disabled}>${options(OFFICES, fields.office || "", esc, "Choose an office")}</select></label>
     <label>Lead source<input id="csr-lead_source" maxlength="200"${disabled} value="${esc(valueOf(fields, "lead_source"))}"></label>
     <label class="csr-wide">Scope summary<textarea id="csr-scope_summary" maxlength="8000" rows="4"${disabled}>${esc(valueOf(fields, "scope_summary"))}</textarea></label>
-    <label>Handoff project link / id<input id="csr-handoff_project_ref" maxlength="200"${disabled} value="${esc(valueOf(fields, "handoff_project_ref"))}"></label>
-    <label>Handoff estimate amount<input id="csr-handoff_estimate_amount" type="number" min="0" step="0.01"${disabled} value="${esc(moneyValue(fields.handoff_estimate_amount))}"></label>
+    <label>ServiceTitan project #<input id="csr-handoff_project_ref" maxlength="200"${disabled} value="${esc(valueOf(fields, "handoff_project_ref"))}"></label>
+    <label>Estimate amount (ServiceTitan)<input id="csr-handoff_estimate_amount" type="number" min="0" step="0.01"${disabled} value="${esc(moneyValue(fields.handoff_estimate_amount))}"></label>
     <label>Sold amount<input id="csr-sold_amount" type="number" min="0" step="0.01"${disabled} value="${esc(moneyValue(fields.sold_amount))}"></label>
     <label>Target start window<input id="csr-target_start_window" maxlength="200"${disabled} value="${esc(valueOf(fields, "target_start_window"))}"></label>
     <label>Permits likely<select id="csr-permits_likely"${disabled}>${options(PERMITS, fields.permits_likely || "", esc, "Not set")}</select></label>
