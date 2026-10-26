@@ -56,7 +56,7 @@ describe('cost type account form', () => {
         }
         if (path === '/settings/labor') {
           return {
-            st_labor_code: { code: 'ST-LAB', name: 'Field labor', st_id: '42' },
+            st_labor_code: { code: 'MHM.25PLFE', name: 'Project Labor From Estimate', st_id: '91025' },
             st_labor_code_error: null,
             rate_gaps: [
               {
@@ -100,7 +100,7 @@ describe('cost type account form', () => {
     expect(html).toContain('id="labor-rate-gaps"');
     expect(html).toContain('Missing from ServiceTitan: burden rate is 0 for Jordan Hale');
     expect(html).toContain('id="labor-st-code"');
-    expect(html).toContain('Labor code (from ServiceTitan Payroll > Labor Types): ST-LAB Field labor');
+    expect(html).toContain('Labor code: MHM.25PLFE Project Labor From Estimate');
     expect(html).not.toContain('id="labor-code"');
     expect(html).not.toContain('Save labor settings');
     expect(html).not.toContain('labor-settings-save');
@@ -153,7 +153,7 @@ describe('cost type account form', () => {
           return {
             st_labor_code: null,
             st_labor_code_error:
-              "Journeyman's ServiceTitan app cannot read Payroll > Labor Types (403). Hours stay uncoded.",
+              'ServiceTitan labor code MHM.25PLFE not found or inactive; labor hours are uncoded',
             rate_gaps: [],
           };
         }
@@ -169,9 +169,10 @@ describe('cost type account form', () => {
     await accounting.renderSettings();
     const html = nodes.get('company-settings')!._html;
     expect(html).toContain('class="msg" id="labor-st-error"');
-    expect(html).toContain('cannot read Payroll > Labor Types (403)');
-    expect(html).toContain('Hours stay uncoded.');
-    expect(html).toContain('Labor code (from ServiceTitan Payroll > Labor Types): unavailable');
+    expect(html).toContain(
+      'ServiceTitan labor code MHM.25PLFE not found or inactive; labor hours are uncoded',
+    );
+    expect(html).toContain('Labor code: unavailable');
     expect(html).not.toContain('id="labor-code"');
     expect(html).not.toContain('Save labor settings');
   });

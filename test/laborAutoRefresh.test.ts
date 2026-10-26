@@ -32,12 +32,16 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
   key: "st:test",
   client: {
     sourceTenantId: "st-hourly",
-    readLaborTypes: async () => {
+    readLaborService: async () => {
       methods.push("GET");
       return {
-        forbidden: false,
-        laborTypes: [
-          { id: "42", name: "Field labor", code: "ST-LAB", serviceCodeId: null, active: true },
+        services: [
+          {
+            id: "91025",
+            code: "MHM.25PLFE",
+            name: "Project Labor From Estimate",
+            active: true,
+          },
         ],
       };
     },
@@ -262,7 +266,13 @@ describe("hourly labor refresh", () => {
       now: () => new Date("2026-01-01T00:00:00.000Z"),
       tryLock: async () => null,
     });
-    expect(report).toEqual({ skipped: "locked", projects: 0, refreshed: [], failed: [] });
+    expect(report).toEqual({
+      skipped: "locked",
+      projects: 0,
+      refreshed: [],
+      failed: [],
+      laborCode: null,
+    });
     expect(jobsSeen).toHaveLength(before);
     const row = await h.as(tenant.staff.owner!.token).get(
       `/api/v1/projects/projects/${ids.get("A-100")}/labor`,
@@ -403,20 +413,18 @@ describe("scheduler uses the manual refresh env", () => {
           hasMore: false,
         });
       }
-      if (url.includes("/labor-types")) {
+      if (url.includes("/pricebook/") && url.includes("/services")) {
         return Response.json({
           page: 1,
           pageSize: 50,
           hasMore: false,
           data: [
             {
-              id: 42,
-              name: "Field labor",
-              code: "ST-LAB",
-              serviceCodeId: 7,
+              id: 91025,
+              code: "MHM.25PLFE",
+              displayName: "Project Labor From Estimate",
               active: true,
-              createdOn: "2026-01-01T00:00:00Z",
-              modifiedOn: "2026-01-01T00:00:00Z",
+              description: "stripped",
             },
           ],
         });
@@ -484,7 +492,7 @@ describe("scheduler uses the manual refresh env", () => {
       });
       expect(timer).toBeDefined();
       await vi.waitFor(() => {
-        if (!lines.includes("Labor refresh run: 3 projects, 3 stamped, 0 failed")) {
+        if (!lines.includes("Labor refresh run: 3 refreshed, 0 failed; labor code: MHM.25PLFE Project Labor From Estimate")) {
           throw new Error(`logs=${lines.join(" | ")} errors=${errors.join(" | ")}`);
         }
       }, { timeout: 5000 });

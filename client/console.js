@@ -622,12 +622,18 @@ function renderBudget(cost, budget) {
       const cls = v < 0 ? "over" : tot > 0 && v > 0 ? "und" : "";
       const unbudgeted = r.description === "Unbudgeted labor";
       const label = unbudgeted
-        ? "Unbudgeted labor"
+        ? `<span class="c">${esc(r.cost_code)}</span>Unbudgeted labor`
         : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
+      const wage = Number(r.labor_wage) || 0;
+      const burden = Number(r.labor_burden) || 0;
+      const laborSplit =
+        wage !== 0 || burden !== 0
+          ? `<div class="labor-split">Labor ${money(wage)} · Burden ${money(burden)}</div>`
+          : "";
       return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true"' : ""}>
       <div class="btop">
         <div class="bname">${label}
-          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
+          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}${laborSplit}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
@@ -2378,9 +2384,9 @@ function renderLabor(row) {
             : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`
         }`;
   const stCode = data.st_labor_code;
-  const codeText = stCode
-    ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(stCode.code)} ${esc(stCode.name || "")}`
-    : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+  const codeText = !stCode
+    ? "Labor code: unavailable"
+    : `Labor code: ${esc(stCode.code)} ${esc(stCode.name || "")}`;
   const uncoded = Number(data.uncoded_hours) > 0;
   const laborError = data.st_labor_code_error
     ? `<p class="msg" id="labor-st-error">${esc(data.st_labor_code_error)}</p>`
