@@ -19,6 +19,7 @@
     "db:provision": "tsx src/provision.ts",
     "db:provision:built": "node dist/provision.js",
     "seed:demo": "tsx scripts/seedDemo.ts",
+    "st:commission-probe": "tsx scripts/probeCommission.ts",
     "format": "prettier --write \"{src,test,scripts}/**/*.ts\""
   },
   "dependencies": {

@@ -633,31 +633,81 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
     await c.query(
       `INSERT INTO projects.technician_labor_rates
-         (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)
+         (tenant_id, external_technician_id, technician_name, active,
+          hourly_rate, burden_rate, pay_basis, burden_unset, is_field_tech)
        VALUES
-         ($1, 'tech-casey', 'Casey Nguyen', true, 40, 12),
-         ($1, 'tech-jordan', 'Jordan Hale', true, 36, 0),
-         ($1, 'tech-riley', 'Riley Cho', true, 0, 8)`,
+         ($1, 'tech-casey', 'Casey Nguyen', true, NULL, NULL, 'commission', false, true),
+         ($1, 'tech-justin', 'Justin M.', true, NULL, NULL, 'hourly', true, true),
+         ($1, 'tech-mason', 'Mason', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-riley', 'Riley Cho', true, NULL, NULL, 'missing', true, true),
+         ($1, 'tech-office', 'Office Notes', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-req', 'Project Requirements', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-sub', 'Subcontractor', true, NULL, NULL, 'missing', true, false),
+         ($1, '11000041', 'Wesley M', true, NULL, NULL, NULL, false, true)`,
       [TENANT_ID],
     );
+    // 4 h × $188 × 25% = $188 labor, 4 h × $12 burden = $48.
+    // Justin is hourly: 2 h × $36 = $72, burden not set.
+    // Wesley M (technician 11000041) is an active ServiceTitan technician.
+    // The rates themselves are not stored.
     await c.query(
       `INSERT INTO projects.labor_actuals
          (tenant_id, project_id, external_job_id, external_timesheet_id,
           external_technician_id, technician_name, work_date, hours, source,
-          cost_code_id, observed_at)
+          cost_code_id, observed_at, labor_amount, burden_amount, pay_basis,
+          burden_unset, priced_billable_rate)
        VALUES
          ($1,$2,'demo-job','demo-ts-casey','tech-casey','Casey Nguyen',
-          CURRENT_DATE - 2, 6.50, 'timesheet', $3, now()),
-         ($1,$2,'demo-job','demo-ts-jordan','tech-jordan','Jordan Hale',
-          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now())`,
+          CURRENT_DATE - 2, 4.00, 'timesheet', $3, now(), 188.00, 48.00,
+          'commission', false, 188),
+         ($1,$2,'demo-job','demo-ts-justin','tech-justin','Justin M.',
+          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now(), 72.00, NULL,
+          'hourly', true, NULL),
+         ($1,$2,'demo-job','demo-ts-wesley','11000041', NULL,
+          CURRENT_DATE - 1, 2.07, 'timesheet', $3, now(), NULL, NULL,
+          NULL, false, NULL)`,
       [TENANT_ID, whitfield, laborCode],
     );
     await c.query(
       `UPDATE projects.projects
           SET labor_refreshed_at = now() - interval '25 minutes',
-              labor_refresh_source = 'auto-hourly'
+              labor_refresh_source = 'scheduled'
         WHERE id = $1`,
       [whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key,
+          sku, kind, quantity, total)
+       VALUES
+         ($1, $2, 'demo-inv-labor', '900184', 'labor', 'MHM.25PLFE', 'labor', 4, 752.00),
+         ($1, $2, 'demo-inv-labor', '900184', 'materials', 'TILE', 'material', 1, 1200.00)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_material_expenses
+         (tenant_id, project_id, external_job_id, external_po_id, total)
+       VALUES ($1, $2, '900184', 'demo-po-1', 400.00)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id,
+          job_number, appointment_number, job_status, starts_at, ends_at,
+          status, active, technicians)
+       VALUES (
+         $1, $2, '900184', 'appt-184', '900184', '1', 'Scheduled',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '1 day' + interval '9 hours') AT TIME ZONE 'America/New_York',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '1 day' + interval '12 hours') AT TIME ZONE 'America/New_York',
+         'Scheduled', true, $3::jsonb
+       )`,
+      [
+        TENANT_ID,
+        whitfield,
+        JSON.stringify([{ id: 'tech-casey', name: 'Casey Nguyen' }]),
+      ],
     );
     const system = await c.query<{ id: string }>(
       `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,

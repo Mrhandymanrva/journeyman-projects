@@ -23,6 +23,12 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+const laborMoney = (n) =>
+  "$" +
+  Number(n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 // U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
   (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
@@ -340,6 +346,7 @@ async function select(projectId) {
       cos,
       closeout,
       labor,
+      stFinancials,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -354,6 +361,7 @@ async function select(projectId) {
       api(`/projects/${projectId}/change-orders`),
       api(`/projects/${projectId}/closeout`),
       api(`/projects/${projectId}/labor`),
+      api(`/projects/${projectId}/service-titan-financials`).catch(() => null),
     ]);
 
     if (revision !== selectionRevision) return;
@@ -386,6 +394,7 @@ async function select(projectId) {
       cos,
       closeout,
       labor,
+      stFinancials,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -432,6 +441,7 @@ function render(d) {
   renderChangeOrders(d.cos);
   renderCloseout(d.closeout);
   renderLabor(d.labor);
+  renderStFinancials(d.stFinancials);
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
@@ -626,19 +636,22 @@ function renderBudget(cost, budget) {
       const label = unbudgeted
         ? `<span class="c">${esc(r.cost_code)}</span>Unbudgeted labor`
         : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
-      const wage = Number(r.labor_wage) || 0;
-      const burden = Number(r.labor_burden) || 0;
-      const laborSplit =
-        wage !== 0 || burden !== 0
-          ? `<div class="labor-split">Labor ${money(wage)} · Burden ${money(burden)}</div>`
-          : "";
-      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true"' : ""}>
+      const detail = Array.isArray(r.lines)
+        ? `<ul class="labor-lines">${r.lines
+            .map(
+              (line) =>
+                `<li><span>${esc(line.description)}</span><span>${laborMoney(line.amount)}</span></li>`,
+            )
+            .join("")}</ul>`
+        : "";
+      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true" id="unbudgeted-labor"' : ""}>
       <div class="btop">
         <div class="bname">${label}
-          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}${laborSplit}</div>
+          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
+      ${detail}
       <div class="track">
         <div class="seg act" style="width:${actW}%"></div>
         <div class="seg com" style="left:${actW}%;width:${comW}%"></div>
@@ -2302,6 +2315,29 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
       );
     },
   );
+}
+
+function renderStFinancials(money) {
+  const node = el("st-financials");
+  if (!node) return;
+  if (!money) {
+    node.innerHTML =
+      '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
+    return;
+  }
+  const pct = Number(money.marginPercent || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const line = (label, value) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
+  node.innerHTML = `<p class="note">Billed labor and billed materials come from ServiceTitan invoice items. Labor burden is payroll timesheet hours times each technician's burden rate. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
+    ${line("Billed labor", money.billedLabor)}
+    ${line("Billed materials", money.billedMaterials)}
+    ${line("Billed", money.billed)}
+    ${line("Labor burden", money.laborBurden)}
+    ${line("Materials expense", money.materialsExpense)}
+    <div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`;
 }
 
 function renderLabor(row) {

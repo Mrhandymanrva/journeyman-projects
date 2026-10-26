@@ -9,6 +9,7 @@ import { requireCapability } from "../http/capabilities.js";
 import { ApiError } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { payrollReaderFrom, resolvePayForTechnicians } from "../domain/commissionLabor.js";
 import { applyTechnicianDirectory } from "../domain/laborActuals.js";
 import { pmCatalog } from "../domain/pmCatalog.js";
 export function directoryRoutes(
@@ -64,7 +65,20 @@ export function directoryRoutes(
           startedAt: new Date().toISOString(),
         };
       },
-      (p) => p.connection.client.readTechnicians!(),
+      async (p) => {
+        const rows = await p.connection.client.readTechnicians!();
+        return resolvePayForTechnicians(
+          rows.map((tech) => ({
+            id: tech.id,
+            name: tech.name,
+            active: tech.active,
+            hourlyRate: tech.hourlyRate ?? null,
+            burdenRate: tech.burdenRate ?? null,
+            commissionRate: tech.commissionRate ?? null,
+          })),
+          payrollReaderFrom(p.connection.client),
+        );
+      },
       async (ctx, p, technicians) => {
         requireCapability(ctx.staff.role, "advance_stage");
         const c = await connection(ctx);
@@ -90,17 +104,7 @@ export function directoryRoutes(
         await applyTechnicianDirectory(
           ctx.db,
           ctx.staff.tenantId,
-          {
-            read: true,
-            forbidden: false,
-            technicians: technicians.map((tech) => ({
-              id: tech.id,
-              name: tech.name,
-              active: tech.active,
-              hourlyRate: tech.hourlyRate ?? null,
-              burdenRate: tech.burdenRate ?? null,
-            })),
-          },
+          { read: true, forbidden: false, technicians },
           new Date(p.startedAt),
         );
         for (const tech of technicians)

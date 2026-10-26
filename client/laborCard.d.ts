@@ -17,6 +17,8 @@ export function laborCardHtml(
       burden_rate?: number | null;
       wage?: number | null;
       burden?: number | null;
+      pay_basis?: string | null;
+      burden_unset?: boolean;
       missing?: string[];
     }>;
     st_labor_code?: { code?: string; name?: string } | null;

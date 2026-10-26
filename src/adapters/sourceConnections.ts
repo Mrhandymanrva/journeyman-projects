@@ -13,6 +13,7 @@ export interface SourceConnections {
           ServiceTitanReadAdapter,
           | "readTechnicians"
           | "readEmployees"
+          | "readStaffName"
           | "rescheduleAppointment"
           | "readProject"
           | "listProjects"
@@ -22,6 +23,10 @@ export interface SourceConnections {
           | "projectNoteReceipt"
           | "publishProjectNote"
           | "readJobTimesheets"
+          | "readProjectJobs"
+          | "readJobInvoiceLines"
+          | "readJobPurchaseOrders"
+          | "readAllowlistedGet"
           | "readLaborService"
           | "readInvoices"
           | "readPayments"

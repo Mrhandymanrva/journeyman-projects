@@ -366,6 +366,9 @@ describe("stamping the pricebook labor code", () => {
   });
 
   it("codes the burden and the unbudgeted row, then the labor budget line", async () => {
+    await putHours(activeId, "ts-priced");
+    // Hours have to exist before pricing. The stored dollars are what the
+    // cost position reads; the hourly and burden rates are not kept.
     await h.db.withTenant(tenant.id, (db) =>
       storeTechnicianRates(
         db,
@@ -374,7 +377,6 @@ describe("stamping the pricebook labor code", () => {
         new Date("2026-10-25T12:00:00Z"),
       ),
     );
-    await putHours(activeId, "ts-priced");
     const owner = h.as(tenant.staff.owner!.token);
     const refreshed = await owner.post(`/api/v1/projects/projects/${activeId}/labor/refresh`);
     expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);

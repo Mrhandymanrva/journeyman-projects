@@ -161,7 +161,7 @@ describe("read-only ServiceTitan client", () => {
 });
 
 it("reads technician hourly and burden rates and drops contact fields", async () => {
-  const { client } = setup([
+  const { client, fetcher } = setup([
     {
       data: [
         {
@@ -179,10 +179,102 @@ it("reads technician hourly and burden rates and drops contact fields", async ()
   ]);
   const rows = await client.readTechnicians();
   expect(rows).toEqual([
-    { id: "6", name: "Alex", active: true, hourlyRate: 40, burdenRate: 12 },
+    { id: "6", name: "Alex", active: true, hourlyRate: 40, burdenRate: 12, commissionRate: null, isManagedTech: null },
   ]);
   expect(rows[0]).not.toHaveProperty("email");
   expect(rows[0]).not.toHaveProperty("phoneNumber");
+  expect(String(fetcher.mock.calls.at(-1)?.[0])).toContain("active=Any");
+});
+it("reads Wesley M from the page after a full first page with hasMore false", async () => {
+  const filler = (id: number) => ({
+    id,
+    name: `Tech ${id}`,
+    active: true,
+    hourlyRate: 0,
+    burdenRate: 0,
+    commissionRate: 0,
+  });
+  const { client, fetcher } = setup([
+    {
+      page: 1,
+      pageSize: 50,
+      hasMore: false,
+      data: Array.from({ length: 50 }, (_, index) => filler(index + 1)),
+    },
+    {
+      page: 2,
+      pageSize: 50,
+      hasMore: false,
+      data: [
+        {
+          id: 11000041,
+          name: "Wesley M",
+          active: true,
+          isManagedTech: true,
+          businessUnitId: 910001,
+          hourlyRate: 0,
+          burdenRate: 0,
+          commissionRate: 0.28,
+        },
+      ],
+    },
+  ]);
+  const rows = await client.readTechnicians();
+  const wesley = rows.find((row) => row.id === "11000041");
+  expect(wesley).toEqual({
+    id: "11000041",
+    name: "Wesley M",
+    active: true,
+    hourlyRate: 0,
+    burdenRate: 0,
+    commissionRate: 0.28,
+    isManagedTech: true,
+  });
+  const calls = fetcher.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.includes("/technicians"));
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toContain("/settings/v2/tenant/10/technicians?");
+  expect(calls[0]).toContain("active=Any");
+  expect(calls[0]).not.toContain("active=True");
+  expect(calls[1]).toContain("page=2");
+  expect(calls.every((url) => fetcher.mock.calls.find((call) => String(call[0]) === url)?.[1]?.method === "GET")).toBe(
+    true,
+  );
+});
+it("looks up a nameless timesheet id on technicians then employees", async () => {
+  const seen: string[] = [];
+  const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+    const url = String(input);
+    seen.push(url);
+    expect((init?.method ?? "GET") === "GET" || url.includes("/connect/token")).toBe(true);
+    if (url.includes("/connect/token")) {
+      return Response.json({ access_token: "test-token", expires_in: 900 });
+    }
+    expect(init?.method).toBe("GET");
+    if (url.endsWith("/technicians/11000041")) {
+      return Response.json({
+        id: 11000041,
+        name: "Wesley M",
+        active: true,
+        isManagedTech: true,
+        businessUnitId: 910001,
+      });
+    }
+    if (url.endsWith("/technicians/22000042") || url.endsWith("/technicians/33000043")) {
+      return new Response("{}", { status: 404 });
+    }
+    if (url.endsWith("/employees/22000042")) {
+      return Response.json({ id: 22000042, name: "Pat Lee", active: false });
+    }
+    if (url.endsWith("/employees/33000043")) return new Response("{}", { status: 404 });
+    return new Response("no", { status: 404 });
+  });
+  const client = new ServiceTitanReadAdapter(config, fetcher);
+  expect(await client.readStaffName("11000041")).toBe("Wesley M");
+  expect(seen.some((url) => url.includes("/employees/11000041"))).toBe(false);
+  expect(await client.readStaffName("22000042")).toBe("Pat Lee");
+  expect(await client.readStaffName("33000043")).toBeNull();
 });
 it("keeps a missing technician rate as missing instead of inventing one", async () => {
   const { client } = setup([
@@ -192,7 +284,7 @@ it("keeps a missing technician rate as missing instead of inventing one", async 
     },
   ]);
   expect(await client.readTechnicians()).toEqual([
-    { id: "6", name: "Alex", active: true, hourlyRate: 0, burdenRate: null },
+    { id: "6", name: "Alex", active: true, hourlyRate: 0, burdenRate: null, commissionRate: null, isManagedTech: null },
   ]);
 });
 it("rejects changed appointments without a business write", async () => {
@@ -397,6 +489,7 @@ describe("job timesheets", () => {
             arrivedOn: "2026-09-15T12:00:00Z",
             doneOn: "2026-09-15T15:00:00Z",
             canceledOn: null,
+            paidDurationHours: 3,
             hourlyRate: 42,
             grossPay: 126,
           },
@@ -416,6 +509,7 @@ describe("job timesheets", () => {
         dispatchedOn: null,
         doneOn: "2026-09-15T15:00:00Z",
         canceledOn: null,
+        paidDurationHours: 3,
       },
     ]);
     expect(read.timesheets[0]).not.toHaveProperty("hourlyRate");

@@ -1,9 +1,70 @@
 import { z } from "zod";
+import { technicianIdKey } from "../domain/commissionLabor.js";
+import { allowlistedGet } from "../domain/commissionProbe.js";
+import { classifySku, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 
 const sourceId = z
   .union([z.string().regex(/^\d+$/), z.number().int().nonnegative().safe()])
   .transform(String);
+
+const optionalRate = z.preprocess((value) => {
+  if (value == null || value === "") return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return value;
+}, z.number().finite().nullable());
+
+const activeFlag = z.preprocess((value) => {
+  if (value === "True" || value === "true") return true;
+  if (value === "False" || value === "false") return false;
+  return value;
+}, z.boolean());
+
+const technicianRowSchema = z.object({
+  id: sourceId,
+  name: z.string().min(1),
+  active: activeFlag,
+  hourlyRate: optionalRate.optional(),
+  burdenRate: optionalRate.optional(),
+  commissionRate: optionalRate.optional(),
+  isManagedTech: z.boolean().optional(),
+});
+
+const technicianPageSchema = z.object({
+  data: z.array(z.unknown()),
+  hasMore: z.preprocess((value) => {
+    if (value === "true" || value === "True") return true;
+    if (value === "false" || value === "False") return false;
+    return value;
+  }, z.boolean().optional()),
+  pageSize: z.preprocess((value) => {
+    if (value == null || value === "") return undefined;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+    return value;
+  }, z.number().int().positive().optional()),
+});
+
+function staffNameFrom(body: unknown, id: string): string | null {
+  const candidates: unknown[] = [];
+  if (body && typeof body === "object") {
+    const record = body as { data?: unknown };
+    if (Array.isArray(record.data)) candidates.push(...record.data);
+    else if (record.data && typeof record.data === "object") candidates.push(record.data);
+    candidates.push(body);
+  }
+  const row = z.object({ id: sourceId, name: z.string().min(1) });
+  for (const candidate of candidates) {
+    const parsed = row.safeParse(candidate);
+    if (!parsed.success) continue;
+    const name = parsed.data.name.trim();
+    if (parsed.data.id === id && name) return name;
+  }
+  return null;
+}
 const projectSchema = z.object({
   id: sourceId,
   number: z.string(),
@@ -181,7 +242,8 @@ export class ServiceTitanReadAdapter {
       | "payroll"
       | "accounting"
       | "sales"
-      | "pricebook",
+      | "pricebook"
+      | "inventory",
     resource: string,
     query?: URLSearchParams,
   ) {
@@ -220,6 +282,83 @@ export class ServiceTitanReadAdapter {
       return response.json() as Promise<unknown>;
     }
     throw new ServiceTitanReadError("ServiceTitan read failed (HTTP 429).");
+  }
+
+  /**
+   * GET that returns the status instead of throwing.
+   * Used by the commission probe and payroll-settings fallback.
+   * The method is GET. There is no write path on this adapter method.
+   */
+  private async getRaw(
+    family: "jpm" | "dispatch" | "settings" | "crm" | "forms" | "payroll" | "accounting" | "sales",
+    resource: string,
+    query?: URLSearchParams,
+  ): Promise<{ status: number; body: unknown }> {
+    const path = `/${family}/v2/tenant/${this.config.tenantId}/${resource}`;
+    const url = this.apiHost + path + (query ? "?" + query.toString() : "");
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const token = await this.accessToken();
+      let response: Response;
+      try {
+        response = await this.fetcher(url, {
+          method: "GET",
+          redirect: "error",
+          signal: AbortSignal.timeout(20000),
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+            "ST-App-Key": this.config.appKey,
+          },
+        });
+      } catch {
+        throw new ServiceTitanReadError(
+          "ServiceTitan read could not complete. The previous snapshot should be retained.",
+        );
+      }
+      if (response.status === 401 && attempt < maxAttempts) {
+        this.token = undefined;
+        continue;
+      }
+      if (response.status === 429 && attempt < maxAttempts) {
+        await this.sleep(retryAfterMs(response.headers.get("Retry-After")));
+        continue;
+      }
+      const text = await response.text();
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          body = { unparsed: true };
+        }
+      }
+      return { status: response.status, body };
+    }
+    return { status: 429, body: null };
+  }
+
+  /**
+   * GET a settings or payroll document on the commission-probe allowlist.
+   * Any other path is rejected before a request is made.
+   */
+  async readAllowlistedGet(
+    family: "payroll" | "settings",
+    resource: string,
+    query?: Record<string, string>,
+  ): Promise<{ ok: boolean; status: number; body: unknown }> {
+    if (!allowlistedGet(family, resource) || resource.includes("..") || resource.startsWith("/")) {
+      throw new ServiceTitanReadError("That ServiceTitan read is not allowed.");
+    }
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query ?? {})) {
+      if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key) || value.length > 4000 || /[\r\n]/.test(value)) {
+        throw new ServiceTitanReadError("That ServiceTitan read is not allowed.");
+      }
+      params.set(key, value);
+    }
+    const result = await this.getRaw(family, resource, params);
+    return { ok: result.status >= 200 && result.status < 300, status: result.status, body: result.body };
   }
   private async pages<T>(
     family: "jpm" | "dispatch" | "settings",
@@ -889,6 +1028,8 @@ export class ServiceTitanReadAdapter {
       active: boolean;
       hourlyRate: number | null;
       burdenRate: number | null;
+      commissionRate: number | null;
+      isManagedTech?: boolean | null;
     }[]
   > {
     const rows: {
@@ -897,51 +1038,86 @@ export class ServiceTitanReadAdapter {
       active: boolean;
       hourlyRate: number | null;
       burdenRate: number | null;
+      commissionRate: number | null;
+      isManagedTech: boolean | null;
     }[] = [];
-      const schema = z.object({
-        data: z.array(
-          z.object({
-            id: sourceId,
-            name: z.string().min(1),
-            active: z.boolean(),
-            hourlyRate: z.number().finite().nullish(),
-            burdenRate: z.number().finite().nullish(),
-          }),
-        ),
-        hasMore: z.boolean(),
-      });
+    const seen = new Set<string>();
+    // Any, not True: inactive technicians still name the hours they already worked.
+    // Page size 200 is under the settings cap. A full page is not the end of the
+    // list when hasMore is false: ServiceTitan's default page is 50, and a full
+    // page with hasMore false drops every technician after page 1.
+    const pageSize = 200;
     for (let page = 1; page <= 100; page++) {
-      const result = schema.safeParse(
+      const parsed = technicianPageSchema.safeParse(
         await this.get(
           "settings",
           "technicians",
           new URLSearchParams({
             page: String(page),
-            pageSize: "200",
+            pageSize: String(pageSize),
             active: "Any",
           }),
         ),
       );
-      if (!result.success)
+      if (!parsed.success)
         throw new ServiceTitanReadError(
           "Unexpected technician directory response.",
         );
-      rows.push(
-        ...result.data.data.map((person) => ({
-          id: person.id,
-          name: person.name,
-          active: person.active,
-          hourlyRate: person.hourlyRate ?? null,
-          burdenRate: person.burdenRate ?? null,
-        })),
-      );
-      if (!result.data.hasMore) {
-        if (new Set(rows.map((r) => r.id)).size !== rows.length)
+      const people = parsed.data.data.flatMap((item) => {
+        const person = technicianRowSchema.safeParse(item);
+        if (!person.success) return [];
+        return [
+          {
+            id: person.data.id,
+            name: person.data.name,
+            active: person.data.active,
+            hourlyRate: person.data.hourlyRate ?? null,
+            burdenRate: person.data.burdenRate ?? null,
+            commissionRate: person.data.commissionRate ?? null,
+            isManagedTech: person.data.isManagedTech ?? null,
+          },
+        ];
+      });
+      if (parsed.data.data.length > 0 && people.length === 0)
+        throw new ServiceTitanReadError(
+          "Unexpected technician directory response.",
+        );
+      if (people.length > 0 && people.every((person) => seen.has(person.id))) return rows;
+      for (const person of people) {
+        if (seen.has(person.id))
           throw new ServiceTitanReadError("Duplicate technician IDs.");
-        return rows;
+        seen.add(person.id);
+        rows.push(person);
       }
+      const reported = parsed.data.pageSize;
+      const cap = reported && reported > 0 ? Math.min(pageSize, reported) : pageSize;
+      const fullPage = parsed.data.data.length >= cap;
+      if (parsed.data.hasMore !== true && !fullPage) return rows;
     }
     throw new ServiceTitanReadError("Technician pagination incomplete.");
+  }
+
+  /**
+   * Name for one timesheet id the technician directory did not carry.
+   * GET technicians/{id} first (inactive records included), then employees/{id}.
+   * A 404 or a failed read returns null. Nothing is written.
+   */
+  async readStaffName(id: string): Promise<string | null> {
+    const wanted = technicianIdKey(id);
+    if (!/^\d+$/.test(wanted)) return null;
+    for (const resource of [`technicians/${wanted}`, `employees/${wanted}`] as const) {
+      let result: { status: number; body: unknown };
+      try {
+        result = await this.getRaw("settings", resource);
+      } catch {
+        return null;
+      }
+      if (result.status === 404) continue;
+      if (result.status < 200 || result.status >= 300) continue;
+      const name = staffNameFrom(result.body, wanted);
+      if (name) return name;
+    }
+    return null;
   }
   async readJob(jobId: string): Promise<{
     job: ServiceTitanJob;
@@ -1009,6 +1185,7 @@ export class ServiceTitanReadAdapter {
       dispatchedOn: string | null;
       doneOn: string | null;
       canceledOn: string | null;
+      paidDurationHours: number | null;
     }>;
   }> {
     if (!/^\d+$/.test(jobId))
@@ -1023,6 +1200,9 @@ export class ServiceTitanReadAdapter {
         dispatchedOn: z.string().nullish(),
         doneOn: z.string().nullish(),
         canceledOn: z.string().nullish(),
+        paidDurationHours: z.coerce.number().finite().nullish(),
+        paidHours: z.coerce.number().finite().nullish(),
+        hours: z.coerce.number().finite().nullish(),
       })
       .strip();
     try {
@@ -1053,6 +1233,7 @@ export class ServiceTitanReadAdapter {
           dispatchedOn: row.dispatchedOn ?? null,
           doneOn: row.doneOn ?? null,
           canceledOn: row.canceledOn ?? null,
+          paidDurationHours: row.paidDurationHours ?? row.paidHours ?? row.hours ?? null,
         })),
       };
     } catch (err) {
@@ -1061,6 +1242,163 @@ export class ServiceTitanReadAdapter {
       }
       throw err;
     }
+  }
+
+  /**
+   * Every job whose projectId is this project, in every status, plus the
+   * ids on the project object. GET only.
+   */
+  async readProjectJobs(projectId: string): Promise<
+    Array<{ id: string; jobNumber: string; jobStatus: string; createdOn: string | null; completedOn: string | null }>
+  > {
+    if (!/^\d+$/.test(projectId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan project ID.");
+    const rowSchema = z.object({
+      id: sourceId,
+      jobNumber: z.string(),
+      jobStatus: z.string(),
+      projectId: sourceId.nullish(),
+      createdOn: z.string().nullish(),
+      completedOn: z.string().nullish(),
+    });
+    const byId = new Map<string, z.infer<typeof rowSchema>>();
+    for (const status of ["", ...JOB_LIST_STATUSES]) {
+      for (let page = 1; page <= 100; page += 1) {
+        const query = new URLSearchParams({
+          projectId,
+          page: String(page),
+          pageSize: "200",
+        });
+        if (status) query.set("jobStatus", status);
+        const raw = await this.get("jpm", "jobs", query);
+        const parsed = z.object({
+          data: z.array(rowSchema),
+          hasMore: z.boolean().optional(),
+        }).safeParse(raw);
+        if (!parsed.success)
+          throw new ServiceTitanReadError("Unexpected ServiceTitan job list.");
+        for (const row of parsed.data.data) {
+          if (row.projectId != null && row.projectId !== projectId) continue;
+          byId.set(row.id, row);
+        }
+        const full = parsed.data.data.length >= 200;
+        if (parsed.data.hasMore !== true && !full) break;
+        if (parsed.data.data.length === 0) break;
+      }
+    }
+    const project = await this.readProject(projectId);
+    for (const id of project.project.jobIds) {
+      if (!byId.has(id)) {
+        byId.set(id, { id, jobNumber: id, jobStatus: "Unknown", projectId, createdOn: null, completedOn: null });
+      }
+    }
+    return [...byId.values()].map((row) => ({
+      id: row.id,
+      jobNumber: row.jobNumber,
+      jobStatus: row.jobStatus,
+      createdOn: row.createdOn ?? null,
+      completedOn: row.completedOn ?? null,
+    }));
+  }
+
+  /** Invoice lines for one job. GET only. Labor is MHM.25PLFE. */
+  async readJobInvoiceLines(jobId: string): Promise<
+    Array<{
+      invoiceId: string;
+      lineKey: string;
+      sku: string;
+      kind: "labor" | "material" | "other";
+      quantity: number | null;
+      total: number;
+      technicianId: string | null;
+    }>
+  > {
+    if (!/^\d+$/.test(jobId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
+    const itemSchema = z.object({
+      id: sourceId.optional(),
+      skuName: z.string().nullish(),
+      code: z.string().nullish(),
+      displayName: z.string().nullish(),
+      description: z.string().nullish(),
+      skuType: z.string().nullish(),
+      quantity: z.coerce.number().nullish(),
+      total: z.coerce.number().nullish(),
+      technicianId: sourceId.nullish(),
+    }).passthrough();
+    const invoiceSchema = z.object({
+      id: sourceId,
+      items: z.array(itemSchema).optional(),
+    });
+    const lines: Array<{
+      invoiceId: string;
+      lineKey: string;
+      sku: string;
+      kind: "labor" | "material" | "other";
+      quantity: number | null;
+      total: number;
+      technicianId: string | null;
+    }> = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const raw = await this.get(
+        "accounting",
+        "invoices",
+        new URLSearchParams({ jobId, page: String(page), pageSize: "200" }),
+      );
+      const parsed = z.object({
+        data: z.array(invoiceSchema),
+        hasMore: z.boolean().optional(),
+      }).safeParse(raw);
+      if (!parsed.success)
+        throw new ServiceTitanReadError("Unexpected ServiceTitan invoice items.");
+      for (const invoice of parsed.data.data) {
+        (invoice.items ?? []).forEach((item, index) => {
+          const sku = String(item.skuName || item.code || item.displayName || item.description || "");
+          lines.push({
+            invoiceId: invoice.id,
+            lineKey: item.id ?? String(index),
+            sku,
+            kind: classifySku(sku, item.skuType),
+            quantity: item.quantity ?? null,
+            total: item.total ?? 0,
+            technicianId: item.technicianId ?? null,
+          });
+        });
+      }
+      if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
+    }
+    return lines;
+  }
+
+  /** Purchase orders on one job. GET only. Canceled orders are omitted. */
+  async readJobPurchaseOrders(jobId: string): Promise<Array<{ id: string; total: number }>> {
+    if (!/^\d+$/.test(jobId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
+    const rowSchema = z.object({
+      id: sourceId,
+      status: z.string().nullish(),
+      total: z.coerce.number().nullish(),
+    }).passthrough();
+    const orders: Array<{ id: string; total: number }> = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const raw = await this.get(
+        "inventory",
+        "purchase-orders",
+        new URLSearchParams({ jobId, page: String(page), pageSize: "200" }),
+      );
+      const parsed = z.object({
+        data: z.array(rowSchema),
+        hasMore: z.boolean().optional(),
+      }).safeParse(raw);
+      if (!parsed.success)
+        throw new ServiceTitanReadError("Unexpected ServiceTitan purchase orders.");
+      for (const row of parsed.data.data) {
+        if (/cancel/i.test(row.status ?? "")) continue;
+        orders.push({ id: row.id, total: row.total ?? 0 });
+      }
+      if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
+    }
+    return orders;
   }
 
   /**

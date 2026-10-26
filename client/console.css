@@ -108,6 +108,8 @@ body{
 /* ---------- budget rail ---------- */
 .bh{display:grid;grid-template-columns:1fr 92px 92px;gap:10px;padding:10px 0 8px;border-bottom:1px solid var(--rule-soft)}
 .bh div:last-child,.bh div:nth-child(2){text-align:right}
+.labor-lines{list-style:none;margin:4px 0 0;padding:0}
+.labor-lines li{display:flex;justify-content:space-between;gap:12px;padding:2px 0 2px 14px;font-size:12px}
 .brow{padding:11px 0 10px;border-bottom:1px solid var(--rule-soft)}
 .brow:last-child{border-bottom:0}
 .btop{display:grid;grid-template-columns:1fr 92px 92px;gap:10px;align-items:baseline}

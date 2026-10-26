@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   staffExternalRoute,
+  staffRoute,
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
@@ -215,5 +216,113 @@ export function stScheduleRoutes(
   );
   router.get("/projects/:id/servicetitan/schedule", handler);
   router.get("/servicetitan/schedule", handler);
+  router.get(
+    "/projects/:id/plan-appointments",
+    staffRoute(deps, async (ctx) => {
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
+      sendData(ctx.res, await storedAppointments(ctx, id, ctx.req.query));
+    }),
+  );
+  router.get(
+    "/plan-appointments",
+    staffRoute(deps, async (ctx) => {
+      sendData(ctx.res, await storedAppointments(ctx, null, ctx.req.query));
+    }),
+  );
   return router;
+}
+
+async function storedAppointments(
+  ctx: StaffContext,
+  projectId: string | null,
+  query: StaffContext["req"]["query"],
+) {
+  const q = parseBody(
+    z.object({ from: z.string().date(), to: z.string().date() }).refine(
+      (value) => value.to >= value.from && Date.parse(value.to) - Date.parse(value.from) <= 370 * 86400000,
+      { message: "Choose a date range of up to a year." },
+    ),
+    query,
+  );
+  const zone = "America/New_York";
+  const localDate = (value: string) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(value));
+  const unit = unitFilter(ctx.staff.businessUnitId, ctx.settings.enforceBusinessUnitScoping);
+  const rows = await ctx.db.query<{
+    project_id: string;
+    project_name: string;
+    project_number: string;
+    external_job_id: string;
+    external_appointment_id: string;
+    job_number: string;
+    appointment_number: string;
+    job_status: string;
+    starts_at: Date;
+    ends_at: Date;
+    status: string;
+    technicians: Array<{ id: string; name: string }> | string;
+  }>(
+    `SELECT a.project_id::text, p.name AS project_name, p.project_number,
+            a.external_job_id, a.external_appointment_id, a.job_number,
+            a.appointment_number, a.job_status, a.starts_at, a.ends_at,
+            a.status, a.technicians
+       FROM projects.st_plan_appointments a
+       JOIN projects.projects p ON p.id = a.project_id
+      WHERE a.active
+        AND a.status !~* 'cancel'
+        AND a.job_status !~* 'cancel'
+        AND ($1::uuid IS NULL OR a.project_id = $1)
+        AND ($2::uuid IS NULL OR p.business_unit_id = $2)
+      ORDER BY a.starts_at`,
+    [projectId, unit],
+  );
+  const visible = rows.rows.flatMap((row) => {
+    const start = row.starts_at.toISOString();
+    const end = row.ends_at.toISOString();
+    const windowStart = localDate(start);
+    const windowEnd = localDate(new Date(Date.parse(end) - 1).toISOString());
+    if (windowStart > q.to || windowEnd < q.from) return [];
+    const people = (Array.isArray(row.technicians) ? row.technicians : []).map((tech) => ({
+      id: "st-tech:" + tech.id,
+      name: tech.name,
+      kind: "employee",
+      trade: "ServiceTitan",
+      schedulable: true,
+    }));
+    return [{
+      id: "st:" + row.project_id + ":" + row.external_appointment_id,
+      source: "servicetitan",
+      project_id: row.project_id,
+      project_name: row.project_name,
+      project_number: row.project_number,
+      external_job_id: row.external_job_id,
+      appointment_id: row.external_appointment_id,
+      appointment_number: row.appointment_number,
+      title: "ST job " + row.job_number + " · " + row.appointment_number,
+      phase: "ServiceTitan jobs",
+      window_start: windowStart,
+      window_end: windowEnd,
+      appointment_start: start,
+      appointment_end: end,
+      time_zone: zone,
+      source_status: row.status,
+      status: /done|complete/i.test(row.status) ? "complete" : "confirmed",
+      resources: people,
+      read_only: true,
+    }];
+  });
+  return {
+    configured: true,
+    linkedProjects: new Set(visible.map((row) => row.project_id)).size,
+    rows: visible,
+    observedAt: new Date().toISOString(),
+    timeZone: zone,
+    readOnly: true,
+  };
 }

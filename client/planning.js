@@ -128,8 +128,8 @@ export function createPlanning({
             ),
         api(
           (all
-            ? "/servicetitan/schedule"
-            : "/projects/" + project.id + "/servicetitan/schedule") +
+            ? "/plan-appointments"
+            : "/projects/" + project.id + "/plan-appointments") +
             "?from=" +
             from +
             "&to=" +

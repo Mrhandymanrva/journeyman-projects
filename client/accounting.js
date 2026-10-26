@@ -368,17 +368,22 @@ export function createAccounting({
     const error = labor.st_labor_code_error
       ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
       : "";
-    // TODO: Exclude non-technicians from this list. Mason, Office Notes, Project Requirements, and Subcontractor must be excluded.
     const gaps = labor.rate_gaps || [];
     const gapList = gaps.length
       ? `<ul id="labor-rate-gaps">${gaps
           .map(
             (gap) =>
-              `<li>${esc(gap.technician_name)}: ${(gap.messages || []).map((line) => esc(line)).join(" ")}</li>`,
+              `<li>${esc(gap.technician_name)}: neither a commission percent nor an hourly rate</li>`,
           )
           .join("")}</ul>`
-      : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`;
-    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. The labor code is ServiceTitan pricebook service MHM.25PLFE. It is not chosen here. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
+      : `<p id="labor-rate-gaps">No active field technician is missing both a commission percent and an hourly rate.</p>`;
+    const notices = labor.burden_notices || [];
+    const noticeList = notices.length
+      ? `<ul id="labor-burden-notices">${notices
+          .map((gap) => `<li>${esc(gap.technician_name)}: not set</li>`)
+          .join("")}</ul>`
+      : `<p id="labor-burden-notices">Every active field technician has a burden rate.</p>`;
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Labor cost is billed labor times the technician's commission percent, plus burden. Burden is payroll timesheet hours times the burden rate. Hourly technicians use those hours times their hourly rate. A person is listed here only when they are an active field technician and ServiceTitan payroll has neither a commission percent nor an hourly rate. A missing burden rate is shown as not set. Pay rates are read through Journeyman's ServiceTitan login and are not stored here. Nothing on this page is written to ServiceTitan. The labor code is ServiceTitan pricebook service MHM.25PLFE. It is not chosen here.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Field technicians missing a commission percent and an hourly rate</h4>${gapList}<h4>Burden not set</h4>${noticeList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(

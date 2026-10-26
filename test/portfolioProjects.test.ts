@@ -44,6 +44,7 @@ describe("portfolio project feed", () => {
       labor_burden: 0,
       total: 0,
       missing: [],
+      notices: [],
       uncoded_hours: 0,
       source: null,
       hours_source: null,
