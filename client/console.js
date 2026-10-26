@@ -20,8 +20,9 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+// U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
-  (n < 0 ? "âˆ’" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
+  (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? "").replace(

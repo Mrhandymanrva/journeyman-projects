@@ -27,6 +27,7 @@ import express, { type Express } from "express";
 import type { Database } from "./db/database.js";
 import { errorHandler } from "./http/envelope.js";
 import { ApiError } from "./http/errors.js";
+import { enforceUtf8Charset } from "./http/utf8Charset.js";
 import {
   staffAuthentication,
   type StaffSessionStore,
@@ -96,6 +97,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(opts: AppOptions): Express {
   const app = express();
   app.disable("x-powered-by");
+  app.use(enforceUtf8Charset);
   app.use(
     "/api/v1/projects/vendors/:id/documents/upload",
     express.json({ limit: "12mb" }),

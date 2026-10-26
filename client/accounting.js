@@ -431,7 +431,7 @@ export function createAccounting({
   }
   function varianceText(variance) {
     if (!Number.isFinite(variance) || Math.abs(variance) <= 0.005) return "matches the order";
-    const sign = variance > 0 ? "+" : "−";
+    const sign = variance > 0 ? "+" : "\u2212";
     return `${sign}${money(Math.abs(variance))} variance (tax, shipping, or price)`;
   }
   function rankCharges(txns, bill) {
