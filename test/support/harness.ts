@@ -284,7 +284,7 @@ export function estimatePayload(
         },
         {
           code: "1110",
-          description: "Tile â€” material",
+          description: "Tile — material",
           quantity: 220,
           unit: "sf",
           cost_type: "M",
@@ -307,7 +307,7 @@ export function estimatePayload(
 export function projectBody(overrides: Record<string, unknown> = {}) {
   return {
     project_number: `MHR-2026-${Math.floor(Math.random() * 9000 + 1000)}`,
-    name: "Whitfield â€” Primary Bath",
+    name: "Whitfield — Primary Bath",
     address_line1: "4412 Grove Avenue",
     city: "Richmond",
     region: "VA",

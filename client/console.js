@@ -22,8 +22,9 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+// U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
-  (n < 0 ? "âˆ’" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
+  (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -309,9 +310,9 @@ function filterProjects() {
 const shortName = (name) => String(name).split(" — ")[0];
 
 function pipColour(p) {
-  if (p.exception_count === undefined) return "#C3CBC5";
-  if (p.exception_count === 0) return "#1D7A4C";
-  return p.exception_severity === "bad" ? "#B4231F" : "#F58220";
+  if (p.exception_count === undefined) return "var(--pip-idle)";
+  if (p.exception_count === 0) return "var(--status-track)";
+  return p.exception_severity === "bad" ? "var(--status-late)" : "var(--status-risk)";
 }
 
 // ------------------------------------------------------------------- select
@@ -1106,7 +1107,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -1120,7 +1121,7 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
       }
     });
@@ -1132,7 +1133,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -1146,7 +1147,7 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
       }
     });

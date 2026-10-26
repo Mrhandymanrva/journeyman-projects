@@ -1,0 +1,215 @@
+/* Design tokens. Light is the default. Dark is selected with data-theme="dark".
+   Print always uses the light values. Status hues stay apart:
+   on track (green), at risk (amber), late (red), done (violet).
+   The single chrome accent is a muted slate blue. */
+:root {
+  color-scheme: light;
+  --paper: #f3f1ec;
+  --card: #fbfaf7;
+  --surface: #f3efe8;
+  --hover: #e7e2d8;
+  --ink: #2a3136;
+  --muted: #5c666e;
+  --rule: #e2ddd4;
+  --rule-soft: #ebe7e0;
+  --accent: #3a5f7a;
+  --accent-strong: #243e52;
+  --on-accent: #f6f5f1;
+  --accent-soft: #e6eef3;
+  --accent-ink: #1c3a4e;
+  --status-track: #1b6a38;
+  --status-track-bg: #e3f3e8;
+  --status-risk: #8a520f;
+  --status-risk-bg: #f8eed6;
+  --status-late: #9a312e;
+  --status-late-bg: #f8e3e1;
+  --status-done: #4a3d78;
+  --status-done-bg: #e8e6f4;
+  --status-late-border: #e4b4b0;
+  --status-risk-border: #e4d2a4;
+  --today: #f3ead2;
+  --track: #e4e0d8;
+  --committed-a: #b7c6d4;
+  --committed-b: #d5e0e8;
+  --pip-idle: #6f6a62;
+  --bar-planned: #c5d2dc;
+  --bar-planned-ink: #1c3140;
+  --bar-confirmed: #3a5f7a;
+  --bar-confirmed-ink: #f6f5f1;
+  --bar-progress: #d4b07a;
+  --bar-progress-ink: #2c2416;
+  --bar-done: #4a3d78;
+  --bar-done-ink: #f6f5f1;
+  --phase-ink: #ffffff;
+  --phase-1: #2f5d73;
+  --phase-2: #55487a;
+  --phase-3: #2f6158;
+  --phase-4: #7a5733;
+  --phase-5: #734356;
+  --phase-6: #4d5a32;
+  --phase-7: #2f5c45;
+  --phase-8: #6b5a30;
+  --phase-9: #3a4f68;
+  --phase-10: #6e4450;
+  --chart-axis: #5c666e;
+  --chart-line: #3a5f7a;
+  --shadow: color-mix(in srgb, var(--ink) 14%, transparent);
+  --overlay: color-mix(in srgb, var(--ink) 48%, transparent);
+  --phase-handle: color-mix(in srgb, var(--phase-ink) 24%, transparent);
+  --blue: var(--accent);
+  --deep: var(--accent-strong);
+  --green: var(--status-track);
+  --red: var(--status-late);
+  --orange: var(--status-risk);
+  --focus: var(--accent);
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #1c2124;
+  --card: #262c30;
+  --surface: #2e3539;
+  --hover: #3a4246;
+  --ink: #e7e4de;
+  --muted: #aeb6b4;
+  --rule: #3c454a;
+  --rule-soft: #323a3e;
+  --accent: #a9c6d8;
+  --accent-strong: #8eb4cc;
+  --on-accent: #121a22;
+  --accent-soft: #24323c;
+  --accent-ink: #d7e7f2;
+  --status-track: #8ed4ae;
+  --status-track-bg: #143028;
+  --status-risk: #f0c98a;
+  --status-risk-bg: #3a2c18;
+  --status-late: #f3b4b0;
+  --status-late-bg: #3a2221;
+  --status-done: #c9c2ee;
+  --status-done-bg: #2a2640;
+  --status-late-border: #6e4442;
+  --status-risk-border: #6e5a34;
+  --today: #3d3624;
+  --track: #3a4146;
+  --committed-a: #4e6878;
+  --committed-b: #3d5360;
+  --pip-idle: #8d9693;
+  --bar-planned: #2c4250;
+  --bar-planned-ink: #d5e6f0;
+  --bar-confirmed: #8eb4cc;
+  --bar-confirmed-ink: #121a22;
+  --bar-progress: #e0c48a;
+  --bar-progress-ink: #2c2416;
+  --bar-done: #c9c2ee;
+  --bar-done-ink: #221c33;
+  --phase-ink: #121a22;
+  --phase-1: #8fb4c6;
+  --phase-2: #c4b0d4;
+  --phase-3: #8fbfb4;
+  --phase-4: #e0b48a;
+  --phase-5: #e0a8b8;
+  --phase-6: #c5d09a;
+  --phase-7: #9fbfa8;
+  --phase-8: #dcc48a;
+  --phase-9: #a9bdd0;
+  --phase-10: #e0b0b4;
+  --chart-axis: #aeb6b4;
+  --chart-line: #a9c6d8;
+}
+@media print {
+  .theme-toggle { display: none !important; }
+  html[data-theme="dark"] {
+    color-scheme: light;
+    --paper: #f3f1ec;
+    --card: #fbfaf7;
+    --surface: #f3efe8;
+    --hover: #e7e2d8;
+    --ink: #2a3136;
+    --muted: #5c666e;
+    --rule: #e2ddd4;
+    --rule-soft: #ebe7e0;
+    --accent: #3a5f7a;
+    --accent-strong: #243e52;
+    --on-accent: #f6f5f1;
+    --accent-soft: #e6eef3;
+    --accent-ink: #1c3a4e;
+    --status-track: #1b6a38;
+    --status-track-bg: #e3f3e8;
+    --status-risk: #8a520f;
+    --status-risk-bg: #f8eed6;
+    --status-late: #9a312e;
+    --status-late-bg: #f8e3e1;
+    --status-done: #4a3d78;
+    --status-done-bg: #e8e6f4;
+    --status-late-border: #e4b4b0;
+    --status-risk-border: #e4d2a4;
+    --today: #f3ead2;
+    --track: #e4e0d8;
+    --committed-a: #b7c6d4;
+    --committed-b: #d5e0e8;
+    --pip-idle: #6f6a62;
+    --bar-planned: #c5d2dc;
+    --bar-planned-ink: #1c3140;
+    --bar-confirmed: #3a5f7a;
+    --bar-confirmed-ink: #f6f5f1;
+    --bar-progress: #d4b07a;
+    --bar-progress-ink: #2c2416;
+    --bar-done: #4a3d78;
+    --bar-done-ink: #f6f5f1;
+    --phase-ink: #ffffff;
+    --phase-1: #2f5d73;
+    --phase-2: #55487a;
+    --phase-3: #2f6158;
+    --phase-4: #7a5733;
+    --phase-5: #734356;
+    --phase-6: #4d5a32;
+    --phase-7: #2f5c45;
+    --phase-8: #6b5a30;
+    --phase-9: #3a4f68;
+    --phase-10: #6e4450;
+    --chart-axis: #5c666e;
+    --chart-line: #3a5f7a;
+  }
+}
+
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  background-color: var(--card);
+  color: var(--ink);
+}
+.theme-toggle {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.theme-toggle button {
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  border: 0;
+  border-right: 1px solid var(--rule);
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.theme-toggle button:last-child { border-right: 0; }
+.theme-toggle button:hover { color: var(--ink); background: var(--hover); }
+.theme-toggle button[aria-pressed="true"] {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+.theme-toggle button[aria-pressed="true"]:hover {
+  color: var(--on-accent);
+  background: var(--accent);
+}
+.legend .swatch-actual { background: var(--accent); }
+.legend .swatch-committed {
+  background: repeating-linear-gradient(135deg, var(--committed-a) 0 4px, var(--committed-b) 4px 8px);
+}
+.legend .swatch-over { background: var(--status-risk); }
+.legend .swatch-budget { background: var(--accent-strong); width: 2px; }
