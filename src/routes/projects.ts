@@ -475,12 +475,12 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       // of 110 and 210 — the divisions interleave and the sheet stops reading
       // like a estimate. v_cost_position does not carry sort_order, hence the
       // join back to cost_codes, which RLS has already scoped to this tenant.
-      // Unbudgeted labor has no cost code, so the join stays a left join and
-      // that row sorts last. Its description is exactly "Unbudgeted labor".
+      // Unbudgeted labor carries its cost code. The join stays a left join
+      // and that row sorts last. Its description is exactly "Unbudgeted labor".
       const { rows } = await ctx.db.query(
         `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
                 v.baseline, v.budget_amount, v.actual_cost, v.committed_open,
-                v.total_committed, v.variance
+                v.total_committed, v.variance, v.labor_wage, v.labor_burden
            FROM projects.v_cost_position v
            LEFT JOIN projects.cost_codes cc ON cc.code = v.cost_code
           WHERE v.project_id = $1
@@ -508,9 +508,17 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
             committed_open: num(r.committed_open),
             total_committed: num(r.total_committed),
             variance: num(r.variance),
+            labor_wage: num(r.labor_wage),
+            labor_burden: num(r.labor_burden),
           };
           if (r.description === "Unbudgeted labor") {
-            return { ...priced, lines: laborLines(openLabor, openBurden) };
+            const split = r.cost_code
+              ? splits.find((row) => !row.budgeted && row.costCode === String(r.cost_code))
+              : undefined;
+            return {
+              ...priced,
+              lines: laborLines(split?.labor ?? openLabor, split?.burden ?? openBurden),
+            };
           }
           const split = r.cost_type === "L" && r.cost_code ? budgeted.get(String(r.cost_code)) : undefined;
           if (split && split.labor + split.burden > 0) {

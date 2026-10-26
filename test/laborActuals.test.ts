@@ -84,7 +84,7 @@ describe("labor actuals", () => {
     const saved = await owner().get("/api/v1/projects/settings/labor");
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
     expect(saved.body.data.st_labor_code).toBeNull();
-    expect(saved.body.data.st_labor_code_error).toMatch(/Hours stay uncoded/);
+    expect(saved.body.data.st_labor_code_error).toMatch(/labor hours are uncoded/);
     expect(saved.body.data).not.toHaveProperty("labor_cost_code_id");
     expect(saved.body.data).not.toHaveProperty("labor_burdened_hourly_rate");
 
@@ -330,10 +330,14 @@ describe("a denied technician read", () => {
           throw new Error("unused");
         },
         sourceTenantId: "labor-403",
-        readLaborTypes: async () => ({
-          forbidden: false,
-          laborTypes: [
-            { id: "42", name: "Field labor", code: "ST-LAB", serviceCodeId: null, active: true },
+        readLaborService: async () => ({
+          services: [
+            {
+              id: "91025",
+              code: "MHM.25PLFE",
+              name: "Project Labor From Estimate",
+              active: true,
+            },
           ],
         }),
         readJobTimesheets: async () => ({ jobId: "1", forbidden: true, timesheets: [] }),
@@ -454,9 +458,9 @@ describe("a denied technician read", () => {
     expect(casey).not.toHaveProperty("burden_rate");
     expect(priced.body.data.uncoded_hours).toBe(0);
     expect(priced.body.data.st_labor_code).toEqual({
-      code: "ST-LAB",
-      name: "Field labor",
-      st_id: "42",
+      code: "MHM.25PLFE",
+      name: "Project Labor From Estimate",
+      st_id: "91025",
     });
     expect(priced.body.data.st_labor_code_error).toBeNull();
     const pricedCost = await asOwner.get(`/api/v1/projects/projects/${id}/cost-position`);
@@ -467,16 +471,20 @@ describe("a denied technician read", () => {
       baseline: number;
       budget_amount: number;
       actual_cost: number;
+      labor_wage: number;
+      labor_burden: number;
     }>;
-    expect(rows.find((line) => line.cost_code === "ST-LAB")).toBeUndefined();
     const pricedLabor = rows.find((line) => line.cost_code === "210" && line.cost_type === "L");
     expect(Number(pricedLabor?.actual_cost ?? 0)).toBe(0);
     expect(rows.find((line) => line.description === "Unbudgeted labor")).toMatchObject({
+      cost_code: "MHM.25PLFE",
       description: "Unbudgeted labor",
       cost_type: "L",
       baseline: 0,
       budget_amount: 0,
       actual_cost: 208,
+      labor_wage: 160,
+      labor_burden: 48,
     });
   });
 });

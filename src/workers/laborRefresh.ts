@@ -8,7 +8,12 @@ import {
   saveLaborRefresh,
   withResolvedTechnicianNames,
 } from "../domain/laborActuals.js";
-import { applyResolvedLaborCode, resolveStLaborCode } from "../domain/stLaborCode.js";
+import {
+  applyResolvedLaborCode,
+  laborCodeRunLabel,
+  resolveStLaborCode,
+  type StLaborResolve,
+} from "../domain/stLaborCode.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const FIRST_TICK_MS = 15_000;
@@ -28,6 +33,19 @@ export interface LaborRefreshReport {
   projects: number;
   refreshed: string[];
   failed: LaborRefreshFailure[];
+  /** Null when the run did not start. Otherwise the code resolved once for the run. */
+  laborCode: StLaborResolve | null;
+}
+
+/**
+ * Counts projects whose refresh finished, and projects whose refresh threw.
+ * The labor-code clause names the code those hours were stamped with.
+ */
+export function formatLaborRefreshRun(
+  report: Pick<LaborRefreshReport, "refreshed" | "failed" | "laborCode">,
+): string {
+  const code = report.laborCode ? laborCodeRunLabel(report.laborCode) : "not read";
+  return `Labor refresh run: ${report.refreshed.length} refreshed, ${report.failed.length} failed; labor code: ${code}`;
 }
 
 export interface LaborRefreshOptions {
@@ -91,7 +109,7 @@ export async function runHourlyLaborRefresh(
 ): Promise<LaborRefreshReport> {
   const tryLock = options.tryLock ?? ((key: string) => db.tryAdvisoryLock(key));
   const lock = await tryLock(LABOR_REFRESH_LOCK_KEY);
-  if (!lock) return { skipped: "locked", projects: 0, refreshed: [], failed: [] };
+  if (!lock) return { skipped: "locked", projects: 0, refreshed: [], failed: [], laborCode: null };
 
   const tenantId = options.tenantId ?? connection.tenantId;
   try {
@@ -103,6 +121,7 @@ export async function runHourlyLaborRefresh(
           ORDER BY project_number`,
       ),
     );
+    const laborCode = await resolveStLaborCode(connection.client);
     const gapMs = options.gapMs ?? GAP_MS;
     const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
       setTimeout(resolve, ms);
@@ -118,6 +137,7 @@ export async function runHourlyLaborRefresh(
           tenantId,
           project.id,
           options.now?.() ?? new Date(),
+          laborCode,
         );
         refreshed.push(project.id);
       } catch (err) {
@@ -131,7 +151,7 @@ export async function runHourlyLaborRefresh(
       }
       if (gapMs > 0 && index < projects.rows.length - 1) await sleep(gapMs);
     }
-    return { skipped: null, projects: projects.rows.length, refreshed, failed };
+    return { skipped: null, projects: projects.rows.length, refreshed, failed, laborCode };
   } finally {
     await lock.release();
   }
@@ -143,6 +163,7 @@ async function refreshProject(
   tenantId: string,
   projectId: string,
   observedAt: Date,
+  laborCode: StLaborResolve,
 ): Promise<void> {
   const readJobTimesheets = connection.client.readJobTimesheets;
   if (!readJobTimesheets) {
@@ -181,7 +202,6 @@ async function refreshProject(
     technicians,
     connection.client.readStaffName?.bind(connection.client),
   );
-  const laborCode = await resolveStLaborCode(connection.client);
   await db.withTenant(tenantId, async (client) => {
     await saveLaborRefresh(client, {
       tenantId,
@@ -192,10 +212,7 @@ async function refreshProject(
       source: "scheduled",
       observedAt,
     });
-    const applied = await applyResolvedLaborCode(client, tenantId, laborCode);
-    if (!applied.ok) {
-      console.error(`Labor code was not applied after refreshing ${projectId}: ${applied.message}`);
-    }
+    await applyResolvedLaborCode(client, tenantId, laborCode);
   });
 }
 
@@ -233,9 +250,7 @@ export function startLaborRefreshScheduler(
         console.log("Labor refresh skipped. Another replica holds the lock.");
         return;
       }
-      console.log(
-        `Labor refresh run: ${report.projects} projects, ${report.refreshed.length} stamped, ${report.failed.length} failed`,
-      );
+      console.log(formatLaborRefreshRun(report));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`Labor refresh did not run. ${message}`);

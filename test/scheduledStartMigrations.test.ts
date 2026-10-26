@@ -67,6 +67,13 @@ it("keeps an existing project's scheduled_start after every migration is applied
     ids.push(created.body.data.id as string);
   }
 
+  await h.db.withTenant(t.id, (db) =>
+    db.query(
+      `UPDATE projects.projects SET labor_refresh_source = 'scheduled' WHERE id = $1`,
+      [ids[0]],
+    ),
+  );
+
   for (const file of SCHEMA_FILES) {
     for (const statement of splitSqlStatements(readFileSync(file, "utf8"))) {
       if (!hasExecutableSql(statement.text)) continue;
@@ -97,4 +104,11 @@ it("keeps an existing project's scheduled_start after every migration is applied
     expect(detail.body.data.scheduled_start).toBe(start);
     expect(detail.body.data.project_number).toBe(number);
   }
+  const source = await h.db.withTenant(t.id, (db) =>
+    db.query<{ labor_refresh_source: string }>(
+      `SELECT labor_refresh_source FROM projects.projects WHERE id = $1`,
+      [ids[0]],
+    ),
+  );
+  expect(source.rows[0]?.labor_refresh_source).toBe("scheduled");
 });

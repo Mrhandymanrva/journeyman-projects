@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Journeyman Systems mark: bolt-head hexagon (the trade) + J (the name), gold on navy -->
+  <defs>
+    <clipPath id="hex"><path d="M50 3 L89 26 V74 L50 97 L11 74 V26 Z"/></clipPath>
+  </defs>
+  <path d="M50 3 L89 26 V74 L50 97 L11 74 V26 Z" fill="#0E2138"/>
+  <!-- subtle machined facet -->
+  <path d="M50 3 L89 26 V74 L50 97 Z" fill="#16304E" clip-path="url(#hex)"/>
+  <!-- the J -->
+  <g fill="#EBB021">
+    <rect x="34" y="26" width="34" height="11"/>
+    <rect x="53" y="26" width="15" height="34"/>
+    <path d="M68 60 A18 18 0 0 1 32 60 L32 51 L47 51 L47 60 A3 3 0 0 0 53 60 L53 55 L68 55 Z"/>
+  </g>
+  <!-- red kerf: the craftsman's cut -->
+  <rect x="34" y="80" width="32" height="5" fill="#B52126"/>
+</svg>

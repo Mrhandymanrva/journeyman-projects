@@ -176,10 +176,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           source: "manual",
           observedAt: new Date(),
         });
-        const applied = await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, read.laborCode);
-        if (!applied.ok) {
-          console.error(`Labor code was not applied: ${applied.message}`);
-        }
+        await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, read.laborCode);
         sendData(ctx.res, await presentLabor(ctx, prepared.projectId, prepared.laborClient));
       },
     ),

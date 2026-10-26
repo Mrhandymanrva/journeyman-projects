@@ -222,6 +222,103 @@ it("tracks reserves without changing budget and hides allocations from roles wit
   ).toBe(403);
   expect((await owner().get(prefix + p + "/budget")).body).toEqual(before.body);
 });
+it("rolls milestone status up from tasks and goal percent up from milestones", async () => {
+  const goal = await create("goal", {
+    title: "Roll-up goal",
+    due_on: "2099-01-01",
+    key_results: [],
+    state: "complete",
+  });
+  expect(goal.data.key_results).toEqual([]);
+  expect(goal.data.state).toBe("not_started");
+  const none = await create("milestone", {
+    title: "Roll-up with no tasks",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+    state: "complete",
+  });
+  expect(none.data.state).toBe("not_started");
+  const partial = await create("milestone", {
+    title: "Roll-up partial",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    ...task("Roll-up finished piece"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: partial.id,
+  });
+  await create("task", {
+    ...task("Roll-up open piece"),
+    due_on: "2099-01-01",
+    state: "in_progress",
+    milestone_id: partial.id,
+  });
+  const finished = await create("milestone", {
+    title: "Roll-up all done",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    ...task("Roll-up done A"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: finished.id,
+  });
+  await create("task", {
+    ...task("Roll-up done B"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: finished.id,
+  });
+  const late = await create("milestone", {
+    title: "Roll-up late",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    title: "Roll-up overdue piece",
+    start_on: "2020-01-01",
+    due_on: "2020-01-02",
+    milestone_id: late.id,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const byTitle = (title: string) =>
+    rows.find((row: { data: { title: string } }) => row.data.title === title);
+  expect(byTitle("Roll-up with no tasks").rollup).toMatchObject({
+    status: "on_track",
+    total: 0,
+    done: 0,
+  });
+  expect(byTitle("Roll-up with no tasks").data.state).toBe("not_started");
+  expect(byTitle("Roll-up partial").rollup).toMatchObject({
+    status: "on_track",
+    done: 1,
+    total: 2,
+  });
+  expect(byTitle("Roll-up all done").data.state).toBe("not_started");
+  expect(byTitle("Roll-up all done").rollup.status).toBe("done");
+  expect(byTitle("Roll-up late").rollup.status).toBe("late");
+  expect(byTitle("Roll-up goal").data.key_results).toEqual([]);
+  expect(byTitle("Roll-up goal").data.state).toBe("not_started");
+  expect(byTitle("Roll-up goal").rollup).toEqual({
+    status: "late",
+    percent: 25,
+    done: 1,
+    total: 4,
+  });
+  const kept = await owner()
+    .patch(url() + "/" + none.id)
+    .send({
+      version: none.version,
+      data: { ...none.data, state: "complete", completed_on: today() },
+    });
+  expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+  expect(kept.body.data.data.state).toBe("not_started");
+  expect(kept.body.data.data.completed_on).toBeNull();
+});
+
 it("saves a goal with no key results", async () => {
   const goal = await create("goal", {
     title: "Room is ready to use",

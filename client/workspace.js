@@ -1,3 +1,4 @@
+import { revealLinkedItem } from "./home.js";
 import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
 import { createPermitOffices } from "./permitOffices.js";
 import {openProjectDeletion} from "./projectDeletion.js";
@@ -30,6 +31,8 @@ export function createWorkspace({
   field,
   onProjectDeleted,
   reload,
+  renderHome,
+  onNeedProject,
 }) {
   const offices = createPermitOffices({
     api,
@@ -71,7 +74,7 @@ export function createWorkspace({
   const shell = el("shell");
   const sidebar = document.createElement("aside");
   sidebar.className = "workspace-sidebar";
-  sidebar.innerHTML = `<a class="workspace-brand" href="#dashboard"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace">${navEntries(
+  sidebar.innerHTML = `<a class="workspace-brand" href="#home"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace"><a href="#home" data-page="home"><span aria-hidden="true">⌂</span>Home</a>${navEntries(
     SHOW_COMMUNICATIONS_TAB,
   )
     .map(
@@ -157,9 +160,18 @@ export function createWorkspace({
   document.querySelectorAll("[data-plan-view]").forEach((button) => {
     button.onclick = () => {
       planView = button.dataset.planView;
+      const url = new URL(location.href);
+      url.searchParams.delete("plan");
+      url.searchParams.delete("item");
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
       void enter("plan");
     };
   });
+  function planFromQuery() {
+    const requested = new URLSearchParams(location.search).get("plan");
+    if (requested && Object.prototype.hasOwnProperty.call(planViews, requested))
+      planView = requested;
+  }
   for (const id of ["budget", "pos", "cos", "closeout", "draws"])
     move(id, "financials", true);
   move("notice", "financials");
@@ -271,27 +283,65 @@ export function createWorkspace({
     if (PROJECT_PAGE_ALIASES.includes(id)) return PROJECT_PAGE_ID;
     return id;
   }
-  async function enter(id) {
+  async function openHome() {
+    active = "home";
     epoch++;
     controls.cancel();
     closeDrawer();
+    const url = new URL(location.href);
+    url.searchParams.delete("project");
+    url.searchParams.delete("plan");
+    url.searchParams.delete("item");
+    url.hash = "home";
+    const next = url.pathname + url.search + url.hash;
+    if (location.pathname + location.search + location.hash !== next)
+      history.replaceState(null, "", next);
+    el("shell").hidden = true;
+    const home = el("home");
+    if (home) home.hidden = false;
+    document.querySelectorAll("[data-page]").forEach((a) => {
+      if (a.dataset.page === "home") a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    if (renderHome) await renderHome();
+  }
+  async function enter(id) {
+    if (id === "home") {
+      await openHome();
+      return;
+    }
+    epoch++;
+    controls.cancel();
+    closeDrawer();
+    planFromQuery();
     const next = canonicalPage(id);
-    if (next !== id) history.replaceState(null, "", "#" + next);
+    if (next !== id) {
+      const url = new URL(location.href);
+      url.hash = next;
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
     id = next;
     show(id);
     el("resources-content").replaceChildren();
     el("bids-content").replaceChildren();
+    if (!data && active !== "users" && active !== "settings") {
+      const opened = onNeedProject ? await onNeedProject() : false;
+      if (!opened) await openHome();
+      return;
+    }
+    const home = el("home");
+    if (home) home.hidden = true;
+    el("shell").hidden = false;
     if (active === "users") {
-      el("shell").hidden = false;
       await users.render();
       return;
     }
     if (active === "settings") {
       if (!can("manage_company_settings")) {
-        show("dashboard");
+        if (!data) await openHome();
+        else show("dashboard");
         return;
       }
-      el("shell").hidden = false;
       await accounting.renderSettings();
       return;
     }
@@ -323,11 +373,16 @@ export function createWorkspace({
             : "resources-content",
       ).textContent = error.message;
     }
+    revealLinkedItem();
   }
-  window.addEventListener(
-    "hashchange",
-    () => void enter(location.hash.slice(1)),
-  );
+  window.addEventListener("hashchange", () => {
+    const id = location.hash.slice(1);
+    if (!id || id === "home") {
+      void openHome();
+      return;
+    }
+    void enter(id);
+  });
   document.querySelectorAll("[data-page]").forEach((a) =>
     a.addEventListener("click", (e) => {
       if (location.hash === "#" + a.dataset.page) {
@@ -487,6 +542,11 @@ export function createWorkspace({
   }
   function render(d) {
     data = d;
+    const requested = location.hash.slice(1);
+    if (pages[requested]) active = requested;
+    else if (active === "home" || !pages[active]) active = "dashboard";
+    const home = el("home");
+    if (home) home.hidden = true;
     const p = d.detail,
       day = today();
     paintSchedule(d, [], false);
@@ -569,9 +629,17 @@ export function createWorkspace({
     if (el("project-delete")) el("project-delete").onclick = () => openProjectDeletion(p,{api,el,esc,openDrawer,closeDrawer,onProjectDeleted});
     void enter(active);
   }
-  if (location.hash === "#schedule") history.replaceState(null, "", "#plan");
-  if (PROJECT_PAGE_ALIASES.includes(location.hash.slice(1)))
-    history.replaceState(null, "", "#" + PROJECT_PAGE_ID);
-  show(pages[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard");
-  return { render, openUsers: () => enter("users") };
+  if (location.hash === "#schedule" || PROJECT_PAGE_ALIASES.includes(location.hash.slice(1))) {
+    const url = new URL(location.href);
+    url.hash =
+      location.hash === "#schedule" ? "plan" : PROJECT_PAGE_ID;
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+  if (pages[location.hash.slice(1)]) show(location.hash.slice(1));
+  return {
+    render,
+    openHome,
+    openUsers: () => enter("users"),
+    hasPage: (id) => Boolean(pages[id]),
+  };
 }

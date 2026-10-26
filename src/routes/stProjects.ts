@@ -646,10 +646,7 @@ async function storeReadLabor(
     }
   }
   await applyTechnicianDirectory(ctx.db, ctx.staff.tenantId, directory, observedAt);
-  const applied = await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, laborCode);
-  if (!applied.ok) {
-    console.error(`Labor code was not applied: ${applied.message}`);
-  }
+  await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, laborCode);
 }
 
 async function readLinkedAr(

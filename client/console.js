@@ -6,8 +6,10 @@ import {
   bindPrecon,
   preconHtml,
 } from "./precon.js";
+import { createHome, landingChoice, revealLinkedItem } from "./home.js";
 import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
+import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { createPlanning } from "./planning.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
@@ -192,27 +194,35 @@ async function boot() {
       "manage_company_settings",
     );
     projects = await loadProjects();
+    renderSwitch();
     if (projects.length === 0) {
-      el("boot").textContent =
-        "No projects yet. Choose Add from ServiceTitan to get started.";
+      el("boot").hidden = true;
       if (location.hash === "#users") await workspace.openUsers();
+      else await workspace.openHome();
       return;
     }
-    renderSwitch();
     const linkedProject = new URLSearchParams(location.search).get("project");
     if (linkedProject && !projects.some((p) => p.id === linkedProject))
       throw Error(
         "You do not have access to the project in this document link.",
       );
-    current =
-      projects.find((p) => p.id === linkedProject) ??
-      projects.find(
-        (p) =>
-          p.id ===
-          localStorage.getItem("jp.activeProject." + session.tenant.id),
-      ) ??
-      projects[0];
-    await select(current.id);
+    const choice = landingChoice({
+      search: location.search,
+      hash: location.hash,
+      rememberedProjectId: localStorage.getItem(
+        "jp.activeProject." + session.tenant.id,
+      ),
+      projectPages: Object.keys(workspacePages),
+    });
+    if (
+      choice.kind === "project" &&
+      projects.some((p) => p.id === choice.projectId)
+    ) {
+      await select(choice.projectId);
+      return;
+    }
+    el("boot").hidden = true;
+    await workspace.openHome();
   } catch (err) {
     if (err.status === 401) {
       showSignIn(token ? "That session is no longer valid." : "");
@@ -347,8 +357,18 @@ async function select(projectId) {
     if (revision !== selectionRevision) return;
     current = { id: projectId, ...detail };
     localStorage.setItem("jp.activeProject." + session.tenant.id, projectId);
+    const projectUrl = new URL(location.href);
+    projectUrl.searchParams.set("project", projectId);
+    if (!projectUrl.hash || projectUrl.hash === "#home")
+      projectUrl.hash = "dashboard";
+    history.replaceState(
+      null,
+      "",
+      projectUrl.pathname + projectUrl.search + projectUrl.hash,
+    );
     if (el("project-search")) filterProjects();
     el("boot").hidden = true;
+    if (el("home")) el("home").hidden = true;
     el("shell").hidden = false;
     render({
       detail,
@@ -418,6 +438,7 @@ function render(d) {
   renderDraws(d.drawData);
   workspace.render(d);
   renderPrecon(d.detail);
+  revealLinkedItem();
 }
 
 function addressLine(p) {
@@ -601,7 +622,7 @@ function renderBudget(cost, budget) {
       const cls = v < 0 ? "over" : tot > 0 && v > 0 ? "und" : "";
       const unbudgeted = r.description === "Unbudgeted labor";
       const label = unbudgeted
-        ? "Unbudgeted labor"
+        ? `<span class="c">${esc(r.cost_code)}</span>Unbudgeted labor`
         : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
       const detail = Array.isArray(r.lines)
         ? `<ul class="labor-lines">${r.lines
@@ -915,6 +936,7 @@ function inspectionDrawer(task) {
 function renderPermits(permits) {
   const links = permits.flatMap((p) =>
     (p.milestones || []).map((m) => ({
+      id: m.id,
       s:
         m.status === "complete"
           ? "done"
@@ -938,7 +960,7 @@ function renderPermits(permits) {
   el("permits").innerHTML = links
     .map(
       (x) => `
-    <div class="link ${x.s}"><div class="t">${esc(x.t)}</div>${
+    <div class="link ${x.s}" id="item-${esc(x.id)}"><div class="t">${esc(x.t)}</div>${
       x.d ? `<div class="d">${esc(x.d)}</div>` : ""
     }</div>`,
     )
@@ -2321,10 +2343,11 @@ function renderLabor(row) {
       : "none";
   }
   if (!el("labor")) return;
+  const billable = laborMoney(data.billable_rate || 188);
   const moneyLine =
     data.labor_wage === undefined
       ? ""
-      : `<div class="row-m">Wage ${laborMoney(data.labor_wage)} · Burden ${laborMoney(
+      : `<div class="row-m">Labor ${laborMoney(data.labor_wage)} · Labor burden ${laborMoney(
           data.labor_burden,
         )} · Total ${laborMoney(data.total)}</div>`;
   const techs = (data.technicians || [])
@@ -2335,7 +2358,7 @@ function renderLabor(row) {
           : `<div class="row-m">Labor ${laborMoney(tech.wage)} · ${esc(tech.hours)} h · ${
               tech.pay_basis === "hourly"
                 ? "ServiceTitan hourly rate"
-                : `${laborMoney(data.billable_rate || 188)} billable × commission`
+                : `${billable} × commission`
             }</div>`;
       const burden = tech.burden_unset
         ? `<p class="note">burden not set</p>`
@@ -2348,9 +2371,9 @@ function renderLabor(row) {
     })
     .join("");
   const stCode = data.st_labor_code;
-  const codeText = stCode
-    ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(stCode.code)} ${esc(stCode.name || "")}`
-    : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+  const codeText = !stCode
+    ? "Labor code: unavailable"
+    : `Labor code: ${esc(stCode.code)} ${esc(stCode.name || "")}`;
   const uncoded = Number(data.uncoded_hours) > 0;
   const laborError = data.st_labor_code_error
     ? `<p class="msg" id="labor-st-error">${esc(data.st_labor_code_error)}</p>`
@@ -2360,7 +2383,7 @@ function renderLabor(row) {
       ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
       : "";
   el("labor").innerHTML = `
-    <p class="note">Hours come from ServiceTitan timesheets. Commission labor is those hours times the company billable rate times the technician's ServiceTitan commission percent. Hourly technicians use those hours times their ServiceTitan hourly rate instead. Labor burden is a separate line, the same hours times the technician's burden rate. A zero hourly rate is not a missing rate when commission is set. Pay rates are not stored here. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
+    <p class="note">Hours come from ServiceTitan timesheets. Commission labor is hours × ${billable} × the technician's ServiceTitan commission percent. Hourly technicians use hours × their ServiceTitan hourly rate instead. Labor burden is a separate line: the same hours × that technician's ServiceTitan burden rate. A zero hourly rate is not a missing rate when a commission percent is set. Pay rates are not stored here. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
     ${
       data.rates_forbidden
         ? `<p class="msg">The latest ServiceTitan technician read was denied. Labor dollars already priced were left as they are. A technician with neither a commission percent nor an hourly rate stays out of labor cost.</p>`
@@ -2585,6 +2608,13 @@ el("st-project-open").addEventListener("click", () =>
   stProjectConnector.open(),
 );
 
+const home = createHome({
+  api,
+  el,
+  esc,
+  openProject: (id) => select(id),
+});
+
 const workspace = createWorkspace({
   api,
   el,
@@ -2596,16 +2626,27 @@ const workspace = createWorkspace({
   closeDrawer,
   field,
   reload: () => select(current.id),
+  renderHome: () => home.render(),
+  onNeedProject: async () => {
+    const linked = new URLSearchParams(location.search).get("project");
+    const remembered = session
+      ? localStorage.getItem("jp.activeProject." + session.tenant.id)
+      : null;
+    const id = [linked, remembered].find(
+      (value) => value && projects.some((project) => project.id === value),
+    );
+    if (!id) return false;
+    await select(id);
+    return true;
+  },
   onProjectDeleted: async () => {
     ++selectionRevision;
-    current=null;
-    localStorage.removeItem('jp.activeProject.'+session.tenant.id);
-    const url=new URL(location.href);url.searchParams.delete('project');history.replaceState(null,'',url);
-    el('shell').hidden=true;
-    projects=await loadProjects();
+    current = null;
+    localStorage.removeItem("jp.activeProject." + session.tenant.id);
+    projects = await loadProjects();
     renderSwitch();
-    if(projects.length) await select(projects[0].id);
-    else {el('boot').hidden=false;el('boot').className='state';el('boot').textContent='Project deleted. No projects remain. Choose Add from ServiceTitan to get started.';}
+    el("boot").hidden = true;
+    await workspace.openHome();
   },
 });
 

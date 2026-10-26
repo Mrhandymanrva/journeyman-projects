@@ -362,9 +362,9 @@ export function createAccounting({
   }
   function laborSettingsCard(labor) {
     const code = labor.st_labor_code;
-    const codeLine = code
-      ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(code.code)} ${esc(code.name)}`
-      : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+    const codeLine = !code
+      ? "Labor code: unavailable"
+      : `Labor code: ${esc(code.code)} ${esc(code.name)}`;
     const error = labor.st_labor_code_error
       ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
       : "";
@@ -387,7 +387,7 @@ export function createAccounting({
           .join("")}</ul>`
       : `<p id="labor-burden-notices">Every active technician has a burden rate.</p>`;
     const rate = Number(labor.labor_billable_rate ?? 188);
-    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Commission labor is timesheet hours × this billable rate × the technician's ServiceTitan commission percent. Hourly technicians use timesheet hours × their ServiceTitan hourly rate instead. Labor burden is a separate line: the same hours × that technician's ServiceTitan burden rate. Pay rates are read from ServiceTitan and are not stored here. Nothing on this page is written to ServiceTitan. The labor code is the one active labor type in ServiceTitan. It is not chosen here.</p><label for="labor-billable-rate">Billable rate</label><input id="labor-billable-rate" type="number" min="0" step="0.01" value="${Number.isFinite(rate) ? rate : 188}"><button class="btn primary" id="labor-billable-save" type="button">Save billable rate</button><p class="msg" id="labor-billable-error"></p><p id="labor-st-code">${codeLine}</p>${error}<h4>Technicians missing a commission percent and an hourly rate</h4>${gapList}<h4>Burden not set</h4><p class="note">Informational. A burden of 0 does not remove labor cost.</p>${noticeList}</div></div>`;
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Commission labor is timesheet hours × this billable rate × the technician's ServiceTitan commission percent. Hourly technicians use timesheet hours × their ServiceTitan hourly rate instead. Labor burden is a separate line: the same hours × that technician's ServiceTitan burden rate. Pay rates are read from ServiceTitan and are not stored here. Nothing on this page is written to ServiceTitan. The labor code is ServiceTitan pricebook service MHM.25PLFE. It is not chosen here.</p><label for="labor-billable-rate">Billable rate</label><input id="labor-billable-rate" type="number" min="0" step="0.01" value="${Number.isFinite(rate) ? rate : 188}"><button class="btn primary" id="labor-billable-save" type="button">Save billable rate</button><p class="msg" id="labor-billable-error"></p><p id="labor-st-code">${codeLine}</p>${error}<h4>Technicians missing a commission percent and an hourly rate</h4>${gapList}<h4>Burden not set</h4><p class="note">Informational. A burden of 0 does not remove labor cost.</p>${noticeList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(

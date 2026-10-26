@@ -34,6 +34,7 @@ import {
 import type { MemoryStaffSessions } from "./http/memoryStaffSessions.js";
 import { sessionRoutes } from "./routes/session.js";
 import { referenceRoutes } from "./routes/reference.js";
+import { homeRoutes } from "./routes/home.js";
 import { projectRoutes } from "./routes/projects.js";
 import { gateRoutes } from "./routes/gates.js";
 import { fieldReleaseRoutes } from "./routes/fieldRelease.js";
@@ -215,6 +216,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(sessionRoutes(deps));
   staff.use(userRoutes(deps, opts.sources));
   staff.use(referenceRoutes(deps));
+  staff.use(homeRoutes(deps));
   staff.use(projectRoutes(deps));
   staff.use(projectControlRoutes(deps));
   staff.use(recordExportRoutes(deps, opts.sources));

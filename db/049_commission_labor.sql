@@ -92,7 +92,9 @@ SELECT
     + GREATEST(COALESCE(po.amount,0) - COALESCE(billed.amount,0), 0) AS total_committed,
   COALESCE(b.baseline_amount, b.budget_amount)
     - (COALESCE(billed.amount,0) + COALESCE(labor.amount, 0)
-       + GREATEST(COALESCE(po.amount,0) - COALESCE(billed.amount,0), 0)) AS variance
+       + GREATEST(COALESCE(po.amount,0) - COALESCE(billed.amount,0), 0)) AS variance,
+  COALESCE(labor.wage, 0)   AS labor_wage,
+  COALESCE(labor.burden, 0) AS labor_burden
 FROM budget_lines b
 JOIN cost_codes cc ON cc.id = b.cost_code_id
 LEFT JOIN LATERAL (
@@ -136,7 +138,10 @@ LEFT JOIN LATERAL (
     ), 0) AS amount
 ) billed ON true
 LEFT JOIN LATERAL (
-  SELECT COALESCE(SUM(COALESCE(a.labor_amount, 0) + COALESCE(a.burden_amount, 0)), 0) AS amount
+  SELECT
+    COALESCE(SUM(COALESCE(a.labor_amount, 0)), 0) AS wage,
+    COALESCE(SUM(COALESCE(a.burden_amount, 0)), 0) AS burden,
+    COALESCE(SUM(COALESCE(a.labor_amount, 0) + COALESCE(a.burden_amount, 0)), 0) AS amount
     FROM labor_actuals a
    WHERE a.project_id = b.project_id
      AND a.cost_code_id = b.cost_code_id
@@ -147,7 +152,7 @@ UNION ALL
 SELECT
   open_labor.tenant_id,
   open_labor.project_id,
-  NULL::text AS cost_code,
+  open_labor.cost_code,
   'Unbudgeted labor'::text AS description,
   'L'::cost_type AS cost_type,
   0::numeric AS baseline,
@@ -155,13 +160,19 @@ SELECT
   open_labor.amount AS actual_cost,
   0::numeric AS committed_open,
   open_labor.amount AS total_committed,
-  (0 - open_labor.amount) AS variance
+  (0 - open_labor.amount) AS variance,
+  open_labor.wage AS labor_wage,
+  open_labor.burden AS labor_burden
 FROM (
   SELECT
     a.tenant_id,
     a.project_id,
+    cc.code AS cost_code,
+    COALESCE(SUM(COALESCE(a.labor_amount, 0)), 0) AS wage,
+    COALESCE(SUM(COALESCE(a.burden_amount, 0)), 0) AS burden,
     COALESCE(SUM(COALESCE(a.labor_amount, 0) + COALESCE(a.burden_amount, 0)), 0) AS amount
   FROM labor_actuals a
+  JOIN cost_codes cc ON cc.id = a.cost_code_id
   WHERE a.cost_code_id IS NOT NULL
     AND NOT EXISTS (
       SELECT 1
@@ -170,12 +181,12 @@ FROM (
          AND b.cost_code_id = a.cost_code_id
          AND b.cost_type = 'L'
     )
-  GROUP BY a.tenant_id, a.project_id
+  GROUP BY a.tenant_id, a.project_id, cc.code
 ) open_labor
 WHERE open_labor.amount > 0;
 
 COMMENT ON VIEW v_cost_position IS
-  'One row per budget line, plus Unbudgeted labor when coded labor or labor burden has no labor budget line. That row''s budget is zero. Labor and labor burden are the stored dollar amounts.';
+  'One row per budget line, plus Unbudgeted labor when coded labor or labor burden has no labor budget line on that cost code. That row carries the cost code. Labor and labor burden are the stored dollar amounts, not a stored pay rate.';
 
 CREATE VIEW v_project_margin WITH (security_invoker = true) AS
 SELECT

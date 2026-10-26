@@ -233,9 +233,10 @@ export async function storeJobLabor(
 }
 
 /**
- * Point every stored hour for the tenant at the ServiceTitan labor-type mirror.
- * The id is passed in. There is no settings lookup. Callers that could not
- * resolve the code skip this and leave cost_code_id as it is.
+ * Point every stored hour for the tenant at the pricebook labor code.
+ * Wage and burden are both computed from these rows, so one stamp codes both.
+ * The id is passed in. There is no settings lookup.
+ * Callers that could not resolve the code skip this and leave cost_code_id as it is.
  */
 export async function stampLaborCodes(
   db: SqlClient,

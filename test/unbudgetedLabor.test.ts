@@ -24,6 +24,8 @@ interface CostRow {
   committed_open: number;
   total_committed: number;
   variance: number;
+  labor_wage: number;
+  labor_burden: number;
 }
 
 describe("unbudgeted labor in the cost position", () => {
@@ -149,7 +151,7 @@ describe("unbudgeted labor in the cost position", () => {
     const rows = await costPosition(owner, projectId);
     expect(unbudgeted(rows)).toEqual([
       {
-        cost_code: null,
+        cost_code: "210",
         description: "Unbudgeted labor",
         cost_type: "L",
         baseline: 0,
@@ -158,6 +160,8 @@ describe("unbudgeted labor in the cost position", () => {
         committed_open: 0,
         total_committed: 208,
         variance: -208,
+        labor_wage: 160,
+        labor_burden: 48,
         lines: [
           { description: "Labor", amount: 160 },
           { description: "Labor burden", amount: 48 },
