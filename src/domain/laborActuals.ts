@@ -7,6 +7,7 @@ import {
   classifyTechnician,
   isPlaceholderTechnician,
   technicianDisplayName,
+  technicianIdKey,
   type PayBasis,
   type ResolvedTechPay,
 } from "./commissionLabor.js";
@@ -338,7 +339,10 @@ export function portfolioLaborColumns(alias = "p"): string {
             )), '[]'::json)
              FROM (
                SELECT a.external_technician_id AS technician_id,
-                      MAX(a.technician_name) AS technician_name,
+                      COALESCE(
+                        NULLIF(btrim(MAX(a.technician_name)), ''),
+                        NULLIF(btrim(MAX(r.technician_name)), '')
+                      ) AS technician_name,
                       SUM(a.hours) AS hours,
                       COALESCE(SUM(a.hours) FILTER (WHERE a.cost_code_id IS NOT NULL), 0) AS coded_hours,
                       SUM(a.labor_amount) FILTER (WHERE a.cost_code_id IS NOT NULL) AS coded_labor,
@@ -346,6 +350,9 @@ export function portfolioLaborColumns(alias = "p"): string {
                       MAX(a.pay_basis) AS pay_basis,
                       BOOL_OR(a.burden_unset) AS burden_unset
                  FROM projects.labor_actuals a
+                 LEFT JOIN projects.technician_labor_rates r
+                   ON r.tenant_id = a.tenant_id
+                  AND r.external_technician_id = a.external_technician_id
                 WHERE a.project_id = ${alias}.id
                 GROUP BY a.external_technician_id
              ) g) AS labor_techs,
@@ -391,16 +398,19 @@ export function unnamedTechnicianIds(results: readonly LaborJobResult[]): string
  */
 export async function resolveTechnicianNames(
   ids: readonly string[],
-  technicians: readonly { id: string; name: string | null }[],
+  technicians: readonly { id: string | number; name: string | null }[],
   readStaffName?: (id: string) => Promise<string | null>,
 ): Promise<Map<string, string>> {
   const known = new Map<string, string>();
   for (const tech of technicians) {
+    const key = technicianIdKey(tech.id);
     const name = tech.name?.trim();
-    if (tech.id && name) known.set(tech.id, name);
+    if (key && name) known.set(key, name);
   }
   const names = new Map<string, string>();
-  for (const id of ids) {
+  for (const rawId of ids) {
+    const id = technicianIdKey(rawId);
+    if (!id) continue;
     const fromDirectory = known.get(id);
     if (fromDirectory) {
       names.set(id, fromDirectory);
@@ -424,9 +434,9 @@ export function applyTechnicianNames(
   return results.map((result) => ({
     ...result,
     drafts: result.drafts.map((draft) => {
-      const id = draft.externalTechnicianId?.trim();
+      const id = technicianIdKey(draft.externalTechnicianId);
       if (!id || draft.technicianName?.trim()) return draft;
-      const name = id ? names.get(id) : undefined;
+      const name = names.get(id);
       return name ? { ...draft, technicianName: name } : draft;
     }),
   }));
@@ -434,7 +444,7 @@ export function applyTechnicianNames(
 
 export async function withResolvedTechnicianNames(
   results: LaborJobResult[],
-  technicians: readonly { id: string; name: string | null }[],
+  technicians: readonly { id: string | number; name: string | null }[],
   readStaffName?: (id: string) => Promise<string | null>,
 ): Promise<LaborJobResult[]> {
   const ids = unnamedTechnicianIds(results);
@@ -591,6 +601,23 @@ export async function readTechnicianDirectory(client: {
   }
 }
 
+/**
+ * Labor refresh names hours even when the technician list cannot be parsed.
+ * A failed list is not stored, so the last good directory is left in place.
+ * Blank timesheet names still fall through to technicians/{id}.
+ */
+export async function readTechnicianDirectoryForLabor(
+  client: Parameters<typeof readTechnicianDirectory>[0],
+): Promise<TechnicianDirectory> {
+  try {
+    return await readTechnicianDirectory(client);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Technician directory could not be read.";
+    console.error(`Technician directory was kept. ${message}`);
+    return { read: false, forbidden: false, technicians: [] };
+  }
+}
+
 const PLACEHOLDER_NAME_SQL = PLACEHOLDER_TECHNICIAN_SQL;
 
 function asResolved(tech: TechnicianRate): ResolvedTechPay {
@@ -729,7 +756,9 @@ export async function storeTechnicianRates(
   const billableRate = await readBillableRate(db, tenantId);
   const ids: string[] = [];
   for (const raw of technicians) {
-    const tech = asResolved(raw);
+    const id = technicianIdKey(raw.id);
+    if (!id) continue;
+    const tech = asResolved({ ...raw, id });
     if (tech.excluded || isPlaceholderTechnician(raw.name)) continue;
     ids.push(tech.id);
     await db.query(

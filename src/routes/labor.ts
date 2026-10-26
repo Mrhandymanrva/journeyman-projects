@@ -13,7 +13,7 @@ import {
   presentPortfolioLabor,
   readBillableRate,
   readLaborJobs,
-  readTechnicianDirectory,
+  readTechnicianDirectoryForLabor,
   saveLaborRefresh,
   updateBillableRate,
   withResolvedTechnicianNames,
@@ -149,7 +149,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           prepared.jobs.map((job) => job.external_job_id),
           { readJobTimesheets: prepared.readJobTimesheets, readJob: prepared.readJob },
         );
-        const directory = await readTechnicianDirectory({
+        const directory = await readTechnicianDirectoryForLabor({
           readTechnicians: prepared.readTechnicians,
         });
         const technicians = await resolvePayForTechnicians(
@@ -231,9 +231,15 @@ async function presentLabor(
     source: string;
     external_job_id: string;
   }>(
-    `SELECT id, work_date::text, hours::text, technician_name, source, external_job_id
-       FROM projects.labor_actuals WHERE project_id = $1
-      ORDER BY work_date, technician_name`,
+    `SELECT a.id, a.work_date::text, a.hours::text,
+            COALESCE(NULLIF(btrim(a.technician_name), ''), NULLIF(btrim(r.technician_name), '')) AS technician_name,
+            a.source, a.external_job_id
+       FROM projects.labor_actuals a
+       LEFT JOIN projects.technician_labor_rates r
+         ON r.tenant_id = a.tenant_id
+        AND r.external_technician_id = a.external_technician_id
+      WHERE a.project_id = $1
+      ORDER BY a.work_date, COALESCE(NULLIF(btrim(a.technician_name), ''), NULLIF(btrim(r.technician_name), ''))`,
     [projectId],
   );
   return {

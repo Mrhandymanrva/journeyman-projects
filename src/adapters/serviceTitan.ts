@@ -1,9 +1,67 @@
 import { z } from "zod";
+import { technicianIdKey } from "../domain/commissionLabor.js";
 import { allowlistedGet } from "../domain/commissionProbe.js";
 
 const sourceId = z
   .union([z.string().regex(/^\d+$/), z.number().int().nonnegative().safe()])
   .transform(String);
+
+const optionalRate = z.preprocess((value) => {
+  if (value == null || value === "") return null;
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return value;
+}, z.number().finite().nullable());
+
+const activeFlag = z.preprocess((value) => {
+  if (value === "True" || value === "true") return true;
+  if (value === "False" || value === "false") return false;
+  return value;
+}, z.boolean());
+
+const technicianRowSchema = z.object({
+  id: sourceId,
+  name: z.string().min(1),
+  active: activeFlag,
+  hourlyRate: optionalRate.optional(),
+  burdenRate: optionalRate.optional(),
+  commissionRate: optionalRate.optional(),
+});
+
+const technicianPageSchema = z.object({
+  data: z.array(z.unknown()),
+  hasMore: z.preprocess((value) => {
+    if (value === "true" || value === "True") return true;
+    if (value === "false" || value === "False") return false;
+    return value;
+  }, z.boolean().optional()),
+  pageSize: z.preprocess((value) => {
+    if (value == null || value === "") return undefined;
+    if (typeof value === "string" && /^\d+$/.test(value)) return Number(value);
+    return value;
+  }, z.number().int().positive().optional()),
+});
+
+function staffNameFrom(body: unknown, id: string): string | null {
+  const candidates: unknown[] = [];
+  if (body && typeof body === "object") {
+    const record = body as { data?: unknown };
+    if (Array.isArray(record.data)) candidates.push(...record.data);
+    else if (record.data && typeof record.data === "object") candidates.push(record.data);
+    candidates.push(body);
+  }
+  const row = z.object({ id: sourceId, name: z.string().min(1) });
+  for (const candidate of candidates) {
+    const parsed = row.safeParse(candidate);
+    if (!parsed.success) continue;
+    const name = parsed.data.name.trim();
+    if (parsed.data.id === id && name) return name;
+  }
+  return null;
+}
 const projectSchema = z.object({
   id: sourceId,
   number: z.string(),
@@ -968,51 +1026,57 @@ export class ServiceTitanReadAdapter {
       burdenRate: number | null;
       commissionRate: number | null;
     }[] = [];
-      const schema = z.object({
-        data: z.array(
-          z.object({
-            id: sourceId,
-            name: z.string().min(1),
-            active: z.boolean(),
-            hourlyRate: z.number().finite().nullish(),
-            burdenRate: z.number().finite().nullish(),
-            commissionRate: z.number().finite().nullish(),
-          }),
-        ),
-        hasMore: z.boolean(),
-      });
+    const seen = new Set<string>();
+    // Any, not True: inactive technicians still name the hours they already worked.
+    // Page size 200 is under the settings cap. A full page is not the end of the
+    // list when hasMore is false: ServiceTitan's default page is 50, and a full
+    // page with hasMore false drops every technician after page 1.
+    const pageSize = 200;
     for (let page = 1; page <= 100; page++) {
-      const result = schema.safeParse(
+      const parsed = technicianPageSchema.safeParse(
         await this.get(
           "settings",
           "technicians",
           new URLSearchParams({
             page: String(page),
-            pageSize: "200",
-            // Any, not True: inactive technicians still name the hours they already worked.
+            pageSize: String(pageSize),
             active: "Any",
           }),
         ),
       );
-      if (!result.success)
+      if (!parsed.success)
         throw new ServiceTitanReadError(
           "Unexpected technician directory response.",
         );
-      rows.push(
-        ...result.data.data.map((person) => ({
-          id: person.id,
-          name: person.name,
-          active: person.active,
-          hourlyRate: person.hourlyRate ?? null,
-          burdenRate: person.burdenRate ?? null,
-          commissionRate: person.commissionRate ?? null,
-        })),
-      );
-      if (!result.data.hasMore) {
-        if (new Set(rows.map((r) => r.id)).size !== rows.length)
+      const people = parsed.data.data.flatMap((item) => {
+        const person = technicianRowSchema.safeParse(item);
+        if (!person.success) return [];
+        return [
+          {
+            id: person.data.id,
+            name: person.data.name,
+            active: person.data.active,
+            hourlyRate: person.data.hourlyRate ?? null,
+            burdenRate: person.data.burdenRate ?? null,
+            commissionRate: person.data.commissionRate ?? null,
+          },
+        ];
+      });
+      if (parsed.data.data.length > 0 && people.length === 0)
+        throw new ServiceTitanReadError(
+          "Unexpected technician directory response.",
+        );
+      if (people.length > 0 && people.every((person) => seen.has(person.id))) return rows;
+      for (const person of people) {
+        if (seen.has(person.id))
           throw new ServiceTitanReadError("Duplicate technician IDs.");
-        return rows;
+        seen.add(person.id);
+        rows.push(person);
       }
+      const reported = parsed.data.pageSize;
+      const cap = reported && reported > 0 ? Math.min(pageSize, reported) : pageSize;
+      const fullPage = parsed.data.data.length >= cap;
+      if (parsed.data.hasMore !== true && !fullPage) return rows;
     }
     throw new ServiceTitanReadError("Technician pagination incomplete.");
   }
@@ -1023,8 +1087,9 @@ export class ServiceTitanReadAdapter {
    * A 404 or a failed read returns null. Nothing is written.
    */
   async readStaffName(id: string): Promise<string | null> {
-    if (!/^\d+$/.test(id)) return null;
-    for (const resource of [`technicians/${id}`, `employees/${id}`] as const) {
+    const wanted = technicianIdKey(id);
+    if (!/^\d+$/.test(wanted)) return null;
+    for (const resource of [`technicians/${wanted}`, `employees/${wanted}`] as const) {
       let result: { status: number; body: unknown };
       try {
         result = await this.getRaw("settings", resource);
@@ -1033,14 +1098,8 @@ export class ServiceTitanReadAdapter {
       }
       if (result.status === 404) continue;
       if (result.status < 200 || result.status >= 300) continue;
-      const parsed = z
-        .object({
-          id: sourceId,
-          name: z.string().min(1),
-        })
-        .safeParse(result.body);
-      const name = parsed.success ? parsed.data.name.trim() : "";
-      if (parsed.success && parsed.data.id === id && name) return name;
+      const name = staffNameFrom(result.body, wanted);
+      if (name) return name;
     }
     return null;
   }

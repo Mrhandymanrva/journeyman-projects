@@ -219,17 +219,22 @@ describe("commission labor formula", () => {
     expect(fromExport?.commissionSource).toBe("payroll-settings");
   });
 
-  it("resolves a blank timesheet name, and labels a deleted id as a former tech", async () => {
+  it("matches numeric technician id 11000041 to Wesley M and leaves a missing id unlabeled", async () => {
+    const reads: string[] = [];
     const names = await resolveTechnicianNames(
       ["11000041", "22000042", "33000043"],
-      [{ id: "11000041", name: "Sam Cole" }],
-      async (id) => (id === "22000042" ? "Pat Lee" : null),
+      [{ id: 11000041 as unknown as string, name: "Wesley M" }],
+      async (id) => {
+        reads.push(id);
+        return id === "22000042" ? "Pat Lee" : null;
+      },
     );
-    expect(names.get("11000041")).toBe("Sam Cole");
+    expect(names.get("11000041")).toBe("Wesley M");
+    expect(reads).not.toContain("11000041");
     expect(names.get("22000042")).toBe("Pat Lee");
     expect(names.has("33000043")).toBe(false);
-    expect(technicianLabel(null, "11000041")).toBe("Former tech #11000041");
-    expect(technicianLabel("   ", "33000043")).toBe("Former tech #33000043");
+    expect(technicianLabel("Wesley M", "11000041")).toBe("Wesley M");
+    expect(technicianLabel(null, "33000043")).toBe("Former tech #33000043");
   });
 });
 
@@ -594,8 +599,8 @@ describe("stored commission labor", () => {
     expect(reads.some((path) => path === "payroll/jobs/splits")).toBe(true);
   });
 
-  it("names timesheet 11000041 from the directory or employees, else Former tech", async () => {
-    const tenant = await createTenant(h, { slug: `former-${Math.random().toString(36).slice(2, 8)}` });
+  it("shows Wesley M for 11000041 when the timesheet name is blank", async () => {
+    const tenant = await createTenant(h, { slug: `wesley-${Math.random().toString(36).slice(2, 8)}` });
     sources.serviceTitan!.tenantId = tenant.id;
     const staffReads: string[] = [];
     const client = sources.serviceTitan!.client;
@@ -604,23 +609,13 @@ describe("stored commission labor", () => {
       forbidden: false,
       timesheets: [
         {
-          id: "ts-sam",
+          id: "ts-wesley",
           appointmentId: null,
           technicianId: "11000041",
           technicianName: null,
           arrivedOn: "2026-10-25T13:00:00Z",
           dispatchedOn: null,
           doneOn: "2026-10-25T15:04:12Z",
-          canceledOn: null,
-        },
-        {
-          id: "ts-pat",
-          appointmentId: null,
-          technicianId: "22000042",
-          technicianName: "   ",
-          arrivedOn: "2026-10-25T13:00:00Z",
-          dispatchedOn: null,
-          doneOn: "2026-10-25T14:00:00Z",
           canceledOn: null,
         },
         {
@@ -635,19 +630,20 @@ describe("stored commission labor", () => {
         },
       ],
     });
+    // The settings list returns the id as a JSON number. A string-only map misses him.
     client.readTechnicians = async () => [
       {
-        id: "11000041",
-        name: "Sam Cole",
-        active: false,
-        hourlyRate: null,
-        burdenRate: null,
-        commissionRate: null,
+        id: 11000041 as unknown as string,
+        name: "Wesley M",
+        active: true,
+        hourlyRate: 0,
+        burdenRate: 0,
+        commissionRate: 0.28,
       },
     ];
     client.readStaffName = async (id) => {
       staffReads.push(id);
-      return id === "22000042" ? "Pat Lee" : null;
+      return null;
     };
     const owner = h.as(tenant.staff.owner!.token);
     const imported = await owner.post("/api/v1/projects/estimate-imports").send(estimatePayload());
@@ -674,7 +670,27 @@ describe("stored commission labor", () => {
          VALUES ($1, $2, $3, '321612166', 'Blanton')`,
         [tenant.id, projectId, sources.serviceTitan!.externalSystemId],
       );
+      await db.query(
+        `INSERT INTO projects.technician_labor_rates
+           (tenant_id, external_technician_id, technician_name, active, pay_basis, burden_unset)
+         VALUES ($1, '11000041', 'Wesley M', true, NULL, false)`,
+        [tenant.id],
+      );
+      await db.query(
+        `INSERT INTO projects.labor_actuals
+           (tenant_id, project_id, external_job_id, external_timesheet_id,
+            external_technician_id, technician_name, work_date, hours, source)
+         VALUES ($1, $2, '321612166', 'ts-stored', '11000041', NULL, CURRENT_DATE, 2.07, 'timesheet')`,
+        [tenant.id, projectId],
+      );
     });
+    const before = await owner.get(`/api/v1/projects/projects/${projectId}/labor`);
+    expect(before.status, JSON.stringify(before.body)).toBe(200);
+    expect(before.body.data.technicians).toEqual([
+      expect.objectContaining({ technician_name: "Wesley M", hours: 2.07, external_technician_id: "11000041" }),
+    ]);
+    expect(JSON.stringify(before.body.data)).not.toContain("Former tech");
+
     const refreshed = await owner.post(`/api/v1/projects/projects/${projectId}/labor/refresh`);
     expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
     const names = (refreshed.body.data.technicians as Array<{ technician_name: string; hours: number }>).map(
@@ -682,22 +698,37 @@ describe("stored commission labor", () => {
     );
     expect(names).toEqual(
       expect.arrayContaining([
-        ["Sam Cole", 2.07],
-        ["Pat Lee", 1],
+        ["Wesley M", 2.07],
         ["Former tech #33000043", 1],
       ]),
     );
+    expect(names.some((row) => String(row[0]).includes("Former tech #11000041"))).toBe(false);
     expect(refreshed.body.data).not.toHaveProperty("rate_gaps");
     expect(refreshed.body.data).not.toHaveProperty("burden_notices");
     expect(JSON.stringify(refreshed.body.data)).not.toContain("Missing from ServiceTitan");
-    expect(staffReads).not.toContain("11000041");
-    expect(staffReads).toEqual(expect.arrayContaining(["22000042", "33000043"]));
-    const settings = await owner.get("/api/v1/projects/settings/labor");
-    const gaps = (settings.body.data.rate_gaps as Array<{ technician_name: string }>).map(
-      (gap) => gap.technician_name,
+    expect(staffReads).toEqual(["33000043"]);
+
+    await h.db.withTenant(tenant.id, async (db) => {
+      await db.query(
+        `INSERT INTO projects.technician_labor_rates
+           (tenant_id, external_technician_id, technician_name, active, pay_basis, burden_unset)
+         VALUES ($1, 'tech-riley', 'Riley Cho', true, 'missing', true)`,
+        [tenant.id],
+      );
+    });
+    client.readTechnicians = async () => {
+      throw new Error("Unexpected technician directory response.");
+    };
+    client.readStaffName = async (id) => (id === "11000041" ? "Wesley M" : null);
+    const kept = await owner.post(`/api/v1/projects/projects/${projectId}/labor/refresh`);
+    expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+    expect(kept.body.data.technicians).toEqual(
+      expect.arrayContaining([expect.objectContaining({ technician_name: "Wesley M", hours: 2.07 })]),
     );
-    expect(gaps).not.toContain("Sam Cole");
-    expect(gaps).not.toContain("Former tech #33000043");
-    expect(gaps).not.toContain("Office Notes");
+    expect(JSON.stringify(kept.body.data.technicians)).not.toContain("Former tech #11000041");
+    const settings = await owner.get("/api/v1/projects/settings/labor");
+    expect(settings.body.data.rate_gaps.map((gap: { technician_name: string }) => gap.technician_name)).toContain(
+      "Riley Cho",
+    );
   });
 });

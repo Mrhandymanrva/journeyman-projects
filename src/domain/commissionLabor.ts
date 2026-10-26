@@ -123,6 +123,17 @@ export function isPlaceholderTechnician(name: string | null | undefined): boolea
   return PLACEHOLDER_TECHNICIAN_PATTERN.test(key);
 }
 
+/**
+ * Technician ids are compared as digit strings.
+ * ServiceTitan sends the id as a JSON number. Timesheet rows store it as text.
+ * `11000041` and `"11000041"` are the same technician.
+ */
+export function technicianIdKey(id: unknown): string {
+  if (typeof id === "number" && Number.isSafeInteger(id) && id >= 0) return String(id);
+  if (typeof id === "string") return id.trim();
+  return "";
+}
+
 /** Blank timesheet names that no technician or employee record can fill. */
 export function formerTechnicianLabel(id: string): string {
   return `Former tech #${id}`;

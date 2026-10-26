@@ -4,7 +4,7 @@ import type { AdvisoryLock, Database } from "../db/database.js";
 import { payrollReaderFrom, resolvePayForTechnicians } from "../domain/commissionLabor.js";
 import {
   readLaborJobs,
-  readTechnicianDirectory,
+  readTechnicianDirectoryForLabor,
   saveLaborRefresh,
   withResolvedTechnicianNames,
 } from "../domain/laborActuals.js";
@@ -169,7 +169,7 @@ async function refreshProject(
       readJob: (jobId) => connection.client.readJob(jobId),
     },
   );
-  const directory = await readTechnicianDirectory({
+  const directory = await readTechnicianDirectoryForLabor({
     readTechnicians: connection.client.readTechnicians?.bind(connection.client),
   });
   const technicians = await resolvePayForTechnicians(

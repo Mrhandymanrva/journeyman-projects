@@ -23,6 +23,7 @@ import {
   readLaborJobs,
   readTechnicianDirectory,
   storeJobLabor,
+  withResolvedTechnicianNames,
   type LaborJobResult,
   type TechnicianDirectory,
 } from "../domain/laborActuals.js";
@@ -243,9 +244,16 @@ export function stProjectRoutes(
           details.jobs.map((job) => job.id),
         );
         const directory = await readTechnicianDirectory(p.c.client);
+        const namedLabor = labor
+          ? await withResolvedTechnicianNames(
+              labor,
+              directory.technicians,
+              p.c.client.readStaffName?.bind(p.c.client),
+            )
+          : labor;
         const laborCode = await resolveStLaborCode(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, directory, laborCode, ar };
+        return { details, fieldStart, labor: namedLabor, directory, laborCode, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
@@ -402,9 +410,16 @@ export function stProjectRoutes(
           details.jobs.map((job) => job.id),
         );
         const directory = await readTechnicianDirectory(p.c.client);
+        const namedLabor = labor
+          ? await withResolvedTechnicianNames(
+              labor,
+              directory.technicians,
+              p.c.client.readStaffName?.bind(p.c.client),
+            )
+          : labor;
         const laborCode = await resolveStLaborCode(p.c.client);
         const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor, directory, laborCode, ar };
+        return { details, fieldStart, labor: namedLabor, directory, laborCode, ar };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");

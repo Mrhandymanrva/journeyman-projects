@@ -185,6 +185,62 @@ it("reads technician hourly and burden rates and drops contact fields", async ()
   expect(rows[0]).not.toHaveProperty("phoneNumber");
   expect(String(fetcher.mock.calls.at(-1)?.[0])).toContain("active=Any");
 });
+it("reads Wesley M from the page after a full first page with hasMore false", async () => {
+  const filler = (id: number) => ({
+    id,
+    name: `Tech ${id}`,
+    active: true,
+    hourlyRate: 0,
+    burdenRate: 0,
+    commissionRate: 0,
+  });
+  const { client, fetcher } = setup([
+    {
+      page: 1,
+      pageSize: 50,
+      hasMore: false,
+      data: Array.from({ length: 50 }, (_, index) => filler(index + 1)),
+    },
+    {
+      page: 2,
+      pageSize: 50,
+      hasMore: false,
+      data: [
+        {
+          id: 11000041,
+          name: "Wesley M",
+          active: true,
+          isManagedTech: true,
+          businessUnitId: 910001,
+          hourlyRate: 0,
+          burdenRate: 0,
+          commissionRate: 0.28,
+        },
+      ],
+    },
+  ]);
+  const rows = await client.readTechnicians();
+  const wesley = rows.find((row) => row.id === "11000041");
+  expect(wesley).toEqual({
+    id: "11000041",
+    name: "Wesley M",
+    active: true,
+    hourlyRate: 0,
+    burdenRate: 0,
+    commissionRate: 0.28,
+  });
+  const calls = fetcher.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.includes("/technicians"));
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).toContain("/settings/v2/tenant/10/technicians?");
+  expect(calls[0]).toContain("active=Any");
+  expect(calls[0]).not.toContain("active=True");
+  expect(calls[1]).toContain("page=2");
+  expect(calls.every((url) => fetcher.mock.calls.find((call) => String(call[0]) === url)?.[1]?.method === "GET")).toBe(
+    true,
+  );
+});
 it("looks up a nameless timesheet id on technicians then employees", async () => {
   const seen: string[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
@@ -196,7 +252,13 @@ it("looks up a nameless timesheet id on technicians then employees", async () =>
     }
     expect(init?.method).toBe("GET");
     if (url.endsWith("/technicians/11000041")) {
-      return Response.json({ id: 11000041, name: "Sam Cole", active: false });
+      return Response.json({
+        id: 11000041,
+        name: "Wesley M",
+        active: true,
+        isManagedTech: true,
+        businessUnitId: 910001,
+      });
     }
     if (url.endsWith("/technicians/22000042") || url.endsWith("/technicians/33000043")) {
       return new Response("{}", { status: 404 });
@@ -208,7 +270,7 @@ it("looks up a nameless timesheet id on technicians then employees", async () =>
     return new Response("no", { status: 404 });
   });
   const client = new ServiceTitanReadAdapter(config, fetcher);
-  expect(await client.readStaffName("11000041")).toBe("Sam Cole");
+  expect(await client.readStaffName("11000041")).toBe("Wesley M");
   expect(seen.some((url) => url.includes("/employees/11000041"))).toBe(false);
   expect(await client.readStaffName("22000042")).toBe("Pat Lee");
   expect(await client.readStaffName("33000043")).toBeNull();

@@ -486,11 +486,13 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          ($1, 'tech-riley', 'Riley Cho', true, NULL, NULL, 'missing', true),
          ($1, 'tech-office', 'Office Notes', true, NULL, NULL, 'missing', true),
          ($1, 'tech-req', 'Project Requirements', true, NULL, NULL, 'missing', true),
-         ($1, 'tech-sub', 'Subcontractor', true, NULL, NULL, 'missing', true)`,
+         ($1, 'tech-sub', 'Subcontractor', true, NULL, NULL, 'missing', true),
+         ($1, '11000041', 'Wesley M', true, NULL, NULL, NULL, false)`,
       [TENANT_ID],
     );
     // 4 h × $188 × 25% = $188 labor, 4 h × $12 burden = $48.
     // Justin is hourly: 2 h × $36 = $72, burden not set.
+    // Wesley M (technician 11000041) is an active ServiceTitan technician.
     // The rates themselves are not stored.
     await c.query(
       `INSERT INTO projects.labor_actuals
@@ -505,7 +507,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          ($1,$2,'demo-job','demo-ts-justin','tech-justin','Justin M.',
           CURRENT_DATE - 1, 2.00, 'timesheet', $3, now(), 72.00, NULL,
           'hourly', true, NULL),
-         ($1,$2,'demo-job','demo-ts-former','11000041', NULL,
+         ($1,$2,'demo-job','demo-ts-wesley','11000041', NULL,
           CURRENT_DATE - 1, 2.07, 'timesheet', $3, now(), NULL, NULL,
           NULL, false, NULL)`,
       [TENANT_ID, whitfield, laborCode],
