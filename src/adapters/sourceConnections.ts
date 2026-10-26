@@ -22,9 +22,11 @@ export interface SourceConnections {
           | "projectNoteReceipt"
           | "publishProjectNote"
           | "readJobTimesheets"
+          | "readLaborTypes"
           | "readInvoices"
           | "readPayments"
           | "readEstimates"
+          | "sourceTenantId"
         >
       >;
   };

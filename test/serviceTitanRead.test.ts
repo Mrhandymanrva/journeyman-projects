@@ -436,6 +436,48 @@ describe("job timesheets", () => {
   });
 });
 
+describe("labor types", () => {
+  const laborType = (id: number, code: string) => ({
+    id,
+    name: "Field labor",
+    code,
+    serviceCodeId: 7,
+    active: true,
+    createdOn: "2026-01-01T00:00:00Z",
+    modifiedOn: "2026-01-02T00:00:00Z",
+    hourlyRate: 40,
+  });
+
+  it("pages labor types with GET and keeps the documented fields", async () => {
+    const { client, fetcher } = setup([
+      { data: [laborType(1, "ST-LAB")], hasMore: true },
+      { data: [laborType(2, "ST-SHOP")], hasMore: false },
+    ]);
+    const read = await client.readLaborTypes();
+    expect(read.forbidden).toBe(false);
+    expect(read.laborTypes).toEqual([
+      { id: "1", name: "Field labor", code: "ST-LAB", serviceCodeId: "7", active: true },
+      { id: "2", name: "Field labor", code: "ST-SHOP", serviceCodeId: "7", active: true },
+    ]);
+    expect(read.laborTypes[0]).not.toHaveProperty("hourlyRate");
+    const calls = fetcher.mock.calls.filter((call) => String(call[0]).includes("/labor-types"));
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call[1]?.method === "GET")).toBe(true);
+    expect(String(calls[0]?.[0])).toContain("/payroll/v2/tenant/10/labor-types");
+    expect(String(calls[0]?.[0])).toContain("active=True");
+    expect(String(calls[0]?.[0])).toContain("pageSize=50");
+    expect(String(calls[1]?.[0])).toContain("page=2");
+    expect(fetcher.mock.calls.some((call) => call[1]?.method && call[1].method !== "GET" && call[1].method !== "POST")).toBe(
+      false,
+    );
+  });
+
+  it("returns forbidden on a labor-types 403 instead of throwing", async () => {
+    const { client } = setup([json({ secret: "must not escape" }, 403)]);
+    await expect(client.readLaborTypes()).resolves.toEqual({ forbidden: true, laborTypes: [] });
+  });
+});
+
 describe("accounting and sales reads", () => {
   it("reads invoices, payments, and estimates with GET only", async () => {
     const { client, fetcher } = setup([

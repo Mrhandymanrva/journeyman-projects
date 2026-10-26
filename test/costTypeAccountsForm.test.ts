@@ -56,8 +56,8 @@ describe('cost type account form', () => {
         }
         if (path === '/settings/labor') {
           return {
-            labor_cost_code_id: 'code-210',
-            labor_cost_code: '210',
+            st_labor_code: { code: 'ST-LAB', name: 'Field labor', st_id: '42' },
+            st_labor_code_error: null,
             rate_gaps: [
               {
                 technician_name: 'Jordan Hale',
@@ -65,12 +65,6 @@ describe('cost type account form', () => {
               },
             ],
           };
-        }
-        if (path === '/cost-codes') {
-          return [
-            { id: 'code-210', code: '210', description: 'Interior demolition', default_cost_type: 'L' },
-            { id: 'code-120', code: '120', description: 'Cabinets', default_cost_type: 'M' },
-          ];
         }
         throw new Error(`unexpected ${path}`);
       },
@@ -105,9 +99,11 @@ describe('cost type account form', () => {
     expect(html).not.toContain('Burdened hourly rate');
     expect(html).toContain('id="labor-rate-gaps"');
     expect(html).toContain('Missing from ServiceTitan: burden rate is 0 for Jordan Hale');
-    expect(html).toContain('value="code-210" selected');
-    expect(html).toContain('210 Interior demolition');
-    expect(html).not.toContain('Cabinets');
+    expect(html).toContain('id="labor-st-code"');
+    expect(html).toContain('Labor code (from ServiceTitan Payroll > Labor Types): ST-LAB Field labor');
+    expect(html).not.toContain('id="labor-code"');
+    expect(html).not.toContain('Save labor settings');
+    expect(html).not.toContain('labor-settings-save');
     expect(nodes.get('ap-acct-L')).toBeTruthy();
     expect(nodes.get('ap-acct-M')).toBeTruthy();
     expect(nodes.get('ap-acct-S')).toBeTruthy();
@@ -118,6 +114,66 @@ describe('cost type account form', () => {
     expect(nodes.get('ap-acct-M')!.value).toBe('mat');
     expect(nodes.get('ap-acct-S')!.value).toBe('');
     expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('shows a ServiceTitan labor-code error and no picker', async () => {
+    const nodes = new Map<string, FakeNode>();
+    function make(id: string): FakeNode {
+      const node: FakeNode = {
+        id,
+        value: '',
+        onclick: null,
+        _html: '',
+        get innerHTML() {
+          return this._html;
+        },
+        set innerHTML(html: string) {
+          this._html = String(html);
+          for (const match of String(html).matchAll(/\sid="([^"]+)"/g)) {
+            if (!nodes.has(match[1]!)) nodes.set(match[1]!, make(match[1]!));
+          }
+        },
+      };
+      nodes.set(id, node);
+      return node;
+    }
+    make('company-settings');
+    const accounting = createAccounting({
+      api: async (path) => {
+        if (path === '/accounting/catalog') return { connected: false, accounts: [] };
+        if (path === '/accounting/cost-type-accounts') {
+          return {
+            agreement_grace_days: 14,
+            accounts: { L: null, M: null, S: null, O: null },
+            suggestions: { L: null, M: null, S: null, O: null },
+            catalog: [],
+          };
+        }
+        if (path === '/settings/labor') {
+          return {
+            st_labor_code: null,
+            st_labor_code_error:
+              "Journeyman's ServiceTitan app cannot read Payroll > Labor Types (403). Hours stay uncoded.",
+            rate_gaps: [],
+          };
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+      el: (id: string) => nodes.get(id) ?? null,
+      esc: (value: unknown) => String(value ?? ''),
+      can: () => true,
+      current: () => null,
+      openDrawer() {},
+      closeDrawer() {},
+    });
+    await accounting.renderSettings();
+    const html = nodes.get('company-settings')!._html;
+    expect(html).toContain('class="msg" id="labor-st-error"');
+    expect(html).toContain('cannot read Payroll > Labor Types (403)');
+    expect(html).toContain('Hours stay uncoded.');
+    expect(html).toContain('Labor code (from ServiceTitan Payroll > Labor Types): unavailable');
+    expect(html).not.toContain('id="labor-code"');
+    expect(html).not.toContain('Save labor settings');
   });
 });
 

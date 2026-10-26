@@ -360,16 +360,14 @@ export function createAccounting({
     };
     return `<div class="card acct-map"><div class="card-h"><div><h3>Cost type accounts</h3></div></div><div class="card-b"><p class="note">Map each cost type to a QuickBooks account from the stored chart. An empty row uses the account chosen when that bill is approved. Use copies a suggestion into that row. Nothing is saved until Save.</p><div class="acct-map-table" role="table"><div class="acct-head" role="row"><span role="columnheader">Cost type</span><span role="columnheader">QuickBooks account</span><span role="columnheader">Suggestion</span></div>${rows.map(row).join("")}</div><div class="acct-grace"><label for="ap-grace">Agreement grace days</label><input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"><p class="note">Days a subcontract can be issued before a signed master agreement is required. The default is 14.</p></div><button class="btn primary" id="ap-save-accounts" type="button">Save</button></div></div>`;
   }
-  function laborSettingsCard(labor, codes) {
-    const choices = (codes || []).filter(
-      (code) => code.default_cost_type === "L" || code.id === labor.labor_cost_code_id,
-    );
-    const options = choices
-      .map(
-        (code) =>
-          `<option value="${esc(code.id)}" ${code.id === labor.labor_cost_code_id ? "selected" : ""}>${esc(code.code)} ${esc(code.description)}</option>`,
-      )
-      .join("");
+  function laborSettingsCard(labor) {
+    const code = labor.st_labor_code;
+    const codeLine = code
+      ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(code.code)} ${esc(code.name)}`
+      : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+    const error = labor.st_labor_code_error
+      ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
+      : "";
     const gaps = labor.rate_gaps || [];
     const gapList = gaps.length
       ? `<ul id="labor-rate-gaps">${gaps
@@ -379,7 +377,7 @@ export function createAccounting({
           )
           .join("")}</ul>`
       : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`;
-    return `<div class="card"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. Hours hit the labor budget only after a labor cost code is set. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><label>Default labor cost code<select id="labor-code"><option value="">Uncoded until a code is chosen</option>${options}</select></label><button class="btn primary" id="labor-settings-save" type="button">Save labor settings</button><h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Each technician's wage and burden come from ServiceTitan. Burden is overhead on top of the wage. This page does not store a company rate and does not write to ServiceTitan. The labor code is the one active labor type in ServiceTitan. It is not chosen here. A technician with a missing or zero hourly rate or burden rate is left out of actual cost.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Active technicians missing a ServiceTitan rate</h4>${gapList}</div></div>`;
   }
   async function movePurchaseOrder(poId) {
     openDrawer(
@@ -556,13 +554,12 @@ export function createAccounting({
       host.innerHTML = "<p>Company settings are available to an owner or a manager.</p>";
       return;
     }
-    const [catalog, settings, labor, codes] = await Promise.all([
+    const [catalog, settings, labor] = await Promise.all([
       api("/accounting/catalog"),
       api("/accounting/cost-type-accounts"),
       api("/settings/labor"),
-      api("/cost-codes"),
     ]);
-    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor, codes);
+    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor);
     if (!el("ap-save-accounts")) return;
     for (const type of ["L", "M", "S", "O"]) {
       const use = el(`ap-use-${type}`);
@@ -592,22 +589,6 @@ export function createAccounting({
         error(e);
       }
     };
-    const saveLabor = el("labor-settings-save");
-    if (saveLabor) {
-      saveLabor.onclick = async () => {
-        try {
-          await api("/settings/labor", {
-            method: "PUT",
-            body: JSON.stringify({
-              labor_cost_code_id: el("labor-code").value || null,
-            }),
-          });
-          await renderSettings();
-        } catch (e) {
-          error(e);
-        }
-      };
-    }
   }
   return { render, renderSettings };
 }

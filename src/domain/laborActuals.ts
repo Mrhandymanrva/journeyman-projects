@@ -220,21 +220,21 @@ export async function storeJobLabor(
   }
 }
 
-/** Point stored hours at the project override, otherwise the tenant code. No code leaves them uncoded. */
+/**
+ * Point every stored hour for the tenant at the ServiceTitan labor-type mirror.
+ * The id is passed in. There is no settings lookup. Callers that could not
+ * resolve the code skip this and leave cost_code_id as it is.
+ */
 export async function stampLaborCodes(
   db: SqlClient,
   tenantId: string,
-  projectId?: string,
+  costCodeId: string,
 ): Promise<void> {
   await db.query(
-    `UPDATE projects.labor_actuals a
-        SET cost_code_id = COALESCE(p.labor_cost_code_id, s.labor_cost_code_id)
-       FROM projects.projects p
-       JOIN projects.tenant_settings s ON s.tenant_id = p.tenant_id
-      WHERE a.project_id = p.id
-        AND a.tenant_id = $1
-        AND ($2::uuid IS NULL OR a.project_id = $2)`,
-    [tenantId, projectId ?? null],
+    `UPDATE projects.labor_actuals
+        SET cost_code_id = $2
+      WHERE tenant_id = $1`,
+    [tenantId, costCodeId],
   );
 }
 
@@ -566,7 +566,6 @@ export async function saveLaborRefresh(
     });
   }
   await applyTechnicianDirectory(db, input.tenantId, input.directory, input.observedAt);
-  await stampLaborCodes(db, input.tenantId, input.projectId);
   await db.query(
     `UPDATE projects.projects
         SET labor_refreshed_at = $2,

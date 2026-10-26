@@ -56,6 +56,8 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/043_technician_labor_rates.sql"),
   path.join(repoRoot, "db/044_labor_refresh.sql"),
   path.join(repoRoot, "db/045_labor_refresh_scheduled.sql"),
+  path.join(repoRoot, "db/046_st_labor_code.sql"),
+  path.join(repoRoot, "db/047_unbudgeted_labor.sql"),
 ];
 
 export interface TenantFixture {
