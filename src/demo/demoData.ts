@@ -25,6 +25,15 @@ import { seedDrawSchedule } from './../domain/drawSchedule.js';
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
 
+/** The one labor type the fake ServiceTitan client returns. Not a setting. */
+export const DEMO_ST_LABOR_TYPE = {
+  id: '9001',
+  name: 'Field labor',
+  code: 'ST-LAB',
+  serviceCodeId: '7001',
+  active: true,
+};
+
 export interface SeedOptions {
   db: Database;
   /** Runs with rights the application role does not have. */
@@ -456,13 +465,16 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
 
   await db.withTenant(TENANT_ID, async (c) => {
-    const laborCode = ids.costCodes.get('210');
-    await c.query(
-      `UPDATE projects.tenant_settings
-          SET labor_cost_code_id = $2
-        WHERE tenant_id = $1`,
-      [TENANT_ID, laborCode],
+    const mirrored = await c.query<{ id: string }>(
+      `INSERT INTO projects.cost_codes
+         (tenant_id, code, division_code, division_name, description,
+          default_cost_type, sort_order, active, external_source, external_id)
+       VALUES ($1, $2, 'ST', 'ServiceTitan', $3, 'L'::projects.cost_type, 0, true,
+               'servicetitan_labor_type', $4)
+       RETURNING id`,
+      [TENANT_ID, DEMO_ST_LABOR_TYPE.code, DEMO_ST_LABOR_TYPE.name, DEMO_ST_LABOR_TYPE.id],
     );
+    const laborCode = mirrored.rows[0]!.id;
     await c.query(
       `INSERT INTO projects.technician_labor_rates
          (tenant_id, external_technician_id, technician_name, active, hourly_rate, burden_rate)

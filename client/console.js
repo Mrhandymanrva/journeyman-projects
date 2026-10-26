@@ -2294,6 +2294,8 @@ function renderLabor(row) {
     technicians: [],
     missing: [],
     cost_code: null,
+    st_labor_code: null,
+    st_labor_code_error: null,
   };
   const refresh = el("labor-refresh");
   if (refresh) refresh.hidden = !can("refresh_labor");
@@ -2346,6 +2348,18 @@ function renderLabor(row) {
                 .join("")}</ul>`
             : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`
         }`;
+  const stCode = data.st_labor_code;
+  const codeText = stCode
+    ? `Labor code (from ServiceTitan Payroll > Labor Types): ${esc(stCode.code)} ${esc(stCode.name || "")}`
+    : "Labor code (from ServiceTitan Payroll > Labor Types): unavailable";
+  const uncoded = Number(data.uncoded_hours) > 0;
+  const laborError = data.st_labor_code_error
+    ? `<p class="msg" id="labor-st-error">${esc(data.st_labor_code_error)}</p>`
+    : "";
+  const uncodedNote =
+    uncoded && !data.st_labor_code_error
+      ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
+      : "";
   el("labor").innerHTML = `
     <p class="note">Hours come from ServiceTitan timesheets. Wage is hours times that technician's ServiceTitan hourly rate. Burden is the same hours times that technician's burden rate, added on top. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
     ${
@@ -2355,18 +2369,10 @@ function renderLabor(row) {
     }
     <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
       ${moneyLine}
-      <div class="row-m">${
-        laborRefreshLine(data)
-      }${
-        data.cost_code
-          ? ` · ${esc(data.cost_code.code)} ${esc(data.cost_code.description || "")}`
-          : " · no labor cost code"
-      }</div></div></div>
-    ${
-      Number(data.uncoded_hours) > 0
-        ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on a labor cost code, so they are not in the budget.</p>`
-        : ""
-    }
+      <div class="row-m">${laborRefreshLine(data)}</div>
+      <div class="row-m" id="labor-st-code">${codeText}</div></div></div>
+    ${laborError}
+    ${uncodedNote}
     ${techs}
     ${gaps}`;
   refresh?.addEventListener("click", async () => {

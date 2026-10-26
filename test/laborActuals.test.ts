@@ -3,7 +3,6 @@ import { ServiceTitanReadError } from "../src/adapters/serviceTitan.js";
 import { draftsFromTimesheets, stampLaborCodes, storeJobLabor, storeTechnicianRates } from "../src/domain/laborActuals.js";
 import type { SourceConnections } from "../src/adapters/sourceConnections.js";
 import { SCHEMA_FILES, createTenant, estimatePayload, projectBody, startHarness, type Harness, type TenantFixture } from "./support/harness.js";
-import { tickGate } from "./support/tickGate.js";
 
 let h: Harness;
 let t: TenantFixture;
@@ -82,11 +81,11 @@ describe("labor actuals", () => {
   });
 
   it("posts wage and burden from the technician profile and hides rates from other roles", async () => {
-    const saved = await owner().put("/api/v1/projects/settings/labor").send({
-      labor_cost_code_id: laborCodeId,
-    });
+    const saved = await owner().get("/api/v1/projects/settings/labor");
     expect(saved.status, JSON.stringify(saved.body)).toBe(200);
-    expect(saved.body.data.labor_cost_code).toBe("210");
+    expect(saved.body.data.st_labor_code).toBeNull();
+    expect(saved.body.data.st_labor_code_error).toMatch(/Hours stay uncoded/);
+    expect(saved.body.data).not.toHaveProperty("labor_cost_code_id");
     expect(saved.body.data).not.toHaveProperty("labor_burdened_hourly_rate");
 
     await h.db.withTenant(t.id, async (db) => {
@@ -135,7 +134,7 @@ describe("labor actuals", () => {
           ],
         },
       });
-      await stampLaborCodes(db, t.id, projectId);
+      await stampLaborCodes(db, t.id, laborCodeId);
     });
 
     const shown = await owner().get(`/api/v1/projects/projects/${projectId}/labor`);
@@ -190,10 +189,10 @@ describe("labor actuals", () => {
     );
     expect(Number(row?.actual_cost)).toBe(208);
 
-    const refused = await pm().put("/api/v1/projects/settings/labor").send({
+    const removed = await owner().put("/api/v1/projects/settings/labor").send({
       labor_cost_code_id: null,
     });
-    expect(refused.status).toBe(403);
+    expect(removed.status).toBe(404);
   });
 
   it("leaves hours uncoded until a cost code is set, and a later payroll miss does not replace timesheets", async () => {
@@ -256,26 +255,53 @@ describe("labor actuals", () => {
     expect(shown.body.data.lines[0].source).toBe("timesheet");
   });
 
-  it("lets an owner move the cost code after the baseline is frozen without changing the budget", async () => {
-    await owner().post(`/api/v1/projects/projects/${projectId}/gates/0/approve`);
-    await tickGate(owner(), projectId, 1);
-    await owner().post(`/api/v1/projects/projects/${projectId}/gates/1/approve`);
+  it("does not offer a labor-code picker and leaves the budget and start dates alone", async () => {
+    await h.db.withTenant(t.id, async (db) => {
+      await db.query(
+        `UPDATE projects.projects
+            SET scheduled_start = '2026-10-19',
+                field_start = '2026-10-20',
+                field_start_source = 'manual',
+                field_start_observed_at = now(),
+                field_start_set_by = $2
+          WHERE id = $1`,
+        [projectId, t.staff.owner!.id],
+      );
+    });
     const before = await owner().get(`/api/v1/projects/projects/${projectId}/budget`);
-    const moved = await owner()
+    const putSettings = await owner()
+      .put("/api/v1/projects/settings/labor")
+      .send({ labor_cost_code_id: laborCodeId });
+    expect(putSettings.status).toBe(404);
+    const putProject = await owner()
       .put(`/api/v1/projects/projects/${projectId}/labor-cost-code`)
       .send({ cost_code_id: laborCodeId });
-    expect(moved.status, JSON.stringify(moved.body)).toBe(200);
-    expect(moved.body.data.cost_code.code).toBe("210");
-    const after = await owner().get(`/api/v1/projects/projects/${projectId}/budget`);
-    expect(after.body.data.lines).toEqual(before.body.data.lines);
+    expect(putProject.status).toBe(404);
     const coordinator = await pm()
       .put(`/api/v1/projects/projects/${projectId}/labor-cost-code`)
       .send({ cost_code_id: null });
-    expect(coordinator.status).toBe(403);
+    expect(coordinator.status).toBe(404);
     const refresh = await owner().post(`/api/v1/projects/projects/${projectId}/labor/refresh`);
     expect(refresh.status).toBe(409);
+    const after = await owner().get(`/api/v1/projects/projects/${projectId}/budget`);
+    expect(after.body.data.lines).toEqual(before.body.data.lines);
+    const dates = await h.db.withTenant(t.id, (db) =>
+      db.query<{ scheduled_start: string; field_start: string; field_start_source: string }>(
+        `SELECT scheduled_start::text AS scheduled_start,
+                field_start::text AS field_start,
+                field_start_source
+           FROM projects.projects WHERE id = $1`,
+        [projectId],
+      ),
+    );
+    expect(dates.rows[0]).toMatchObject({
+      scheduled_start: "2026-10-19",
+      field_start: "2026-10-20",
+      field_start_source: "manual",
+    });
     expect(SCHEMA_FILES.some((file) => file.endsWith("040_labor_actuals.sql"))).toBe(true);
     expect(SCHEMA_FILES.some((file) => file.endsWith("043_technician_labor_rates.sql"))).toBe(true);
+    expect(SCHEMA_FILES.some((file) => file.endsWith("046_st_labor_code.sql"))).toBe(true);
   });
 });
 
@@ -291,6 +317,13 @@ describe("a denied technician read", () => {
         readJob: async () => {
           throw new Error("unused");
         },
+        sourceTenantId: "labor-403",
+        readLaborTypes: async () => ({
+          forbidden: false,
+          laborTypes: [
+            { id: "42", name: "Field labor", code: "ST-LAB", serviceCodeId: null, active: true },
+          ],
+        }),
         readJobTimesheets: async () => ({ jobId: "1", forbidden: true, timesheets: [] }),
         readTechnicians: async () => {
           if (mode === "forbidden") {
@@ -325,7 +358,6 @@ describe("a denied technician read", () => {
     const id = created.body.data.id as string;
     const codes = await asOwner.get("/api/v1/projects/cost-codes");
     const codeId = (codes.body.data as Array<{ id: string; code: string }>).find((row) => row.code === "210")!.id;
-    expect((await asOwner.put("/api/v1/projects/settings/labor").send({ labor_cost_code_id: codeId })).status).toBe(200);
     const budget = await asOwner.get(`/api/v1/projects/projects/${id}/budget`);
     const hasLabor = (budget.body.data.lines as Array<{ cost_code_id: string; cost_type: string }>).some(
       (line) => line.cost_code_id === codeId && line.cost_type === "L",
@@ -395,10 +427,17 @@ describe("a denied technician read", () => {
     expect(priced.body.data.missing).toEqual([]);
     const casey = priced.body.data.technicians[0];
     expect(casey).toMatchObject({ hourly_rate: 40, burden_rate: 12, wage: 160, burden: 48 });
+    expect(priced.body.data.uncoded_hours).toBe(0);
+    expect(priced.body.data.st_labor_code).toEqual({
+      code: "ST-LAB",
+      name: "Field labor",
+      st_id: "42",
+    });
+    expect(priced.body.data.st_labor_code_error).toBeNull();
     const pricedCost = await asOwner.get(`/api/v1/projects/projects/${id}/cost-position`);
-    const pricedLabor = (pricedCost.body.data as Array<{ cost_code: string; cost_type: string; actual_cost: number }>).find(
-      (line) => line.cost_code === "210" && line.cost_type === "L",
-    );
-    expect(Number(pricedLabor?.actual_cost)).toBe(208);
+    const rows = pricedCost.body.data as Array<{ cost_code: string; cost_type: string; actual_cost: number }>;
+    expect(rows.find((line) => line.cost_code === "ST-LAB")).toBeUndefined();
+    const pricedLabor = rows.find((line) => line.cost_code === "210" && line.cost_type === "L");
+    expect(Number(pricedLabor?.actual_cost ?? 0)).toBe(0);
   });
 });

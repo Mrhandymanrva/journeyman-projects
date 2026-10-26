@@ -6,6 +6,7 @@ import {
   readTechnicianDirectory,
   saveLaborRefresh,
 } from "../domain/laborActuals.js";
+import { applyResolvedLaborCode, resolveStLaborCode } from "../domain/stLaborCode.js";
 
 const HOUR_MS = 60 * 60 * 1000;
 const FIRST_TICK_MS = 15_000;
@@ -169,8 +170,9 @@ async function refreshProject(
   const directory = await readTechnicianDirectory({
     readTechnicians: connection.client.readTechnicians?.bind(connection.client),
   });
-  await db.withTenant(tenantId, (client) =>
-    saveLaborRefresh(client, {
+  const laborCode = await resolveStLaborCode(connection.client);
+  await db.withTenant(tenantId, async (client) => {
+    await saveLaborRefresh(client, {
       tenantId,
       projectId,
       jobs: jobs.rows,
@@ -178,8 +180,12 @@ async function refreshProject(
       directory,
       source: "scheduled",
       observedAt,
-    }),
-  );
+    });
+    const applied = await applyResolvedLaborCode(client, tenantId, laborCode);
+    if (!applied.ok) {
+      console.error(`Labor code was not applied after refreshing ${projectId}: ${applied.message}`);
+    }
+  });
 }
 
 /**

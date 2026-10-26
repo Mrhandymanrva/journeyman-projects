@@ -31,6 +31,16 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
   externalSystemId: SYSTEM_ID,
   key: "st:test",
   client: {
+    sourceTenantId: "st-hourly",
+    readLaborTypes: async () => {
+      methods.push("GET");
+      return {
+        forbidden: false,
+        laborTypes: [
+          { id: "42", name: "Field labor", code: "ST-LAB", serviceCodeId: null, active: true },
+        ],
+      };
+    },
     readJob: async () => {
       methods.push("GET");
       throw new Error("appointment fallback should not run");
@@ -391,6 +401,24 @@ describe("scheduler uses the manual refresh env", () => {
             { id: 6, name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
           ],
           hasMore: false,
+        });
+      }
+      if (url.includes("/labor-types")) {
+        return Response.json({
+          page: 1,
+          pageSize: 50,
+          hasMore: false,
+          data: [
+            {
+              id: 42,
+              name: "Field labor",
+              code: "ST-LAB",
+              serviceCodeId: 7,
+              active: true,
+              createdOn: "2026-01-01T00:00:00Z",
+              modifiedOn: "2026-01-01T00:00:00Z",
+            },
+          ],
         });
       }
       return Response.json({ data: [], hasMore: false }, { status: 404 });

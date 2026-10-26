@@ -65,7 +65,7 @@ export function createWorkspace({
     users: ["Users", "Manage staff access and login credentials."],
     settings: [
       "Setup",
-      "Company settings for the labor cost code, QuickBooks cost-type accounts, and the subcontract agreement window.",
+      "Company settings. The labor code is read from ServiceTitan. QuickBooks cost-type accounts and the subcontract agreement window are set here.",
     ],
     project: [
       "Project details & permits",
