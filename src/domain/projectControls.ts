@@ -54,8 +54,8 @@ export const controlData = {
               "Target must differ from starting value.",
             ),
         )
-        .min(1)
-        .max(20),
+        .max(20)
+        .default([]),
       state,
     })
     .strict(),

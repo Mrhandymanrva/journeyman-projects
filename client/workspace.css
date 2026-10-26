@@ -376,6 +376,13 @@ textarea {
   color: #8691a1;
   font-size: 11px;
 }
+.dashboard-metrics small.metric-source {
+  display: block;
+  margin-top: 6px;
+}
+.precon-role-note {
+  margin: 0 0 16px;
+}
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr);

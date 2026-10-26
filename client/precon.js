@@ -1,3 +1,5 @@
+import { roleTitle } from "./roleTitles.js";
+
 const TYPE_LABELS = {
   permit: "Permit",
   site_visit: "Site visit",
@@ -31,7 +33,7 @@ function day(value) {
 }
 
 function roleLabel(value) {
-  return String(value || "").replace(/_/g, " ");
+  return roleTitle(value);
 }
 
 function safeHref(url) {

@@ -3,9 +3,21 @@ import { createPermitOffices } from "./permitOffices.js";
 import {openProjectDeletion} from "./projectDeletion.js";
 import {createAccounting} from "./accounting.js";
 import { createProjectControls } from "./projectControls.js";
+import { scheduleProgress, appointmentReadWindow } from "./scheduleProgress.js";
 import { createUsers } from "./users.js";
 import { createSubcontractors } from "./subcontractors.js";
-import { issues, addDays } from "./scheduleBoard.js";
+import { issues } from "./scheduleBoard.js";
+import { roleTitle } from "./roleTitles.js";
+import {
+  LABOR_PAGE_ID,
+  PRECON_ROLE_NOTE,
+  PROJECT_PAGE_ALIASES,
+  PROJECT_PAGE_ID,
+  PROJECT_PAGE_ORDER,
+  SHOW_COMMUNICATIONS_TAB,
+  navEntries,
+  workspacePages,
+} from "./workspaceNav.js";
 export function createWorkspace({
   api,
   el,
@@ -37,45 +49,7 @@ export function createWorkspace({
     openDrawer,
     closeDrawer,
   });
-  const pages = {
-    dashboard: ["Dashboard", "Your project, at a glance."],
-    plan: [
-      "Plan",
-      "Scheduled work, crews, tasks, milestones and project reporting.",
-    ],
-    documents: ["Documents", "Project files, templates and working forms."],
-    risks: ["Risks", "Identify, assess and manage project risks."],
-    communications: [
-      "Communications",
-      "Updates, delivery logs and scheduled check-ins.",
-    ],
-    bids: [
-      "Bids",
-      "Request quotes and track subcontractor responses for this project.",
-    ],
-    resources: [
-      "Resources",
-      "Your company-wide subcontractors, technicians and trade crews.",
-    ],
-    financials: [
-      "Financials",
-      "Review budgets, purchase orders, change orders and draws.",
-    ],
-    logs: ["Daily logs", "Keep a clear record of work completed on site."],
-    users: ["Users", "Manage staff access and login credentials."],
-    settings: [
-      "Setup",
-      "Company settings for the labor cost code, QuickBooks cost-type accounts, and the subcontract agreement window.",
-    ],
-    project: [
-      "Project details & permits",
-      "ServiceTitan information, logged start, field start, and permit milestones.",
-    ],
-    offices: [
-      "Permit offices",
-      "Municipality offices, contacts, and how to file.",
-    ],
-  };
+  const pages = workspacePages;
   const icons = {
     plan: "▥",
     documents: "▧",
@@ -88,7 +62,7 @@ export function createWorkspace({
     resources: "♧",
     financials: "＄",
     logs: "▧",
-    project: "⌂",
+    [PROJECT_PAGE_ID]: "⌂",
     offices: "▣",
   };
   let active = "dashboard",
@@ -97,8 +71,8 @@ export function createWorkspace({
   const shell = el("shell");
   const sidebar = document.createElement("aside");
   sidebar.className = "workspace-sidebar";
-  sidebar.innerHTML = `<a class="workspace-brand" href="#dashboard"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace">${Object.entries(
-    pages,
+  sidebar.innerHTML = `<a class="workspace-brand" href="#dashboard"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace">${navEntries(
+    SHOW_COMMUNICATIONS_TAB,
   )
     .map(
       ([id, [name]]) =>
@@ -136,7 +110,7 @@ export function createWorkspace({
     "beforeend",
     '<div id="project-payables"></div><div id="project-reserves"></div>',
   );
-  el("page-project").append(el("blockers").closest(".card"));
+  el("page-" + PROJECT_PAGE_ID).append(el("blockers").closest(".card"));
   el("blockers").closest(".card").querySelector(".lbl").textContent =
     "Needs attention";
   const planViews = {
@@ -190,17 +164,34 @@ export function createWorkspace({
     move(id, "financials", true);
   move("notice", "financials");
   move("logs", "logs", true);
-  for (const id of ["stagebar", "gates"]) move(id, "project");
-  move("labor", "project", true);
-  move("permits", "project", true);
-  el("page-project").insertAdjacentHTML(
+  for (const id of ["stagebar", "gates"]) move(id, PROJECT_PAGE_ID);
+  move("labor", LABOR_PAGE_ID, true);
+  const laborCard = el("labor")?.closest(".card");
+  const budgetCard = el("budget")?.closest(".card");
+  if (laborCard && budgetCard)
+    budgetCard.insertAdjacentElement("afterend", laborCard);
+  move("permits", PROJECT_PAGE_ID, true);
+  el("page-" + PROJECT_PAGE_ID).insertAdjacentHTML(
     "afterbegin",
-    '<div class="card" id="project-facts"></div>',
+    `<p class="hint precon-role-note" id="precon-role-note">${PRECON_ROLE_NOTE}</p><div class="card" id="project-facts"></div>`,
   );
   el("project-facts").insertAdjacentHTML(
     "afterend",
     '<div class="card" id="precon"></div>',
   );
+  orderProjectPage();
+  function orderProjectPage() {
+    const page = el("page-" + PROJECT_PAGE_ID);
+    for (const id of PROJECT_PAGE_ORDER) {
+      const node = el(id);
+      if (!node) continue;
+      const card = node.closest(".card");
+      const target = card && page.contains(card) ? card : node;
+      if (target.parentElement === page) page.append(target);
+    }
+    const note = el("precon-role-note");
+    if (note) page.prepend(note);
+  }
   const toolbar = document.createElement("div");
   toolbar.className = "workspace-resource-tabs";
   toolbar.innerHTML =
@@ -272,15 +263,21 @@ export function createWorkspace({
       },
     });
   }
+  function canonicalPage(id) {
+    if (id === "schedule") {
+      planView = "gantt";
+      return "plan";
+    }
+    if (PROJECT_PAGE_ALIASES.includes(id)) return PROJECT_PAGE_ID;
+    return id;
+  }
   async function enter(id) {
     epoch++;
     controls.cancel();
     closeDrawer();
-    if (id === "schedule") {
-      id = "plan";
-      planView = "gantt";
-      history.replaceState(null, "", "#plan");
-    }
+    const next = canonicalPage(id);
+    if (next !== id) history.replaceState(null, "", "#" + next);
+    id = next;
     show(id);
     el("resources-content").replaceChildren();
     el("bids-content").replaceChildren();
@@ -441,49 +438,80 @@ export function createWorkspace({
       );
     }
   }
-  function render(d) {
-    data = d;
+  let scheduleTicket = 0;
+  function paintSchedule(d, appointments, ready) {
     const p = d.detail,
       day = today(),
-      rows = d.schedule.filter((s) => s.status !== "cancelled"),
-      unfinished = rows.filter((s) => s.status !== "complete"),
+      progress = scheduleProgress({
+        activities: d.schedule || [],
+        appointments,
+        preconTasks: p.precon?.tasks || [],
+        today: day,
+      }),
+      unfinished = (d.schedule || []).filter(
+        (s) => s.status !== "cancelled" && s.status !== "complete",
+      ),
       attention = unfinished.filter((s) => issues(s, day).length),
-      week = unfinished
-        .filter((s) => s.window_end >= day && s.window_start <= addDays(day, 6))
-        .sort((a, b) => a.window_start.localeCompare(b.window_start));
+      pct = progress.percent === null ? "—" : progress.percent + "%";
+    el("dashboard-overview").dataset.scheduleReady = ready ? "true" : "false";
     el("dashboard-overview").innerHTML =
-      `<div class="dashboard-metrics"><a href="#plan"><span>Next 7 days</span><strong>${week.length}</strong><small>scheduled activities</small></a><a href="#plan"><span>Needs coordination</span><strong>${attention.length}</strong><small>activities with a flag</small></a><a href="#project"><span>Project progress</span><strong>${rows.length ? Math.round((100 * (rows.length - unfinished.length)) / rows.length) + "%" : "—"}</strong><small>${rows.length - unfinished.length} of ${rows.length} activities complete</small></a><a href="#project"><span>Target completion</span><strong class="metric-date">${nice(p.scheduled_end)}</strong><small>${p.source_project_status ? "From ServiceTitan" : "Project target date"}</small></a></div>`;
+      `<div class="dashboard-metrics"><a href="#plan"><span>Next 7 days</span><strong>${progress.week.length}</strong><small>on the schedule</small></a><a href="#plan"><span>Needs coordination</span><strong>${attention.length}</strong><small>activities with a flag</small></a><a href="#plan"><span>Project progress</span><strong>${pct}</strong><small>${progress.complete} of ${progress.total} schedule items complete</small><small class="metric-source">${esc(progress.caption)}</small></a><a href="#${PROJECT_PAGE_ID}"><span>Target completion</span><strong class="metric-date">${nice(p.scheduled_end)}</strong><small>${p.source_project_status ? "From ServiceTitan" : "Project target date"}</small></a></div>`;
     el("dashboard-agenda").innerHTML =
       `<div class="card-h"><h2>Coming up this week</h2><a href="#plan">View project plan →</a></div><div class="card-b">${
-        week
+        progress.week
           .slice(0, 5)
           .map(
             (s) =>
-              `<button class="agenda-row" data-agenda="${esc(s.id)}"><span class="agenda-date">${nice(s.window_start)}</span><span><strong>${esc(s.title)}</strong><small>${esc([s.phase, s.vendor_name, ...(s.resources || []).map((r) => r.name)].filter(Boolean).join(" · ") || "No crew assigned")}</small></span><span class="status-pill">${esc(s.status)}</span></button>`,
+              `<button class="agenda-row" data-week-kind="${esc(s.kind)}" data-agenda="${esc(s.id)}"><span class="agenda-date">${nice(s.start)}</span><span><strong>${esc(s.title)}</strong><small>${esc(s.detail || "No crew assigned")}</small></span><span class="status-pill">${esc(s.status)}</span></button>`,
           )
           .join("") ||
-        '<div class="workspace-empty"><strong>No activities scheduled this week</strong><p>Open the project plan to schedule the next phase of work.</p><a href="#plan">Go to project plan →</a></div>'
+        '<div class="workspace-empty"><strong>Nothing on the schedule in the next 7 days</strong><p>Open the project plan to schedule the next phase of work.</p><a href="#plan">Go to project plan →</a></div>'
       }</div>`;
     el("dashboard-agenda")
       .querySelectorAll("[data-agenda]")
       .forEach(
         (b) =>
-          (b.onclick = () =>
-            can("advance_stage")
-              ? planning.activity(
-                  d.schedule.find((s) => s.id === b.dataset.agenda),
-                )
-              : location.assign("#plan")),
+          (b.onclick = () => {
+            if (b.dataset.weekKind === "precon") {
+              location.assign("#" + PROJECT_PAGE_ID);
+              return;
+            }
+            const row =
+              b.dataset.weekKind === "activity"
+                ? d.schedule.find((s) => s.id === b.dataset.agenda)
+                : null;
+            if (row && can("advance_stage")) planning.activity(row);
+            else location.assign("#plan");
+          }),
       );
+  }
+  function render(d) {
+    data = d;
+    const p = d.detail,
+      day = today();
+    paintSchedule(d, [], false);
+    const ticket = ++scheduleTicket;
+    const window = appointmentReadWindow(day, p);
+    api(
+      `/projects/${p.id}/servicetitan/schedule?from=${window.from}&to=${window.to}`,
+    )
+      .then((source) => {
+        if (ticket !== scheduleTicket || data !== d) return;
+        paintSchedule(d, source?.rows || [], true);
+      })
+      .catch(() => {
+        if (ticket !== scheduleTicket || data !== d) return;
+        paintSchedule(d, [], true);
+      });
     el("dashboard-attention").innerHTML =
-      '<div class="card"><div class="card-h"><h2>Needs attention</h2><a href="#project">View all →</a></div><div class="card-b" id="dashboard-issues"></div></div>';
+      `<div class="card"><div class="card-h"><h2>Needs attention</h2><a href="#${PROJECT_PAGE_ID}">View all →</a></div><div class="card-b" id="dashboard-issues"></div></div>`;
     const issueRows = [...el("blockers").children];
     for (const row of issueRows.slice(0, 3))
       el("dashboard-issues").append(row.cloneNode(true));
     if (issueRows.length > 3)
       el("dashboard-issues").insertAdjacentHTML(
         "beforeend",
-        '<a class="more-issues" href="#project">' +
+        `<a class="more-issues" href="#${PROJECT_PAGE_ID}">` +
           (issueRows.length - 3) +
           " more items to review →</a>",
       );
@@ -509,7 +537,7 @@ export function createWorkspace({
             .join(", "),
         ],
         ["ST status", p.source_project_status],
-        ["Project manager", p.pm_name],
+        [roleTitle("project_manager"), p.pm_name],
         ["Logged start", nice(p.scheduled_start)],
         ["Target completion", nice(p.scheduled_end)],
       ]
@@ -542,6 +570,8 @@ export function createWorkspace({
     void enter(active);
   }
   if (location.hash === "#schedule") history.replaceState(null, "", "#plan");
+  if (PROJECT_PAGE_ALIASES.includes(location.hash.slice(1)))
+    history.replaceState(null, "", "#" + PROJECT_PAGE_ID);
   show(pages[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard");
   return { render, openUsers: () => enter("users") };
 }

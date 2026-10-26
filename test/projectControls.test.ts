@@ -222,6 +222,34 @@ it("tracks reserves without changing budget and hides allocations from roles wit
   ).toBe(403);
   expect((await owner().get(prefix + p + "/budget")).body).toEqual(before.body);
 });
+it("saves a goal with no key results", async () => {
+  const goal = await create("goal", {
+    title: "Room is ready to use",
+    description: "The customer can use the room",
+    due_on: today(),
+    key_results: [],
+  });
+  expect(goal.data.key_results).toEqual([]);
+  const omitted = await owner()
+    .post(url())
+    .send({ kind: "goal", data: { title: "No measure yet", due_on: today() } });
+  expect(omitted.status, JSON.stringify(omitted.body)).toBe(201);
+  expect(omitted.body.data.data.key_results).toEqual([]);
+  const same = await owner()
+    .post(url())
+    .send({
+      kind: "goal",
+      data: {
+        title: "Bad measure",
+        due_on: today(),
+        key_results: [
+          { name: "Inspections", start: 1, target: 1, current: 1, unit: "inspections" },
+        ],
+      },
+    });
+  expect(same.status).toBe(400);
+});
+
 it("records goals, linked milestones, RAG reports, ROAM risks and delivery history", async () => {
   const goal = await create("goal", {
     title: "Ready for handover",
