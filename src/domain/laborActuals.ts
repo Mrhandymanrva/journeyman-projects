@@ -276,7 +276,7 @@ export interface PricedTechnician {
   missing: string[];
 }
 
-export type LaborRefreshSource = "manual" | "auto-hourly";
+export type LaborRefreshSource = "manual" | "scheduled" | "auto-hourly";
 
 export interface PortfolioLabor {
   labor_hours: number;
@@ -460,7 +460,7 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
 }
 
 function refreshStamp(value: unknown): LaborRefreshSource | null {
-  return value === "manual" || value === "auto-hourly" ? value : null;
+  return value === "manual" || value === "scheduled" || value === "auto-hourly" ? value : null;
 }
 
 function isoStamp(value: unknown): string | null {
