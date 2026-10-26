@@ -81,9 +81,9 @@ export function homeShellHtml() {
       <div class="card-h"><div><h2>Due today / overdue</h2><p class="home-count">WBS tasks, preconstruction tasks, and milestones.</p></div></div>
       <div class="card-b" id="home-due-body"></div>
     </section>
-    <section class="card home-handoff-slot" id="home-handoffs" data-slot="new-handoffs" hidden>
-      <div class="card-h"><h2>New hand-offs</h2></div>
-      <div class="card-b" data-handoff-body></div>
+    <section class="card home-handoff-slot" id="home-handoffs" data-slot="new-handoffs" aria-label="New hand-offs">
+      <div class="card-h"><div><h2>New hand-offs <span class="handoff-badge" id="home-handoff-count" data-count="0">0</span></h2><p class="home-count">Submitted, waiting for the Project Coordinator.</p></div></div>
+      <div class="card-b" id="home-handoff-body" data-handoff-body></div>
     </section>
   </div>
 </div>`;
@@ -139,6 +139,46 @@ export function projectTableHtml(projects, esc) {
   return `<table class="home-table"><thead><tr><th>Project</th><th>Customer</th><th>Stage</th><th>Status</th><th>PM</th><th>Health</th><th>Next milestone</th><th>Date</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+const OFFICE_LABELS = {
+  richmond: "Richmond",
+  hampton_newport_news: "Hampton-Newport News",
+};
+
+function handoffWhen(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+export function handoffListHtml(items, esc, canAcknowledge) {
+  if (!items.length) {
+    return '<p class="home-empty">No hand-offs are waiting.</p>';
+  }
+  return items
+    .map((item) => {
+      const office =
+        OFFICE_LABELS[item.office] || item.office_label || item.office || "";
+      const when = handoffWhen(item.submitted_at);
+      const meta = [item.customer_name, office, when].filter(Boolean).join(" · ");
+      const action = canAcknowledge
+        ? `<button class="btn sm" type="button" data-handoff-acknowledge="${esc(item.project_id)}">Acknowledge</button>`
+        : "";
+      return `<article class="handoff-row">
+        <a href="${esc(item.href || "/?project=" + item.project_id + "#dashboard")}">${esc(item.project_name)}</a>
+        <p>${esc(meta)}</p>
+        <p class="handoff-scope">${esc(item.scope_summary || "")}</p>
+        ${action}
+      </article>`;
+    })
+    .join("");
+}
+
 export function dueListHtml(items, esc) {
   if (!items.length) {
     return '<p class="home-empty">Nothing is due today or overdue.</p>';
@@ -158,7 +198,7 @@ export function dueListHtml(items, esc) {
     .join("");
 }
 
-export function createHome({ el, esc, api, openProject }) {
+export function createHome({ el, esc, api, openProject, can }) {
   const filters = { status: "open", stage: "", pm_id: "", q: "" };
   let searchTimer = 0;
   let painted = false;
@@ -192,6 +232,12 @@ export function createHome({ el, esc, api, openProject }) {
       searchTimer = window.setTimeout(() => void refreshBoard(), 200);
     });
     node.addEventListener("click", (event) => {
+      const acknowledge = event.target.closest("[data-handoff-acknowledge]");
+      if (acknowledge) {
+        event.preventDefault();
+        void acknowledgeHandoff(acknowledge.dataset.handoffAcknowledge, acknowledge);
+        return;
+      }
       const due = event.target.closest("a.due-row");
       if (due) {
         if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
@@ -298,9 +344,47 @@ export function createHome({ el, esc, api, openProject }) {
     }
   }
 
+  async function refreshHandoffs() {
+    paintShell();
+    const body = root().querySelector("#home-handoff-body");
+    const badge = root().querySelector("#home-handoff-count");
+    try {
+      const waiting = await api("/home/handoffs");
+      const items = waiting.items || [];
+      const count = Number.isFinite(waiting.count) ? waiting.count : items.length;
+      if (badge) {
+        badge.textContent = String(count);
+        badge.dataset.count = String(count);
+        badge.setAttribute(
+          "aria-label",
+          count === 1 ? "1 new hand-off" : count + " new hand-offs",
+        );
+      }
+      body.innerHTML = handoffListHtml(items, esc, can?.("acknowledge_csr_handoff"));
+    } catch (error) {
+      body.textContent = error.message;
+    }
+  }
+
+  async function acknowledgeHandoff(projectId, button) {
+    button.disabled = true;
+    try {
+      await api("/projects/" + projectId + "/handoff/acknowledge", {
+        method: "POST",
+      });
+      await refreshHandoffs();
+    } catch (error) {
+      button.disabled = false;
+      const note = document.createElement("p");
+      note.className = "home-empty";
+      note.textContent = error.message;
+      root().querySelector("#home-handoff-body").prepend(note);
+    }
+  }
+
   async function render() {
     paintShell();
-    await Promise.all([refreshBoard(), refreshDue()]);
+    await Promise.all([refreshBoard(), refreshDue(), refreshHandoffs()]);
   }
 
   return { render };

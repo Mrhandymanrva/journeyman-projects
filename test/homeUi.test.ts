@@ -58,16 +58,20 @@ describe("home landing", () => {
     ).toBe("home");
   });
 
-  it("keeps the new hand-offs slot in the layout and empty", () => {
+  it("shows the new hand-offs slot with a count badge and no placeholder rows", () => {
     const html = homeShellHtml();
     const slot = html.match(/data-slot="new-handoffs"[\s\S]*?<\/section>/)?.[0] ?? "";
-    expect(slot).toContain("hidden");
+    expect(slot).toContain("New hand-offs");
+    expect(slot).toContain("handoff-badge");
+    expect(slot).toContain('data-count="0"');
+    expect(slot).not.toMatch(/\shidden[\s>]/);
     expect(slot).toContain("data-handoff-body");
     expect(slot).not.toContain("<li");
     expect(slot).not.toContain("<tr");
     expect(slot).not.toMatch(/example|sample|fake/i);
     expect(readFileSync("client/workspace.js", "utf8")).toContain('data-page="home"');
     expect(readFileSync("client/index.html", "utf8")).toContain('id="home"');
+    expect(readFileSync("client/workspace.js", "utf8")).toContain('el("csr-handoff")');
   });
 
   it("labels due rows and keeps completed distinct from cancelled", () => {

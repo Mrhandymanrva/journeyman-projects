@@ -109,6 +109,8 @@ export function createWorkspace({
     "afterbegin",
     '<div id="dashboard-controls"></div>',
   );
+  const handoffCard = el("csr-handoff");
+  if (handoffCard) el("page-dashboard").prepend(handoffCard);
   el("page-financials").insertAdjacentHTML(
     "beforeend",
     '<div id="project-payables"></div><div id="project-reserves"></div>',

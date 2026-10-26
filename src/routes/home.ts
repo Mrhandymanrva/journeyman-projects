@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { loadNewHandoffs } from "../domain/csrHandoff.js";
 import { newYorkDate } from "../domain/fieldStart.js";
 import { loadDueItems, loadHomeBoard, parseHomeFilters } from "../domain/homeBoard.js";
 import { unitFilter } from "../http/capabilities.js";
@@ -22,6 +23,17 @@ export function homeRoutes(deps: StaffRouterDeps): Router {
       const today = newYorkDate(new Date().toISOString());
       const items = await loadDueItems(ctx.db, scope, today);
       sendData(ctx.res, { today, items });
+    }),
+  );
+
+  router.get(
+    "/home/handoffs",
+    staffRoute(deps, async (ctx) => {
+      const scope = unitFilter(
+        ctx.staff.businessUnitId,
+        ctx.settings.enforceBusinessUnitScoping,
+      );
+      sendData(ctx.res, await loadNewHandoffs(ctx.db, scope));
     }),
   );
 

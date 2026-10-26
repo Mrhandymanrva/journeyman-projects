@@ -873,4 +873,146 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
   await seedDraws(delaney, 3, 0, 57200, '117980');
 log('project: Delaney — Basement Finish (healthy)');
 
+  // CSR hand-offs. Nguyen is still a draft on the form, prefilled from the
+  // linked project. Brooks and Hale are submitted and waiting on Home.
+  // Gate 0 is already complete on the two that were submitted.
+  const nguyen = await buildProject({
+    number: 'DMO-2026-0201',
+    name: 'Nguyen — Hall Bath',
+    address: '3102 Parkwood Avenue',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 18640,
+    target: 0.35,
+    stage: 'handoff',
+    approvedGates: 0,
+    startedDaysAgo: 0,
+    lengthDays: 14,
+    budget: [],
+    customer: 'Linh Nguyen',
+  });
+  const brooks = await buildProject({
+    number: 'DMO-2026-0202',
+    name: 'Brooks — Powder Room',
+    address: '18 Westover Avenue',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 7100,
+    target: 0.34,
+    stage: 'handoff',
+    approvedGates: 1,
+    startedDaysAgo: 0,
+    lengthDays: 10,
+    budget: [],
+    customer: 'Mara Brooks',
+  });
+  const hale = await buildProject({
+    number: 'DMO-2026-0203',
+    name: 'Hale — Sunroom',
+    address: '902 Mariners Boulevard',
+    city: 'Newport News',
+    unit: ids.hampton,
+    jurisdiction: ids.jurisdictions['City of Newport News']!,
+    pm: ids.staff.pm2!,
+    contract: 24800,
+    target: 0.33,
+    stage: 'handoff',
+    approvedGates: 1,
+    startedDaysAgo: 0,
+    lengthDays: 21,
+    budget: [],
+    customer: 'Ellis Hale',
+  });
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    await c.query(
+      `UPDATE projects.projects
+          SET actual_start = NULL,
+              scheduled_start = (now() AT TIME ZONE 'America/New_York')::date + 21,
+              scheduled_end = (now() AT TIME ZONE 'America/New_York')::date + 35,
+              source_project_summary = $2
+        WHERE id = $1`,
+      [
+        nguyen,
+        'Replace the hall bath tub with a tiled shower. Keep the existing vanity.',
+      ],
+    );
+    await c.query(
+      `UPDATE projects.projects SET actual_start = NULL WHERE id = ANY($1::uuid[])`,
+      [[brooks, hale]],
+    );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems WHERE tenant_id = $1 ORDER BY display_name LIMIT 1`,
+      [TENANT_ID],
+    );
+    const systemId = system.rows[0]?.id;
+    if (systemId) {
+      await c.query(
+        `INSERT INTO projects.st_project_connections
+           (project_id, tenant_id, external_system_id, external_project_id, connection_key,
+            snapshot, observed_at, linked_by)
+         VALUES ($1,$2,$3,'44821','demo:handoff',$4::jsonb, now(), $5)`,
+        [
+          nguyen,
+          TENANT_ID,
+          systemId,
+          JSON.stringify({
+            id: '44821',
+            number: '44821',
+            summary: 'Replace the hall bath tub with a tiled shower. Keep the existing vanity.',
+            leadSource: 'Referral',
+            customer: {
+              id: 'cust-nguyen',
+              name: 'Linh Nguyen',
+              phone: '804-555-0142',
+              email: 'linh.nguyen@example.test',
+            },
+            location: {
+              name: 'Home',
+              address: {
+                street: '3102 Parkwood Avenue',
+                city: 'Richmond',
+                state: 'VA',
+                zip: '23221',
+              },
+            },
+          }),
+          ids.staff.office!,
+        ],
+      );
+      await c.query(
+        `INSERT INTO projects.st_estimate_observations
+           (tenant_id, project_id, external_system_id, external_estimate_id, name,
+            status, customer_amount, classification)
+         VALUES ($1,$2,$3,'est-nguyen-hall','Hall bath remodel','Open',17250,'original')`,
+        [TENANT_ID, nguyen, systemId],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects.csr_handoffs (
+         project_id, tenant_id, customer_name, phone, email, service_address, office,
+         lead_source, scope_summary, handoff_project_ref, handoff_estimate_amount,
+         sold_amount, target_start_window, access_notes, decision_maker_notes,
+         permits_likely, status, submitted_at, submitted_by
+       ) VALUES
+         ($1,$2,'Mara Brooks','757-555-0190','mara.brooks@example.test',
+          '18 Westover Avenue, Richmond, VA 23225','richmond','Repeat customer',
+          'Powder room. New vanity, toilet, and floor tile.','45002',6400,7100,
+          'Next two weeks','Lockbox 1928. Park in the drive.','Mara Brooks is the owner.',
+          'unknown','submitted', now() - interval '1 hour', $3),
+         ($4,$2,'Ellis Hale','757-555-0166','ellis.hale@example.test',
+          '902 Mariners Boulevard, Newport News, VA 23601','hampton_newport_news','Website',
+          'Sunroom off the kitchen. Screens and a knee wall.','45110',22100,24800,
+          'After Thanksgiving','Dog in the yard until noon.','Ellis and Jan Hale decide together.',
+          'yes','submitted', now() - interval '5 hours', $3)`,
+      [brooks, TENANT_ID, ids.staff.office!, hale],
+    );
+  });
+  log('handoff: Nguyen hall bath (form, not submitted)');
+  log('handoff: Brooks powder room and Hale sunroom (waiting on Home, Gate 0 complete)');
+
 }
