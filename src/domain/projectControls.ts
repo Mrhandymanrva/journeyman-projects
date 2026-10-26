@@ -213,6 +213,142 @@ export function validateTaskGraph(records: ControlRecord[]) {
     for (const r of tasks) visit(r.id);
   }
 }
+/**
+ * Delivery status for one task, using the checks the task list already shows.
+ * Done is the stored complete state. Late is the Overdue check: a due date
+ * before today in America/New_York. A due date of today is not late.
+ * At risk is the blocked state, which the task list already paints amber.
+ * Anything else is on track. A complete task is done even if its due date passed.
+ */
+export type RollupStatus = "done" | "late" | "at_risk" | "on_track";
+export interface ControlRollup {
+  status: RollupStatus;
+  /** Share of linked milestones that are done. Null unless this is a goal with at least one. */
+  percent: number | null;
+  done: number;
+  total: number;
+}
+interface RollupTask {
+  state?: string;
+  due_on?: string;
+}
+interface RollupRecord {
+  id: string;
+  kind: string;
+  active: boolean;
+  data: RollupTask & {
+    milestone_id?: string | null;
+    goal_id?: string | null;
+    state?: string;
+    completed_on?: string | null;
+  };
+}
+export function taskRollupStatus(task: RollupTask, asOf: string): RollupStatus {
+  if (task.state === "complete") return "done";
+  if (task.due_on && task.due_on < asOf) return "late";
+  if (task.state === "blocked") return "at_risk";
+  return "on_track";
+}
+function worstOpen(statuses: RollupStatus[]): RollupStatus {
+  if (statuses.some((status) => status === "late")) return "late";
+  if (statuses.some((status) => status === "at_risk")) return "at_risk";
+  return "on_track";
+}
+/** No linked tasks stays on track. Done only when every linked task is done. */
+export function milestoneRollupStatus(
+  tasks: RollupTask[],
+  asOf: string,
+): RollupStatus {
+  if (tasks.length === 0) return "on_track";
+  const statuses = tasks.map((task) => taskRollupStatus(task, asOf));
+  if (statuses.every((status) => status === "done")) return "done";
+  return worstOpen(statuses);
+}
+/** Percent counts milestones whose own roll-up is done. No milestones leaves it unset. */
+export function goalRollup(milestoneStatuses: RollupStatus[]): {
+  status: RollupStatus;
+  percent: number | null;
+} {
+  if (milestoneStatuses.length === 0)
+    return { status: "on_track", percent: null };
+  const done = milestoneStatuses.filter((status) => status === "done").length;
+  const percent = Math.round((100 * done) / milestoneStatuses.length);
+  if (done === milestoneStatuses.length) return { status: "done", percent };
+  return { status: worstOpen(milestoneStatuses), percent };
+}
+/**
+ * Keep the stored status and completion date. The screen calculates over them
+ * and does not offer a way to type a new value.
+ */
+export function preserveDerivedControlFields<T extends object>(
+  kind: string,
+  data: T,
+  previous?: { state?: string; completed_on?: string | null } | null,
+): T {
+  if (kind !== "goal" && kind !== "milestone") return data;
+  const record = data as T & {
+    state?: string;
+    completed_on?: string | null;
+  };
+  record.state = previous?.state ?? "not_started";
+  if (kind === "milestone")
+    record.completed_on = previous?.completed_on ?? null;
+  return record;
+}
+export function attachControlRollups<T extends RollupRecord>(
+  records: T[],
+  asOf: string,
+): Array<T & { rollup: ControlRollup | null }> {
+  const activeTasks = records.filter(
+    (record) => record.active && record.kind === "task",
+  );
+  const activeMilestones = records.filter(
+    (record) => record.active && record.kind === "milestone",
+  );
+  const milestones = new Map<string, ControlRollup>();
+  for (const milestone of records) {
+    if (milestone.kind !== "milestone") continue;
+    const linked = activeTasks.filter(
+      (task) => task.data.milestone_id === milestone.id,
+    );
+    const status = milestoneRollupStatus(
+      linked.map((task) => task.data),
+      asOf,
+    );
+    milestones.set(milestone.id, {
+      status,
+      percent: null,
+      done: linked.filter((task) => task.data.state === "complete").length,
+      total: linked.length,
+    });
+  }
+  const goals = new Map<string, ControlRollup>();
+  for (const goal of records) {
+    if (goal.kind !== "goal") continue;
+    const linked = activeMilestones.filter(
+      (milestone) => milestone.data.goal_id === goal.id,
+    );
+    const statuses = linked.map(
+      (milestone) => milestones.get(milestone.id)!.status,
+    );
+    const rolled = goalRollup(statuses);
+    goals.set(goal.id, {
+      status: rolled.status,
+      percent: rolled.percent,
+      done: statuses.filter((status) => status === "done").length,
+      total: linked.length,
+    });
+  }
+  return records.map((record) => ({
+    ...record,
+    rollup:
+      record.kind === "milestone"
+        ? (milestones.get(record.id) ?? null)
+        : record.kind === "goal"
+          ? (goals.get(record.id) ?? null)
+          : null,
+  }));
+}
 export function nextCommunicationDate(cadence: string, from: string) {
   const d = new Date(from + "T12:00:00Z");
   if (cadence === "once" || cadence === "as_needed") return null;
