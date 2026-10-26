@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import type { Database } from "../db/database.js";
+import { ICON_LINKS } from "../http/icons.js";
 import { mintLoginToken } from "../http/passwordAuth.js";
 import type { StaffRole } from "../http/capabilities.js";
 
@@ -24,7 +25,7 @@ const ROLE_MAP: Record<string, StaffRole | null> = { owner: "owner", manager: "m
 const STATE_COOKIE = "jp_sso_state";
 
 const safeNext = (v: unknown) => { const s = String(v ?? "").trim(); return s.startsWith("/") && !s.startsWith("//") && !/[\r\n]/.test(s) ? s.slice(0, 500) : "/"; };
-const page = (title: string, text: string) => `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:80px auto;color:#1a2433"><h2 style="margin:0 0 8px">${title}</h2><p style="color:#66717f">${text}</p><p><a href="/">Open Journeyman Projects</a></p>`;
+const page = (title: string, text: string) => `<!doctype html><meta charset="utf-8">${ICON_LINKS}<title>${title}</title><body style="font-family:system-ui,sans-serif;max-width:520px;margin:80px auto;color:#1a2433"><h2 style="margin:0 0 8px">${title}</h2><p style="color:#66717f">${text}</p><p><a href="/">Open Journeyman Projects</a></p>`;
 const origin = (req: Request) => `${req.get("x-forwarded-proto") ?? req.protocol}://${req.get("host")}`;
 const cookieOf = (req: Request, name: string) => req.get("cookie")?.split(";").map((s) => s.trim()).find((s) => s.startsWith(name + "="))?.slice(name.length + 1) ?? "";
 const secure = (req: Request) => req.secure || req.get("x-forwarded-proto") === "https";
