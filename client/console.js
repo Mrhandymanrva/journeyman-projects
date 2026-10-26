@@ -11,6 +11,7 @@ import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
 import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
+import { laborCardHtml } from "./laborCard.js";
 import { createPlanning } from "./planning.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
 
@@ -22,8 +23,15 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+const laborMoney = (n) =>
+  "$" +
+  Number(n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+// U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
-  (n < 0 ? "âˆ’" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
+  (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -309,9 +317,9 @@ function filterProjects() {
 const shortName = (name) => String(name).split(" — ")[0];
 
 function pipColour(p) {
-  if (p.exception_count === undefined) return "#C3CBC5";
-  if (p.exception_count === 0) return "#1D7A4C";
-  return p.exception_severity === "bad" ? "#B4231F" : "#F58220";
+  if (p.exception_count === undefined) return "var(--pip-idle)";
+  if (p.exception_count === 0) return "var(--status-track)";
+  return p.exception_severity === "bad" ? "var(--status-late)" : "var(--status-risk)";
 }
 
 // ------------------------------------------------------------------- select
@@ -1109,7 +1117,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -1123,7 +1131,7 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
       }
     });
@@ -1135,7 +1143,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -1149,7 +1157,7 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
       }
     });
@@ -2305,23 +2313,6 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   );
 }
 
-function laborMoney(n) {
-  return (
-    "$" +
-    Number(n).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
-  );
-}
-function laborRefreshLine(data) {
-  if (!data || !data.observed_at) return "Not refreshed yet.";
-  const when = stamp(data.observed_at);
-  if (data.source === "scheduled") return `Last refreshed ${when} (scheduled)`;
-  if (data.source === "auto-hourly") return `Last refreshed ${when} (automatic)`;
-  if (data.source === "manual") return `Last refreshed ${when} (manual)`;
-  return `Last refreshed ${when}`;
-}
 function renderLabor(row) {
   const data = row || {
     hours: 0,
@@ -2343,59 +2334,7 @@ function renderLabor(row) {
       : "none";
   }
   if (!el("labor")) return;
-  const billable = laborMoney(data.billable_rate || 188);
-  const moneyLine =
-    data.labor_wage === undefined
-      ? ""
-      : `<div class="row-m">Labor ${laborMoney(data.labor_wage)} · Labor burden ${laborMoney(
-          data.labor_burden,
-        )} · Total ${laborMoney(data.total)}</div>`;
-  const techs = (data.technicians || [])
-    .map((tech) => {
-      const wage =
-        tech.wage == null
-          ? ""
-          : `<div class="row-m">Labor ${laborMoney(tech.wage)} · ${esc(tech.hours)} h · ${
-              tech.pay_basis === "hourly"
-                ? "ServiceTitan hourly rate"
-                : `${billable} × commission`
-            }</div>`;
-      const burden = tech.burden_unset
-        ? `<p class="note">burden not set</p>`
-        : tech.burden == null
-          ? ""
-          : `<div class="row-m">Labor burden ${laborMoney(tech.burden)} · ${esc(tech.hours)} h × ServiceTitan burden rate</div>`;
-      return `<div class="row"><div class="row-b"><div class="row-t">${esc(
-        tech.technician_name || "Technician",
-      )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}</div></div>`;
-    })
-    .join("");
-  const stCode = data.st_labor_code;
-  const codeText = !stCode
-    ? "Labor code: unavailable"
-    : `Labor code: ${esc(stCode.code)} ${esc(stCode.name || "")}`;
-  const uncoded = Number(data.uncoded_hours) > 0;
-  const laborError = data.st_labor_code_error
-    ? `<p class="msg" id="labor-st-error">${esc(data.st_labor_code_error)}</p>`
-    : "";
-  const uncodedNote =
-    uncoded && !data.st_labor_code_error
-      ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
-      : "";
-  el("labor").innerHTML = `
-    <p class="note">Hours come from ServiceTitan timesheets. Commission labor is hours × ${billable} × the technician's ServiceTitan commission percent. Hourly technicians use hours × their ServiceTitan hourly rate instead. Labor burden is a separate line: the same hours × that technician's ServiceTitan burden rate. A zero hourly rate is not a missing rate when a commission percent is set. Pay rates are not stored here. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
-    ${
-      data.rates_forbidden
-        ? `<p class="msg">The latest ServiceTitan technician read was denied. Labor dollars already priced were left as they are. A technician with neither a commission percent nor an hourly rate stays out of labor cost.</p>`
-        : ""
-    }
-    <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
-      ${moneyLine}
-      <div class="row-m">${laborRefreshLine(data)}</div>
-      <div class="row-m" id="labor-st-code">${codeText}</div></div></div>
-    ${laborError}
-    ${uncodedNote}
-    ${techs}`;
+  el("labor").innerHTML = laborCardHtml(data, { esc, stamp });
   refresh?.addEventListener("click", async () => {
     refresh.disabled = true;
     try {
