@@ -389,6 +389,9 @@ describe("a denied technician read", () => {
     expect(priced.body.data.labor_wage).toBe(160);
     expect(priced.body.data.labor_burden).toBe(48);
     expect(priced.body.data.total).toBe(208);
+    expect(priced.body.data.source).toBe("manual");
+    expect(priced.body.data.hours_source).toBe("timesheet");
+    expect(typeof priced.body.data.observed_at).toBe("string");
     expect(priced.body.data.missing).toEqual([]);
     const casey = priced.body.data.technicians[0];
     expect(casey).toMatchObject({ hourly_rate: 40, burden_rate: 12, wage: 160, burden: 48 });

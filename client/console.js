@@ -2276,11 +2276,19 @@ function laborMoney(n) {
     })
   );
 }
+function laborRefreshLine(data) {
+  if (!data || !data.observed_at) return "Not refreshed yet.";
+  const when = stamp(data.observed_at);
+  if (data.source === "auto-hourly") return `Last refreshed ${when} (automatic)`;
+  if (data.source === "manual") return `Last refreshed ${when} (manual)`;
+  return `Last refreshed ${when}`;
+}
 function renderLabor(row) {
   const data = row || {
     hours: 0,
     uncoded_hours: 0,
     source: null,
+    hours_source: null,
     lines: [],
     technicians: [],
     missing: [],
@@ -2289,8 +2297,8 @@ function renderLabor(row) {
   const refresh = el("labor-refresh");
   if (refresh) refresh.hidden = !can("refresh_labor");
   if (el("labortag")) {
-    el("labortag").textContent = data.source
-      ? String(data.source).replaceAll("_", " ")
+    el("labortag").textContent = data.hours_source
+      ? String(data.hours_source).replaceAll("_", " ")
       : "none";
   }
   if (!el("labor")) return;
@@ -2347,7 +2355,7 @@ function renderLabor(row) {
     <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
       ${moneyLine}
       <div class="row-m">${
-        data.observed_at ? `Last refresh ${stamp(data.observed_at)}` : "Not refreshed yet."
+        laborRefreshLine(data)
       }${
         data.cost_code
           ? ` · ${esc(data.cost_code.code)} ${esc(data.cost_code.description || "")}`

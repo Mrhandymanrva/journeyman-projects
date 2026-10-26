@@ -1,5 +1,6 @@
 import {accountingGateway,startAccountingWorker} from "./adapters/quickbooks.js";
 import { startHealthSnapshotScheduler } from "./workers/healthSnapshot.js";
+import { startLaborRefreshScheduler } from "./workers/laborRefresh.js";
 import { readSourceConnections } from "./adapters/sourceConnections.js";
 import { portfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import { createApp } from "./app.js";
@@ -93,12 +94,19 @@ if (!accounting) {
 }
 startAccountingWorker(database,accounting);
 const portfolio = portfolioFeedConfig();
+const sources = readSourceConnections();
 startHealthSnapshotScheduler(database, portfolio?.tenantId);
+try {
+  startLaborRefreshScheduler(database, sources);
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`Labor refresh did not start. ${message}`);
+}
 const app = createApp({
   accounting,
   database,
   staffSessions,
-  sources: readSourceConnections(),
+  sources,
   portfolio,
   sso: env.sso,
   devLogin: {

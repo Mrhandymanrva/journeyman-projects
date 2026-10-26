@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { ServiceTitanReadAdapter } from "../src/adapters/serviceTitan.js";
+import { retryAfterMs, ServiceTitanReadAdapter } from "../src/adapters/serviceTitan.js";
 const config = {
   environment: "integration" as const,
   tenantId: "10",
@@ -523,5 +523,61 @@ describe("accounting and sales reads", () => {
   it("returns forbidden on an accounting 403 instead of throwing", async () => {
     const { client } = setup([json({ title: "Forbidden" }, 403)]);
     await expect(client.readInvoices(null)).resolves.toEqual({ forbidden: true, invoices: [] });
+  });
+});
+
+describe("ServiceTitan 429 backoff", () => {
+  const technicianPage = {
+    data: [{ id: 6, name: "Alex", active: true, hourlyRate: 40, burdenRate: 12 }],
+    hasMore: false,
+  };
+
+  it("waits for Retry-After and reuses one token", async () => {
+    const slept: number[] = [];
+    const fetcher = vi.fn<typeof fetch>();
+    fetcher.mockResolvedValueOnce(json({ access_token: "test-token", expires_in: 900 }));
+    fetcher.mockResolvedValueOnce(
+      new Response("{}", { status: 429, headers: { "Retry-After": "0" } }),
+    );
+    fetcher.mockResolvedValueOnce(json(technicianPage));
+    fetcher.mockResolvedValueOnce(json(technicianPage));
+    const client = new ServiceTitanReadAdapter(config, fetcher, async (ms) => {
+      slept.push(ms);
+    });
+    expect((await client.readTechnicians())[0]?.name).toBe("Alex");
+    expect(await client.readTechnicians()).toHaveLength(1);
+    expect(slept).toEqual([0]);
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === "POST")).toHaveLength(1);
+    expect(fetcher.mock.calls.slice(1).every((call) => call[1]?.method === "GET")).toBe(true);
+  });
+
+  it("stops after repeated 429s and still posts the token once", async () => {
+    const slept: number[] = [];
+    const fetcher = vi.fn<typeof fetch>();
+    fetcher.mockResolvedValueOnce(json({ access_token: "test-token", expires_in: 900 }));
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      fetcher.mockResolvedValueOnce(
+        new Response("{}", { status: 429, headers: { "Retry-After": "0" } }),
+      );
+    }
+    const client = new ServiceTitanReadAdapter(config, fetcher, async (ms) => {
+      slept.push(ms);
+    });
+    await expect(client.readTechnicians()).rejects.toThrow("HTTP 429");
+    expect(slept).toEqual([0, 0, 0]);
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === "POST")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === "GET")).toHaveLength(4);
+  });
+
+  it("reads Retry-After seconds and dates, and caps the wait", () => {
+    const now = Date.parse("2026-10-25T15:00:00Z");
+    expect(retryAfterMs("0", now)).toBe(0);
+    expect(retryAfterMs("2", now)).toBe(2_000);
+    expect(retryAfterMs("120", now)).toBe(60_000);
+    expect(retryAfterMs(null, now)).toBe(1_000);
+    expect(retryAfterMs("not-a-date", now)).toBe(1_000);
+    expect(retryAfterMs(new Date(now + 5_000).toUTCString(), now)).toBe(5_000);
+    expect(retryAfterMs(new Date(now + 120_000).toUTCString(), now)).toBe(60_000);
+    expect(retryAfterMs(new Date(now - 1_000).toUTCString(), now)).toBe(0);
   });
 });
