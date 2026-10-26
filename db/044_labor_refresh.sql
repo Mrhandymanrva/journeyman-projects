@@ -1,6 +1,10 @@
 -- Records when labor was last refreshed and whether a person or the hourly
--- job did it. manual is the Refresh hours button. auto-hourly is the scheduler.
+-- job did it. manual is the Refresh hours button. scheduled is the hourly job.
+-- auto-hourly stays allowed so a row already written that way is still valid.
 -- Logged project start dates are left as they are.
+--
+-- This file is re-applied on every boot, before 045. The check has to accept
+-- scheduled here. A later file cannot repair a constraint this one rejects.
 
 SET search_path = projects, public;
 
@@ -12,10 +16,10 @@ ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_labor_refresh_source_che
 ALTER TABLE projects ADD CONSTRAINT projects_labor_refresh_source_check
   CHECK (
     labor_refresh_source IS NULL
-    OR labor_refresh_source IN ('manual', 'auto-hourly')
+    OR labor_refresh_source IN ('manual', 'scheduled', 'auto-hourly')
   );
 
 COMMENT ON COLUMN projects.labor_refreshed_at IS
   'When the last labor refresh finished for this project.';
 COMMENT ON COLUMN projects.labor_refresh_source IS
-  'manual is the Refresh hours button. auto-hourly is the hourly job.';
+  'manual is the Refresh hours button. scheduled is the hourly job. auto-hourly remains valid.';
