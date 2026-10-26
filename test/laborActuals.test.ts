@@ -51,7 +51,7 @@ const pm = () => h.as(t.staff.pm!.token);
 const office = () => h.as(t.staff.office!.token);
 
 describe("labor actuals", () => {
-  it("turns a timesheet window into hours and ignores a cancelled row", () => {
+  it("uses payroll paid hours and ignores clock times and a cancelled row", () => {
     const drafts = draftsFromTimesheets([
       {
         id: "9",
@@ -62,6 +62,7 @@ describe("labor actuals", () => {
         dispatchedOn: null,
         doneOn: "2026-09-15T19:30:00Z",
         canceledOn: null,
+        paidDurationHours: 3.5,
       },
       {
         id: "10",
@@ -72,6 +73,18 @@ describe("labor actuals", () => {
         dispatchedOn: null,
         doneOn: "2026-09-15T18:00:00Z",
         canceledOn: "2026-09-15T17:00:00Z",
+        paidDurationHours: 2,
+      },
+      {
+        id: "11",
+        appointmentId: "5",
+        technicianId: "8",
+        technicianName: "Cam",
+        arrivedOn: "2026-09-15T16:00:00Z",
+        dispatchedOn: null,
+        doneOn: "2026-09-15T20:00:00Z",
+        canceledOn: null,
+        paidDurationHours: null,
       },
     ]);
     expect(drafts).toHaveLength(1);

@@ -357,7 +357,7 @@ describe("stored commission labor", () => {
     await h?.close();
   });
 
-  it("prices hours, separates burden, hides placeholders, and rescales only commission labor", async () => {
+  it("prices commission from billed labor, separates burden, and leaves the billable rate unused", async () => {
     const tenant = await createTenant(h, { slug: `commission-${Math.random().toString(36).slice(2, 8)}` });
     const owner = h.as(tenant.staff.owner!.token);
     const imported = await owner.post("/api/v1/projects/estimate-imports").send(estimatePayload());
@@ -423,6 +423,12 @@ describe("stored commission labor", () => {
         `UPDATE projects.labor_actuals SET cost_code_id = $2 WHERE project_id = $1`,
         [projectId, codeId],
       );
+      await db.query(
+        `INSERT INTO projects.st_invoice_lines
+           (tenant_id, project_id, external_invoice_id, external_job_id, line_key, sku, kind, quantity, total)
+         VALUES ($1, $2, 'inv-1', '900', 'labor', 'MHM.25PLFE', 'labor', 4, 752)`,
+        [tenant.id, projectId],
+      );
       await storeTechnicianRates(
         db,
         tenant.id,
@@ -438,13 +444,19 @@ describe("stored commission labor", () => {
       );
       await db.query(
         `INSERT INTO projects.technician_labor_rates
-           (tenant_id, external_technician_id, technician_name, active, pay_basis, burden_unset)
+           (tenant_id, external_technician_id, technician_name, active, pay_basis, burden_unset, is_field_tech)
          VALUES
-           ($1, 'tech-office', 'Office Notes', true, 'missing', true),
-           ($1, 'tech-req', 'Project Requirements', true, 'missing', true),
-           ($1, 'tech-sub', 'Subcontractor', true, 'missing', true)
+           ($1, 'tech-office', 'Office Notes', true, 'missing', true, true),
+           ($1, 'tech-req', 'Project Requirements', true, 'missing', true, false),
+           ($1, 'tech-sub', 'Subcontractor', true, 'missing', true, false),
+           ($1, 'tech-mason', 'Mason', true, 'missing', true, false)
          ON CONFLICT (tenant_id, external_technician_id) DO UPDATE
-           SET active = true, pay_basis = 'missing', burden_unset = true, hourly_rate = NULL, burden_rate = NULL`,
+           SET active = true,
+               pay_basis = 'missing',
+               burden_unset = true,
+               hourly_rate = NULL,
+               burden_rate = NULL,
+               is_field_tech = EXCLUDED.is_field_tech`,
         [tenant.id],
       );
     });
@@ -510,7 +522,7 @@ describe("stored commission labor", () => {
     expect(
       scaled.body.data.technicians.find((row: { technician_name: string }) => row.technician_name === "Casey Nguyen")
         .wage,
-    ).toBe(200);
+    ).toBe(188);
     expect(
       scaled.body.data.technicians.find((row: { technician_name: string }) => row.technician_name === "Justin M.").wage,
     ).toBe(72);
@@ -519,9 +531,9 @@ describe("stored commission labor", () => {
       (scaledPosition.body.data as Array<{ description: string; actual_cost: number; lines?: Array<{ description: string; amount: number }> }>)
         .find((row) => row.description === "Unbudgeted labor"),
     ).toMatchObject({
-      actual_cost: 320,
+      actual_cost: 308,
       lines: [
-        { description: "Labor", amount: 272 },
+        { description: "Labor", amount: 260 },
         { description: "Labor burden", amount: 48 },
       ],
     });
@@ -617,6 +629,7 @@ describe("stored commission labor", () => {
           dispatchedOn: null,
           doneOn: "2026-10-25T15:04:12Z",
           canceledOn: null,
+          paidDurationHours: 2.07,
         },
         {
           id: "ts-gone",
@@ -627,6 +640,7 @@ describe("stored commission labor", () => {
           dispatchedOn: null,
           doneOn: "2026-10-25T14:00:00Z",
           canceledOn: null,
+          paidDurationHours: 1,
         },
       ],
     });

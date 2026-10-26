@@ -9,14 +9,24 @@ import {
   withResolvedTechnicianNames,
 } from "../domain/laborActuals.js";
 import {
+  missedOvernightCatchUp,
+  nextOvernight,
+} from "../domain/overnightSchedule.js";
+import {
+  replaceInvoiceLines,
+  replaceMaterialExpenses,
+  replacePlanAppointments,
+  replaceProjectJobs,
+  type StoredAppointment,
+  type StoredInvoiceLine,
+} from "../domain/projectSync.js";
+import {
   applyResolvedLaborCode,
   laborCodeRunLabel,
   resolveStLaborCode,
   type StLaborResolve,
 } from "../domain/stLaborCode.js";
 
-const HOUR_MS = 60 * 60 * 1000;
-const FIRST_TICK_MS = 15_000;
 const GAP_MS = 250;
 export const LABOR_REFRESH_LOCK_KEY = "journeyman.labor_auto_refresh";
 
@@ -55,7 +65,7 @@ export interface LaborRefreshOptions {
    * this and use that connection's tenant.
    */
   tenantId?: string;
-  /** Pause between projects. Tests pass 0. The hourly job waits a quarter second. */
+  /** Pause between projects. Tests pass 0. The overnight run waits a quarter second. */
   gapMs?: number;
   sleep?: (ms: number) => Promise<void>;
   /** Defaults to a session advisory lock so only one replica runs. */
@@ -64,15 +74,13 @@ export interface LaborRefreshOptions {
 }
 
 export interface LaborSchedulerOptions {
-  /** Defaults to process.env. Same names the Refresh hours sign-in uses. */
+  /** Defaults to process.env. Same names the Refresh button sign-in uses. */
   env?: NodeJS.ProcessEnv;
-  /** Defaults to 15 seconds. Tests pass 0. */
-  firstTickMs?: number;
-  /** Defaults to one hour. */
-  intervalMs?: number;
   gapMs?: number;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
+  /** Test seam. Defaults to setTimeout. */
+  schedule?: (run: () => void, delayMs: number) => { cancel: () => void };
 }
 
 /**
@@ -95,12 +103,10 @@ export function laborRefreshTenantId(
 }
 
 /**
- * The same read the Refresh hours button runs, for every project that is not
- * complete or cancelled. The ServiceTitan client is the one built from
- * PM_ST_* / ST_*. The rows are the sign-in tenant, not necessarily
- * PM_ST_TENANT_ID. Projects run one after another on one client, so they
- * share one token. A failure is logged and the next project still runs.
- * ServiceTitan is only read. The stamp source is scheduled.
+ * The same full read the Refresh button runs, for every project that is not
+ * complete or cancelled. One overnight pass reads jobs, appointments,
+ * payroll timesheets, invoices, and purchase orders. ServiceTitan is only
+ * read. The stamp source is scheduled.
  */
 export async function runHourlyLaborRefresh(
   db: Database,
@@ -131,13 +137,14 @@ export async function runHourlyLaborRefresh(
     for (let index = 0; index < projects.rows.length; index += 1) {
       const project = projects.rows[index]!;
       try {
-        await refreshProject(
+        await refreshLinkedProject(
           db,
           connection,
           tenantId,
           project.id,
           options.now?.() ?? new Date(),
           laborCode,
+          "scheduled",
         );
         refreshed.push(project.id);
       } catch (err) {
@@ -157,17 +164,115 @@ export async function runHourlyLaborRefresh(
   }
 }
 
-async function refreshProject(
+async function storeOperationalReads(
+  db: Database,
+  connection: ServiceTitanSource,
+  tenantId: string,
+  projectId: string,
+  jobs: Array<{ external_job_id: string }>,
+  observedAt: Date,
+): Promise<void> {
+  const appointments: StoredAppointment[] = [];
+  const lines: StoredInvoiceLine[] = [];
+  const orders: Array<{ id: string; externalJobId: string; total: number }> = [];
+  const readJob = connection.client.readJob.bind(connection.client);
+  for (const job of jobs) {
+    const read = await readJob(job.external_job_id);
+    for (const appointment of read.appointments) {
+      appointments.push({
+        externalJobId: read.job.id,
+        externalAppointmentId: appointment.id,
+        jobNumber: read.job.jobNumber,
+        appointmentNumber: appointment.appointmentNumber,
+        jobStatus: read.job.jobStatus,
+        startsAt: appointment.start,
+        endsAt: appointment.end,
+        status: appointment.status,
+        active: appointment.active,
+        technicians: read.assignments
+          .filter((assignment) => assignment.appointmentId === appointment.id && assignment.active)
+          .map((assignment) => ({ id: assignment.technicianId, name: assignment.technicianName })),
+      });
+    }
+    if (connection.client.readJobInvoiceLines) {
+      const invoiceLines = await connection.client.readJobInvoiceLines.call(connection.client, job.external_job_id);
+      lines.push(
+        ...invoiceLines.map((line) => ({
+          invoiceId: line.invoiceId,
+          externalJobId: job.external_job_id,
+          lineKey: line.lineKey,
+          sku: line.sku,
+          kind: line.kind,
+          quantity: line.quantity,
+          total: line.total,
+          technicianId: line.technicianId,
+        })),
+      );
+    }
+    if (connection.client.readJobPurchaseOrders) {
+      const purchaseOrders = await connection.client.readJobPurchaseOrders.call(
+        connection.client,
+        job.external_job_id,
+      );
+      orders.push(
+        ...purchaseOrders.map((order) => ({
+          id: order.id,
+          externalJobId: job.external_job_id,
+          total: order.total,
+        })),
+      );
+    }
+  }
+  await db.withTenant(tenantId, async (client) => {
+    await replacePlanAppointments(client, { tenantId, projectId, appointments, observedAt });
+    if (connection.client.readJobInvoiceLines) {
+      await replaceInvoiceLines(client, { tenantId, projectId, lines, observedAt });
+    }
+    if (connection.client.readJobPurchaseOrders) {
+      await replaceMaterialExpenses(client, { tenantId, projectId, orders, observedAt });
+    }
+  });
+}
+
+export async function refreshLinkedProject(
   db: Database,
   connection: ServiceTitanSource,
   tenantId: string,
   projectId: string,
   observedAt: Date,
   laborCode: StLaborResolve,
+  source: "manual" | "scheduled" = "scheduled",
 ): Promise<void> {
   const readJobTimesheets = connection.client.readJobTimesheets;
   if (!readJobTimesheets) {
     throw new Error("ServiceTitan timesheet read is not configured.");
+  }
+  const connectionRow = await db.withTenant(tenantId, (client) =>
+    client.query<{ external_project_id: string }>(
+      `SELECT external_project_id
+         FROM projects.st_project_connections
+        WHERE project_id = $1 AND external_system_id = $2`,
+      [projectId, connection.externalSystemId],
+    ),
+  );
+  const externalProjectId = connectionRow.rows[0]?.external_project_id ?? null;
+  const readProjectJobs = connection.client.readProjectJobs;
+  if (readProjectJobs && externalProjectId) {
+    const listed = await readProjectJobs.call(connection.client, externalProjectId);
+    await db.withTenant(tenantId, (client) =>
+      replaceProjectJobs(client, {
+        tenantId,
+        projectId,
+        externalSystemId: connection.externalSystemId,
+        jobs: listed.map((job) => ({
+          id: job.id,
+          jobNumber: job.jobNumber,
+          jobStatus: job.jobStatus,
+          createdOn: job.createdOn,
+          completedOn: job.completedOn,
+        })),
+      }),
+    );
   }
   const jobs = await db.withTenant(tenantId, (client) =>
     client.query<{ id: string; external_job_id: string }>(
@@ -180,6 +285,9 @@ async function refreshProject(
       [projectId, connection.externalSystemId],
     ),
   );
+  if (readProjectJobs) {
+    await storeOperationalReads(db, connection, tenantId, projectId, jobs.rows, observedAt);
+  }
   const results = await readLaborJobs(
     jobs.rows.map((job) => job.external_job_id),
     {
@@ -209,60 +317,108 @@ async function refreshProject(
       jobs: jobs.rows,
       results: namedResults,
       directory: { ...directory, technicians },
-      source: "scheduled",
+      source,
       observedAt,
     });
     await applyResolvedLaborCode(client, tenantId, laborCode);
   });
 }
 
+async function lastOvernightFinish(db: Database, tenantId: string): Promise<Date | null> {
+  const row = await db.withTenant(tenantId, (client) =>
+    client.query<{ finished: Date | null }>(
+      `SELECT overnight_refresh_finished_at AS finished
+         FROM projects.tenant_settings WHERE tenant_id = $1`,
+      [tenantId],
+    ),
+  );
+  return row.rows[0]?.finished ?? null;
+}
+
+async function stampOvernightFinish(db: Database, tenantId: string, finishedAt: Date): Promise<void> {
+  await db.withTenant(tenantId, (client) =>
+    client.query(
+      `UPDATE projects.tenant_settings SET overnight_refresh_finished_at = $2 WHERE tenant_id = $1`,
+      [tenantId, finishedAt],
+    ),
+  );
+}
+
 /**
- * Once an hour, beside the health snapshot. The first tick is shortly after
- * boot and does not delay listen. No ServiceTitan settings means the job
- * stays off. A second replica finds the advisory lock taken and leaves.
+ * One run a day at 2:00 AM America/New_York. Nothing runs on the first boot.
+ * If a previous night finished and today's 2 AM was missed because the
+ * process was down, one catch-up runs at boot and the next wait is the
+ * following 2 AM. There is no hourly interval.
  */
 export function startLaborRefreshScheduler(
   db: Database,
   sources: SourceConnections,
   options: LaborSchedulerOptions = {},
-): ReturnType<typeof setInterval> | undefined {
+): { cancel: () => void } | undefined {
   const serviceTitan = sources.serviceTitan;
   if (!serviceTitan?.client.readJobTimesheets) {
-    console.log("Labor refresh is off. ServiceTitan is not configured.");
+    console.log("Overnight ServiceTitan refresh is off. ServiceTitan is not configured.");
     return undefined;
   }
   const tenantId = laborRefreshTenantId(
     options.env ?? process.env,
     serviceTitan.tenantId,
   );
+  const now = () => options.now?.() ?? new Date();
+  const schedule = options.schedule ?? ((run, delayMs) => {
+    const handle = setTimeout(run, delayMs);
+    handle.unref();
+    return { cancel: () => clearTimeout(handle) };
+  });
+  let pending: { cancel: () => void } | null = null;
+  let stopped = false;
   let busy = false;
-  const tick = async () => {
-    if (busy) return;
+  const tick = async (reason: "overnight" | "missed-night") => {
+    if (busy || stopped) return;
     busy = true;
     try {
       const report = await runHourlyLaborRefresh(db, serviceTitan, {
         tenantId,
         gapMs: options.gapMs,
-        now: options.now,
+        now,
         sleep: options.sleep,
       });
       if (report.skipped === "locked") {
-        console.log("Labor refresh skipped. Another replica holds the lock.");
+        console.log("Overnight ServiceTitan refresh skipped. Another replica holds the lock.");
         return;
       }
-      console.log(formatLaborRefreshRun(report));
+      await stampOvernightFinish(db, tenantId, now());
+      console.log(`${reason} ${formatLaborRefreshRun(report)}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`Labor refresh did not run. ${message}`);
+      console.error(`Overnight ServiceTitan refresh did not run. ${message}`);
     } finally {
       busy = false;
     }
   };
-  // unref so a closed server can exit. The timer still fires while listen()
-  // is holding the process open. The handles stay on the event loop until then.
-  const first = setTimeout(() => void tick(), options.firstTickMs ?? FIRST_TICK_MS);
-  first.unref();
-  const timer = setInterval(() => void tick(), options.intervalMs ?? HOUR_MS);
-  timer.unref();
-  return timer;
+  const arm = () => {
+    if (stopped) return;
+    const delay = Math.max(0, nextOvernight(now()).getTime() - now().getTime());
+    pending = schedule(() => {
+      void tick("overnight").finally(arm);
+    }, delay);
+  };
+  void lastOvernightFinish(db, tenantId).then((finished) => {
+    if (stopped) return;
+    if (missedOvernightCatchUp(now(), finished)) {
+      console.log("Missed the 2 AM America/New_York refresh. Running one catch-up.");
+      void tick("missed-night").finally(arm);
+      return;
+    }
+    arm();
+  }).catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`Overnight schedule did not arm. ${message}`);
+  });
+  return {
+    cancel: () => {
+      stopped = true;
+      pending?.cancel();
+    },
+  };
 }

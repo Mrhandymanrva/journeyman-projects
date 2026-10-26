@@ -60,8 +60,14 @@ describe('cost type account form', () => {
             st_labor_code_error: null,
             rate_gaps: [
               {
-                technician_name: 'Jordan Hale',
-                messages: ['Missing from ServiceTitan: burden rate is 0 for Jordan Hale'],
+                technician_name: 'Riley Cho',
+                messages: ['No ServiceTitan commission percent or hourly rate for Riley Cho'],
+              },
+            ],
+            burden_notices: [
+              {
+                technician_name: 'Justin M.',
+                messages: ['burden not set for Justin M.'],
               },
             ],
           };
@@ -98,7 +104,11 @@ describe('cost type account form', () => {
     expect(html).not.toContain('id="labor-rate"');
     expect(html).not.toContain('Burdened hourly rate');
     expect(html).toContain('id="labor-rate-gaps"');
-    expect(html).toContain('Missing from ServiceTitan: burden rate is 0 for Jordan Hale');
+    expect(html).toContain('Riley Cho: neither a commission percent nor an hourly rate');
+    expect(html).toContain('Justin M.: not set');
+    expect(html).toContain("billed labor times the technician's commission percent");
+    expect(html).not.toContain('left out of actual cost');
+    expect(html).not.toContain('Active technicians missing a ServiceTitan rate');
     expect(html).toContain('id="labor-st-code"');
     expect(html).toContain('Labor code: MHM.25PLFE Project Labor From Estimate');
     expect(html).not.toContain('id="labor-code"');

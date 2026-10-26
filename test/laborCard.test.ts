@@ -76,7 +76,8 @@ describe("project labor card", () => {
     expect(html).toContain("Wesley M");
     expect(html).toContain("6.5 hours");
     expect(html).toContain("Labor code: MHM.25PLFE Project Labor From Estimate");
-    expect(html).toContain("Wage $0.00");
+    expect(html).toContain("Labor $0.00");
+    expect(html).toContain("Labor burden $0.00");
     expect(html).not.toMatch(RATE_WARNING);
     expect(html).not.toContain("Mason");
     expect(html).not.toContain("Office Notes");
@@ -96,6 +97,7 @@ describe("project labor card", () => {
           {
             technician_name: "Casey Nguyen",
             hours: 6.5,
+            pay_basis: "hourly",
             hourly_rate: 40,
             burden_rate: 12,
             wage: 260,
@@ -110,10 +112,10 @@ describe("project labor card", () => {
       { esc, stamp: () => "Not recorded" },
     );
     expect(html).toContain("Casey Nguyen");
-    expect(html).toContain("Wage $260.00");
-    expect(html).toContain("$40.00/hr × 6.5 h");
-    expect(html).toContain("Burden $78.00");
-    expect(html).toContain("$12.00/hr × 6.5 h");
+    expect(html).toContain("Labor $260.00");
+    expect(html).toContain("timesheet hours × hourly rate");
+    expect(html).toContain("Labor burden $78.00");
+    expect(html).toContain("timesheet hours × burden rate");
     expect(html).toContain("Labor code: unavailable");
     expect(html).not.toMatch(RATE_WARNING);
   });
@@ -150,13 +152,26 @@ describe("project pages", () => {
 });
 
 describe("Setup labor list", () => {
-  it("still names the non-technicians that a later change must drop", () => {
-    const note =
-      "TODO: Exclude non-technicians from this list. Mason, Office Notes, Project Requirements, and Subcontractor must be excluded.";
-    expect(readFileSync("client/accounting.js", "utf8")).toContain(note);
-    expect(readFileSync("src/domain/laborActuals.ts", "utf8")).toContain(note);
-    expect(readFileSync("client/accounting.js", "utf8")).toContain(
-      "Active technicians missing a ServiceTitan rate",
+  it("describes commission labor and flags only real field-technician gaps", () => {
+    const settings = readFileSync("client/accounting.js", "utf8");
+    expect(settings).toContain(
+      "Labor cost is billed labor times the technician's commission percent, plus burden. Burden is payroll timesheet hours times the burden rate. Hourly technicians use those hours times their hourly rate.",
+    );
+    expect(settings).toContain(
+      "Field technicians missing a commission percent and an hourly rate",
+    );
+    expect(settings).toContain("neither a commission percent nor an hourly rate");
+    expect(settings).toContain("<h4>Burden not set</h4>");
+    expect(settings).toContain(": not set");
+    expect(settings).not.toContain("Active technicians missing a ServiceTitan rate");
+    expect(settings).not.toContain("left out of actual cost");
+    expect(settings).not.toContain("TODO: Exclude non-technicians");
+    const gaps = readFileSync("src/domain/laborActuals.ts", "utf8");
+    expect(gaps).toContain("AND is_field_tech");
+    expect(gaps).toContain("pay_basis = 'missing'");
+    expect(gaps).not.toContain("TODO: Exclude non-technicians");
+    expect(readFileSync("src/domain/commissionLabor.ts", "utf8")).toContain(
+      "tech.isManagedTech !== false",
     );
   });
 });

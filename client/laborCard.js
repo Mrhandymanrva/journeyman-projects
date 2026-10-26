@@ -11,8 +11,8 @@ function laborMoney(n) {
 function laborRefreshLine(data, stamp) {
   if (!data || !data.observed_at) return "Not refreshed yet.";
   const when = stamp(data.observed_at);
-  if (data.source === "scheduled") return `Last refreshed ${when} (scheduled)`;
-  if (data.source === "auto-hourly") return `Last refreshed ${when} (automatic)`;
+  if (data.source === "scheduled") return `Last refreshed ${when} (overnight)`;
+  if (data.source === "auto-hourly") return `Last refreshed ${when} (earlier automatic run)`;
   if (data.source === "manual") return `Last refreshed ${when} (manual)`;
   return `Last refreshed ${when}`;
 }
@@ -27,7 +27,7 @@ export function laborCardHtml(row, { esc, stamp }) {
   const moneyLine =
     data.labor_wage === undefined
       ? ""
-      : `<div class="row-m">Wage ${laborMoney(data.labor_wage)} · Burden ${laborMoney(
+      : `<div class="row-m">Labor ${laborMoney(data.labor_wage)} · Labor burden ${laborMoney(
           data.labor_burden,
         )} · Total ${laborMoney(data.total)}</div>`;
   const techs = (data.technicians || [])
@@ -35,15 +35,16 @@ export function laborCardHtml(row, { esc, stamp }) {
       const wage =
         tech.wage == null
           ? ""
-          : `<div class="row-m">Wage ${laborMoney(tech.wage)} · ${laborMoney(
-              tech.hourly_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician hourlyRate</div>`;
-      const burden =
-        tech.burden == null
+          : `<div class="row-m">Labor ${laborMoney(tech.wage)} · ${
+              tech.pay_basis === "hourly"
+                ? "timesheet hours × hourly rate"
+                : "billed labor × commission percent"
+            }</div>`;
+      const burden = tech.burden_unset
+        ? ""
+        : tech.burden == null
           ? ""
-          : `<div class="row-m">Burden ${laborMoney(tech.burden)} · ${laborMoney(
-              tech.burden_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician burdenRate</div>`;
+          : `<div class="row-m">Labor burden ${laborMoney(tech.burden)} · timesheet hours × burden rate</div>`;
       return `<div class="row"><div class="row-b"><div class="row-t">${esc(
         tech.technician_name || "Technician",
       )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}</div></div>`;
@@ -62,10 +63,10 @@ export function laborCardHtml(row, { esc, stamp }) {
       ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
       : "";
   return `
-    <p class="note">Hours come from ServiceTitan timesheets. Wage is hours times that technician's ServiceTitan hourly rate. Burden is the same hours times that technician's burden rate, added on top. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
+    <p class="note">Hours come from ServiceTitan payroll timesheets. Labor cost is billed labor times the technician's commission percent, plus labor burden. Labor burden is those timesheet hours times the technician's burden rate. An hourly technician's labor is the timesheet hours times their hourly rate. A zero hourly rate is not a missing rate when a commission percent is set. Nothing here writes to ServiceTitan.</p>
     ${
       data.rates_forbidden
-        ? `<p class="msg">The latest ServiceTitan technician read was denied. Rates from the last successful read are still used. A technician with no saved rate stays out of actual cost.</p>`
+        ? `<p class="msg">The latest ServiceTitan technician read was denied. Labor dollars already priced were left as they are.</p>`
         : ""
     }
     <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>

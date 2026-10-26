@@ -179,7 +179,7 @@ it("reads technician hourly and burden rates and drops contact fields", async ()
   ]);
   const rows = await client.readTechnicians();
   expect(rows).toEqual([
-    { id: "6", name: "Alex", active: true, hourlyRate: 40, burdenRate: 12, commissionRate: null },
+    { id: "6", name: "Alex", active: true, hourlyRate: 40, burdenRate: 12, commissionRate: null, isManagedTech: null },
   ]);
   expect(rows[0]).not.toHaveProperty("email");
   expect(rows[0]).not.toHaveProperty("phoneNumber");
@@ -228,6 +228,7 @@ it("reads Wesley M from the page after a full first page with hasMore false", as
     hourlyRate: 0,
     burdenRate: 0,
     commissionRate: 0.28,
+    isManagedTech: true,
   });
   const calls = fetcher.mock.calls
     .map((call) => String(call[0]))
@@ -283,7 +284,7 @@ it("keeps a missing technician rate as missing instead of inventing one", async 
     },
   ]);
   expect(await client.readTechnicians()).toEqual([
-    { id: "6", name: "Alex", active: true, hourlyRate: 0, burdenRate: null, commissionRate: null },
+    { id: "6", name: "Alex", active: true, hourlyRate: 0, burdenRate: null, commissionRate: null, isManagedTech: null },
   ]);
 });
 it("rejects changed appointments without a business write", async () => {
@@ -488,6 +489,7 @@ describe("job timesheets", () => {
             arrivedOn: "2026-09-15T12:00:00Z",
             doneOn: "2026-09-15T15:00:00Z",
             canceledOn: null,
+            paidDurationHours: 3,
             hourlyRate: 42,
             grossPay: 126,
           },
@@ -507,6 +509,7 @@ describe("job timesheets", () => {
         dispatchedOn: null,
         doneOn: "2026-09-15T15:00:00Z",
         canceledOn: null,
+        paidDurationHours: 3,
       },
     ]);
     expect(read.timesheets[0]).not.toHaveProperty("hourlyRate");

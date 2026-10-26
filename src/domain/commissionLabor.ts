@@ -60,10 +60,17 @@ export interface TechPaySource {
   hourlyRate: number | null;
   burdenRate: number | null;
   commissionRate?: number | null;
+  /**
+   * ServiceTitan managed-tech flag. False is an office or non-field record.
+   * Omitted means the directory did not say, and the name filter still applies.
+   */
+  isManagedTech?: boolean | null;
 }
 
 export interface ResolvedTechPay extends TechPaySource {
   excluded: boolean;
+  /** Active managed technician. Office records and placeholders are false. */
+  isFieldTech: boolean;
   payBasis: PayBasis | null;
   commissionFraction: number | null;
   commissionSource: CommissionSource | null;
@@ -201,6 +208,12 @@ function walkCommission(value: unknown, path: string, found: FoundCommission[]):
       continue;
     }
     if (child && typeof child === "object") {
+      if (isCommissionKey(key) && !Array.isArray(child)) {
+        const record = child as Record<string, unknown>;
+        for (const nested of ["rate", "percent", "percentage", "value"]) {
+          if (nested in record) consider(found, `${next}.${nested}`, key, record[nested]);
+        }
+      }
       walkCommission(child, next, found);
       continue;
     }
@@ -394,11 +407,13 @@ export async function loadPayrollSettings(
 
 export function classifyTechnician(tech: TechPaySource, payrollSettings: unknown): ResolvedTechPay {
   const name = technicianDisplayName(tech.name, tech.id);
-  if (isPlaceholderTechnician(tech.name)) {
+  const isFieldTech = tech.isManagedTech !== false && !isPlaceholderTechnician(tech.name);
+  if (!isFieldTech) {
     return {
       ...tech,
       name,
       excluded: true,
+      isFieldTech: false,
       payBasis: null,
       commissionFraction: null,
       commissionSource: null,
@@ -427,6 +442,7 @@ export function classifyTechnician(tech: TechPaySource, payrollSettings: unknown
     ...tech,
     name,
     excluded: false,
+    isFieldTech: true,
     payBasis,
     commissionFraction: commission.fraction,
     commissionSource: commission.source,

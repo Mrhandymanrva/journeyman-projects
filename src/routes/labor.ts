@@ -1,10 +1,6 @@
 import { Router } from "express";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { z } from "zod";
-import {
-  payrollReaderFrom,
-  resolvePayForTechnicians,
-} from "../domain/commissionLabor.js";
 import { runCommissionProbe } from "../domain/commissionProbe.js";
 import {
   listActiveRateGaps,
@@ -12,19 +8,17 @@ import {
   portfolioLaborColumns,
   presentPortfolioLabor,
   readBillableRate,
-  readLaborJobs,
-  readTechnicianDirectoryForLabor,
-  saveLaborRefresh,
   updateBillableRate,
-  withResolvedTechnicianNames,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
+import { reconcileFinancials } from "../domain/projectFinancials.js";
+import { readStoredProjectMoney } from "../domain/projectSync.js";
 import {
-  applyResolvedLaborCode,
   presentStLaborCode,
   readStLaborCode,
   resolveStLaborCode,
 } from "../domain/stLaborCode.js";
+import { refreshLinkedProject } from "../workers/laborRefresh.js";
 import { can, requireCapability } from "../http/capabilities.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
@@ -105,6 +99,36 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
   );
 
   router.get(
+    "/projects/:id/service-titan-financials",
+    staffRoute(deps, async (ctx) => {
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
+      sendData(ctx.res, await readStoredProjectMoney(ctx.db, projectId));
+    }),
+  );
+
+  router.get(
+    "/projects/:id/financials/reconciliation",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_company_settings");
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
+      const money = await readStoredProjectMoney(ctx.db, projectId);
+      const jobs = await ctx.db.query<{ n: string }>(
+        `SELECT count(*)::text AS n
+           FROM projects.project_job_links
+          WHERE project_id = $1 AND source_active`,
+        [projectId],
+      );
+      sendData(ctx.res, {
+        project_id: projectId,
+        job_count: Number(jobs.rows[0]?.n ?? 0),
+        lines: reconcileFinancials(money, money),
+      });
+    }),
+  );
+
+  router.get(
     "/projects/:id/labor",
     staffRoute(deps, async (ctx) => {
       const projectId = parseUuidParam(ctx.req.params.id, "Project");
@@ -128,56 +152,25 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
             "ServiceTitan timesheet read is not configured. Existing hours were left as they are.",
           );
         }
-        const jobs = await ctx.db.query<{ id: string; external_job_id: string }>(
-          `SELECT id, external_job_id FROM projects.project_job_links
-            WHERE project_id = $1 AND external_system_id = $2 AND source_active
-            ORDER BY external_job_id`,
-          [projectId, source.externalSystemId],
-        );
-        return {
-          projectId,
-          jobs: jobs.rows,
-          readJobTimesheets: (jobId: string) => source.client.readJobTimesheets!(jobId),
-          readJob: (jobId: string) => source.client.readJob(jobId),
-          readTechnicians: source.client.readTechnicians?.bind(source.client),
-          readStaffName: source.client.readStaffName?.bind(source.client),
-          laborClient: source.client,
-        };
+        return { projectId, source, tenantId: ctx.staff.tenantId };
       },
       async (prepared) => {
-        const jobs = await readLaborJobs(
-          prepared.jobs.map((job) => job.external_job_id),
-          { readJobTimesheets: prepared.readJobTimesheets, readJob: prepared.readJob },
+        const laborCode = await resolveStLaborCode(prepared.source.client);
+        await refreshLinkedProject(
+          deps.database,
+          prepared.source,
+          prepared.tenantId,
+          prepared.projectId,
+          new Date(),
+          laborCode,
+          "manual",
         );
-        const directory = await readTechnicianDirectoryForLabor({
-          readTechnicians: prepared.readTechnicians,
-        });
-        const technicians = await resolvePayForTechnicians(
-          directory.technicians,
-          payrollReaderFrom(prepared.laborClient),
-        );
-        const namedJobs = await withResolvedTechnicianNames(
-          jobs,
-          technicians,
-          prepared.readStaffName,
-        );
-        const laborCode = await resolveStLaborCode(prepared.laborClient);
-        return { jobs: namedJobs, directory: { ...directory, technicians }, laborCode };
+        return prepared.source.client;
       },
-      async (ctx, prepared, read) => {
+      async (ctx, prepared, client) => {
         requireCapability(ctx.staff.role, "refresh_labor");
         await loadVisibleProject(ctx, prepared.projectId, "id");
-        await saveLaborRefresh(ctx.db, {
-          tenantId: ctx.staff.tenantId,
-          projectId: prepared.projectId,
-          jobs: prepared.jobs,
-          results: read.jobs,
-          directory: read.directory,
-          source: "manual",
-          observedAt: new Date(),
-        });
-        await applyResolvedLaborCode(ctx.db, ctx.staff.tenantId, read.laborCode);
-        sendData(ctx.res, await presentLabor(ctx, prepared.projectId, prepared.laborClient));
+        sendData(ctx.res, await presentLabor(ctx, prepared.projectId, client));
       },
     ),
   );

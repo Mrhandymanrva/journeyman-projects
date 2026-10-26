@@ -11,6 +11,7 @@ import {
   type PayBasis,
   type ResolvedTechPay,
 } from "./commissionLabor.js";
+import { commissionDollars, payrollHours, roundMoney as roundProjectMoney, splitBilledLabor } from "./projectFinancials.js";
 import { newYorkDate } from "./fieldStart.js";
 
 /** Read batches match the schedule route. */
@@ -25,6 +26,8 @@ export interface TimesheetRow {
   dispatchedOn: string | null;
   doneOn: string | null;
   canceledOn: string | null;
+  /** Payroll duration. Dispatch and arrive timestamps are not hours. */
+  paidDurationHours?: number | null;
 }
 
 export interface AppointmentWindow {
@@ -84,27 +87,9 @@ export async function readLaborJobs(
         if (!sheet.forbidden) {
           return { jobId, outcome: "timesheet", drafts: draftsFromTimesheets(sheet.timesheets) };
         }
-        try {
-          const job = await client.readJob(jobId);
-          const windows: AppointmentWindow[] = [];
-          for (const assignment of job.assignments) {
-            const appointment = job.appointments.find((row) => row.id === assignment.appointmentId);
-            if (!appointment) continue;
-            windows.push({
-              appointmentId: appointment.id,
-              technicianId: assignment.technicianId,
-              technicianName: assignment.technicianName,
-              start: appointment.start,
-              end: appointment.end,
-              appointmentActive: appointment.active,
-              appointmentStatus: appointment.status,
-              assignmentActive: assignment.active,
-            });
-          }
-          return { jobId, outcome: "appointment_window", drafts: draftsFromAppointments(windows) };
-        } catch {
-          return { jobId, outcome: "keep", drafts: [] };
-        }
+        // A payroll denial keeps the last payroll rows. Appointment windows,
+        // dispatch clicks, and arrive clicks are not hours.
+        return { jobId, outcome: "keep", drafts: [] };
       }),
     );
     results.push(...reads);
@@ -124,19 +109,15 @@ export function hoursBetween(start: string, end: string): number | null {
 export function draftsFromTimesheets(rows: TimesheetRow[]): LaborDraft[] {
   const drafts: LaborDraft[] = [];
   for (const row of rows) {
-    if (row.canceledOn) continue;
-    const end = row.doneOn;
-    if (!end) continue;
-    const start = row.arrivedOn || row.dispatchedOn;
-    if (!start) continue;
-    const hours = hoursBetween(start, end);
+    const hours = payrollHours(row);
     if (hours === null) continue;
+    const stamp = row.doneOn || row.arrivedOn || row.dispatchedOn;
     drafts.push({
       externalTimesheetId: row.id,
       externalAppointmentId: row.appointmentId,
       externalTechnicianId: row.technicianId,
       technicianName: row.technicianName,
-      workDate: newYorkDate(start),
+      workDate: stamp ? newYorkDate(stamp) : newYorkDate(new Date().toISOString()),
       hours,
       source: "timesheet",
     });
@@ -258,6 +239,7 @@ export interface TechnicianRate {
   hourlyRate: number | null;
   burdenRate: number | null;
   commissionRate?: number | null;
+  isManagedTech?: boolean | null;
   /** Set when payroll settings were already resolved. Not a stored column. */
   payBasis?: PayBasis | null;
   commissionFraction?: number | null;
@@ -623,20 +605,26 @@ const PLACEHOLDER_NAME_SQL = PLACEHOLDER_TECHNICIAN_SQL;
 
 function asResolved(tech: TechnicianRate): ResolvedTechPay {
   if (tech.payBasis === "commission" || tech.payBasis === "hourly" || tech.payBasis === "missing") {
+    const classified = classifyTechnician(
+      {
+        id: tech.id,
+        name: tech.name,
+        active: tech.active,
+        hourlyRate: tech.hourlyRate,
+        burdenRate: tech.burdenRate,
+        commissionRate: tech.commissionRate ?? null,
+        isManagedTech: tech.isManagedTech,
+      },
+      null,
+    );
+    if (classified.excluded) return classified;
     return {
-      id: tech.id,
-      name: technicianLabel(tech.name, tech.id),
-      active: tech.active,
-      hourlyRate: tech.hourlyRate,
-      burdenRate: tech.burdenRate,
-      commissionRate: tech.commissionRate ?? null,
-      excluded: false,
+      ...classified,
       payBasis: tech.payBasis,
-      commissionFraction: tech.commissionFraction ?? null,
-      commissionSource: null,
-      appliedHourlyRate: tech.appliedHourlyRate ?? null,
-      appliedBurdenRate: tech.appliedBurdenRate ?? null,
-      burdenUnset: tech.burdenUnset ?? tech.appliedBurdenRate == null,
+      commissionFraction: tech.commissionFraction ?? classified.commissionFraction,
+      appliedHourlyRate: tech.appliedHourlyRate ?? classified.appliedHourlyRate,
+      appliedBurdenRate: tech.appliedBurdenRate ?? classified.appliedBurdenRate,
+      burdenUnset: tech.burdenUnset ?? classified.burdenUnset,
     };
   }
   return classifyTechnician(
@@ -646,7 +634,8 @@ function asResolved(tech: TechnicianRate): ResolvedTechPay {
       active: tech.active,
       hourlyRate: tech.hourlyRate,
       burdenRate: tech.burdenRate,
-      commissionRate: tech.commissionRate ?? null,
+        commissionRate: tech.commissionRate ?? null,
+        isManagedTech: tech.isManagedTech,
     },
     null,
   );
@@ -710,17 +699,15 @@ async function priceTechnicianHours(
   await db.query(
     `UPDATE projects.labor_actuals
         SET labor_amount = CASE
-              WHEN $3::text = 'commission' AND $5::numeric > 0
-                THEN ROUND(hours * $4::numeric * $5::numeric, 2)
-              WHEN $3::text = 'hourly' AND $6::numeric > 0
-                THEN ROUND(hours * $6::numeric, 2)
+              WHEN $3::text = 'hourly' AND $5::numeric > 0
+                THEN ROUND(hours * $5::numeric, 2)
               ELSE NULL
             END,
             burden_amount = CASE
-              WHEN $7::numeric > 0 THEN ROUND(hours * $7::numeric, 2)
+              WHEN $6::numeric > 0 THEN ROUND(hours * $6::numeric, 2)
               ELSE NULL
             END,
-            burden_unset = $8::boolean,
+            burden_unset = $7::boolean,
             pay_basis = $3,
             priced_billable_rate = CASE
               WHEN $3::text = 'commission' THEN $4::numeric
@@ -728,13 +715,12 @@ async function priceTechnicianHours(
             END
       WHERE tenant_id = $1
         AND external_technician_id = $2
-        AND lower(trim(coalesce(technician_name, ''))) !~ $9`,
+        AND lower(trim(coalesce(technician_name, ''))) !~ $8`,
     [
       tenantId,
       tech.id,
       basis,
       billableRate.toFixed(2),
-      (tech.commissionFraction ?? 0).toFixed(8),
       (tech.appliedHourlyRate ?? 0).toFixed(4),
       (tech.appliedBurdenRate ?? 0).toFixed(4),
       tech.burdenUnset,
@@ -743,10 +729,81 @@ async function priceTechnicianHours(
   );
 }
 
+async function allocateCommissionLabor(
+  db: SqlClient,
+  tenantId: string,
+  technicians: ResolvedTechPay[],
+): Promise<void> {
+  const commission = technicians.filter(
+    (tech) => tech.payBasis === "commission" && tech.commissionFraction != null && tech.commissionFraction > 0,
+  );
+  if (!commission.length) return;
+  const projects = await db.query<{ project_id: string }>(
+    `SELECT DISTINCT project_id::text AS project_id
+       FROM projects.labor_actuals
+      WHERE tenant_id = $1
+        AND pay_basis = 'commission'
+        AND external_technician_id = ANY($2::text[])`,
+    [tenantId, commission.map((tech) => tech.id)],
+  );
+  for (const project of projects.rows) {
+    const lines = await db.query<{ technician_id: string | null; total: string }>(
+      `SELECT technician_id, total::text AS total
+         FROM projects.st_invoice_lines
+        WHERE tenant_id = $1 AND project_id = $2 AND kind = 'labor'`,
+      [tenantId, project.project_id],
+    );
+    const hourRows = await db.query<{ external_technician_id: string; hours: string }>(
+      `SELECT external_technician_id, COALESCE(SUM(hours), 0)::text AS hours
+         FROM projects.labor_actuals
+        WHERE tenant_id = $1
+          AND project_id = $2
+          AND pay_basis = 'commission'
+          AND external_technician_id = ANY($3::text[])
+        GROUP BY external_technician_id`,
+      [tenantId, project.project_id, commission.map((tech) => tech.id)],
+    );
+    const hoursByTech = new Map(hourRows.rows.map((row) => [row.external_technician_id, Number(row.hours)]));
+    const shares = splitBilledLabor(
+      lines.rows.map((row) => ({
+        kind: "labor" as const,
+        total: Number(row.total),
+        technicianId: row.technician_id,
+      })),
+      hoursByTech,
+    );
+    for (const tech of commission) {
+      const dollars = commissionDollars(shares.get(tech.id) ?? 0, tech.commissionFraction);
+      const techHours = hoursByTech.get(tech.id) ?? 0;
+      if (dollars == null || !(techHours > 0)) continue;
+      const rows = await db.query<{ id: string; hours: string }>(
+        `SELECT id::text AS id, hours::text AS hours
+           FROM projects.labor_actuals
+          WHERE tenant_id = $1
+            AND project_id = $2
+            AND external_technician_id = $3
+            AND pay_basis = 'commission'
+          ORDER BY id`,
+        [tenantId, project.project_id, tech.id],
+      );
+      let assigned = 0;
+      for (let index = 0; index < rows.rows.length; index += 1) {
+        const row = rows.rows[index]!;
+        const last = index === rows.rows.length - 1;
+        const amount = last
+          ? roundProjectMoney(dollars - assigned)
+          : roundProjectMoney(dollars * (Number(row.hours) / techHours));
+        assigned = roundProjectMoney(assigned + amount);
+        await db.query(`UPDATE projects.labor_actuals SET labor_amount = $2 WHERE id = $1`, [row.id, amount]);
+      }
+    }
+  }
+}
+
 /**
  * Remembers who is commission, hourly, or missing, and prices stored hours.
- * Hourly, burden, and commission numbers are query parameters only. The
- * columns that used to keep them are written as null.
+ * Commission dollars are billed labor times the payroll percent. Hourly
+ * dollars are payroll hours times the hourly rate. Rates are not stored.
  */
 export async function storeTechnicianRates(
   db: SqlClient,
@@ -756,6 +813,7 @@ export async function storeTechnicianRates(
 ): Promise<void> {
   const billableRate = await readBillableRate(db, tenantId);
   const ids: string[] = [];
+  const resolved: ResolvedTechPay[] = [];
   for (const raw of technicians) {
     const id = technicianIdKey(raw.id);
     if (!id) continue;
@@ -765,8 +823,8 @@ export async function storeTechnicianRates(
     await db.query(
       `INSERT INTO projects.technician_labor_rates
          (tenant_id, external_technician_id, technician_name, active,
-          hourly_rate, burden_rate, pay_basis, burden_unset, observed_at)
-       VALUES ($1,$2,$3,$4,NULL,NULL,$5,$6,$7)
+          hourly_rate, burden_rate, pay_basis, burden_unset, is_field_tech, observed_at)
+       VALUES ($1,$2,$3,$4,NULL,NULL,$5,$6,true,$7)
        ON CONFLICT (tenant_id, external_technician_id) DO UPDATE
          SET technician_name = EXCLUDED.technician_name,
              active = EXCLUDED.active,
@@ -774,11 +832,14 @@ export async function storeTechnicianRates(
              burden_rate = NULL,
              pay_basis = EXCLUDED.pay_basis,
              burden_unset = EXCLUDED.burden_unset,
+             is_field_tech = true,
              observed_at = EXCLUDED.observed_at`,
       [tenantId, tech.id, tech.name, tech.active, tech.payBasis, tech.burdenUnset, observedAt],
     );
     await priceTechnicianHours(db, tenantId, tech, billableRate);
+    resolved.push(tech);
   }
+  await allocateCommissionLabor(db, tenantId, resolved);
   await db.query(
     `UPDATE projects.technician_labor_rates
         SET active = false, hourly_rate = NULL, burden_rate = NULL, observed_at = $3
@@ -797,18 +858,6 @@ export async function updateBillableRate(
   const next = roundMoney(nextRate);
   await db.query(
     `UPDATE projects.tenant_settings SET labor_billable_rate = $2 WHERE tenant_id = $1`,
-    [tenantId, next],
-  );
-  await db.query(
-    `UPDATE projects.labor_actuals
-        SET labor_amount = ROUND((labor_amount * $2::numeric) / priced_billable_rate, 2),
-            priced_billable_rate = $2
-      WHERE tenant_id = $1
-        AND pay_basis = 'commission'
-        AND labor_amount IS NOT NULL
-        AND priced_billable_rate IS NOT NULL
-        AND priced_billable_rate > 0
-        AND priced_billable_rate IS DISTINCT FROM $2::numeric`,
     [tenantId, next],
   );
   return next;
@@ -919,8 +968,7 @@ export async function markTechnicianRead(
   );
 }
 
-/** Active rows with a missing or zero ServiceTitan hourly or burden rate. */
-// TODO: Exclude non-technicians from this list. Mason, Office Notes, Project Requirements, and Subcontractor must be excluded.
+/** Active field technicians with neither a payroll commission percent nor an hourly rate. */
 export async function listActiveRateGaps(db: SqlClient, tenantId: string): Promise<RateGap[]> {
   const { rows } = await db.query<{
     external_technician_id: string;
@@ -929,9 +977,13 @@ export async function listActiveRateGaps(db: SqlClient, tenantId: string): Promi
   }>(
     `SELECT external_technician_id, technician_name, pay_basis
        FROM projects.technician_labor_rates
-      WHERE tenant_id = $1 AND active AND pay_basis = 'missing'
+      WHERE tenant_id = $1
+        AND active
+        AND is_field_tech
+        AND pay_basis = 'missing'
+        AND lower(trim(coalesce(technician_name, ''))) !~ $2
       ORDER BY technician_name NULLS LAST, external_technician_id`,
-    [tenantId],
+    [tenantId, PLACEHOLDER_NAME_SQL],
   );
   const gaps: RateGap[] = [];
   for (const row of rows) {
@@ -953,9 +1005,13 @@ export async function listBurdenNotices(db: SqlClient, tenantId: string): Promis
   }>(
     `SELECT external_technician_id, technician_name
        FROM projects.technician_labor_rates
-      WHERE tenant_id = $1 AND active AND burden_unset
+      WHERE tenant_id = $1
+        AND active
+        AND is_field_tech
+        AND burden_unset
+        AND lower(trim(coalesce(technician_name, ''))) !~ $2
       ORDER BY technician_name NULLS LAST, external_technician_id`,
-    [tenantId],
+    [tenantId, PLACEHOLDER_NAME_SQL],
   );
   const notices: RateGap[] = [];
   for (const row of rows) {
