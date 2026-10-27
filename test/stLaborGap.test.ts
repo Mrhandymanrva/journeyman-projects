@@ -17,7 +17,7 @@ import {
 import { buildStLaborDiagnostic, readStLaborDiagnostic } from "../src/domain/stLaborDiagnostic.js";
 import { errorHandler } from "../src/http/envelope.js";
 import { stLaborDiagnosticRoutes } from "../src/routes/stLaborDiagnostic.js";
-import { DALTON_FINANCIALS, SEGRETO_FINANCIALS } from "../src/domain/projectFinancials.js";
+import { classifyInvoiceItem, DALTON_FINANCIALS, financialsFromReads } from "../src/domain/projectFinancials.js";
 import { laborCardHtml } from "../client/laborCard.js";
 import type { SourceConnections } from "../src/adapters/sourceConnections.js";
 
@@ -148,10 +148,20 @@ describe("no-payroll labor cost", () => {
     ).toBeNull();
   });
 
-  it("prices commission at 25% of billed labor plus arrived-to-done burden, and reports PLFE separately", () => {
-    expect(billedLaborCommission(DALTON_FINANCIALS.billedLabor)).toBe(16826.25);
-    expect(billedLaborCommission(64978)).toBe(16244.5);
-    expect(billedLaborCommission(SEGRETO_FINANCIALS.billedLabor)).toBe(3774.1);
+  it("prices commission from the reconciled billed labor, excluding MHM 250.Labor", () => {
+    const raw = [
+      { sku: "MHM.25PLFE", accountName: "Labor Revenue", type: "Service", total: 50000 },
+      { sku: "Labor", accountName: "Labor Revenue - Install", type: "Service", total: 16410 },
+      { sku: "MHM 250.Labor", accountName: "Labor Revenue", type: "Service", total: 895, invoiceId: "315824798" },
+      { sku: "MHM.25LFCO", accountName: "Labor Revenue", type: "Service", total: 120 },
+    ];
+    const money = financialsFromReads({
+      invoiceLines: raw.map((line) => ({ kind: classifyInvoiceItem(line), total: line.total })),
+      timesheets: [],
+      purchaseOrders: [],
+    });
+    expect(money.billedLabor).toBe(66410);
+    expect(money.billedLabor).not.toBe(DALTON_FINANCIALS.billedLabor);
     const burden = burdenFromArrivedDone(
       [
         {
@@ -182,15 +192,15 @@ describe("no-payroll labor cost", () => {
     );
     expect(burden).toEqual({ hours: 18, burden: 320, techsMissingRate: 0 });
     const estimate = laborEstimateFromBilled({
-      billedLabor: 67305,
-      plfeLabor: 64978,
+      billedLabor: money.billedLabor,
       burden: burden.burden,
       burdenHours: burden.hours,
     });
-    expect(estimate.commission).toBe(16826.25);
-    expect(estimate.commission_plfe).toBe(16244.5);
+    expect(estimate.billed_labor).toBe(66410);
+    expect(estimate.commission).toBe(16602.5);
+    expect(billedLaborCommission(estimate.billed_labor)).toBe(16602.5);
     expect(estimate.burden).toBe(320);
-    expect(estimate.total).toBe(17146.25);
+    expect(estimate.total).toBe(16922.5);
     expect(estimate.label).toBe("Labor at 25% of billed labor (no payroll data)");
     expect(estimate.commission_label).toBe("Commission (25% of billed labor)");
     const html = laborCardHtml(
@@ -203,16 +213,14 @@ describe("no-payroll labor cost", () => {
         labor_wage: estimate.commission,
         labor_burden: estimate.burden,
         total: estimate.total,
-        billed_labor_plfe: estimate.billed_labor_plfe,
-        commission_plfe: estimate.commission_plfe,
         observed_at: "2026-10-27T12:00:00.000Z",
       },
       { esc: (value: unknown) => String(value ?? ""), stamp: () => "Oct 27" },
     );
-    expect(html).toContain("Commission (25% of billed labor) $16,826.25");
+    expect(html).toContain("Commission (25% of billed labor) $16,602.50");
     expect(html).toContain("Labor burden $320.00");
-    expect(html).toContain("Total $17,146.25");
-    expect(html).toContain("MHM.25PLFE only $64,978.00");
+    expect(html).toContain("Total $16,922.50");
+    expect(html).not.toContain("MHM.25PLFE only");
     expect(html).not.toContain("drive");
   });
 });

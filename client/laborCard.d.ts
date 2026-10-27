@@ -13,8 +13,6 @@ export function laborCardHtml(
     labor_warning?: string | null;
     commission_label?: string | null;
     burden_label?: string | null;
-    billed_labor_plfe?: number | null;
-    commission_plfe?: number | null;
     missing?: string[];
     rate_gaps?: Array<{ technician_name?: string; messages?: string[] }>;
     technicians?: Array<{

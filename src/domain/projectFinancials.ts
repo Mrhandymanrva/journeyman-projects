@@ -35,13 +35,15 @@ export const SEGRETO_FINANCIALS = {
 
 /**
  * Acceptance totals from ServiceTitan Project Financials for Dalton
- * (ST project 290588725). Live invoice lines: labor revenue 67,305.00,
- * material revenue 25,101.79, and 25,000.00 that is neither
- * (one 20,000 Sub Contractor Revenue line and two 2,500 Misc Income lines).
+ * (ST project 290588725). The 67,305.00 billed-labor constant is an early
+ * labor-revenue account total. Production reconciliation billedLabor is
+ * 66,410.00 on both sides. The 895.00 gap is MHM 250.Labor on invoice
+ * 315824798, which classifyInvoiceItem keeps out of labor and which still
+ * sits in the billed total. This constant is not the commission base.
+ * Material revenue was 25,101.79, plus 25,000.00 that is neither (one
+ * 20,000 Sub Contractor Revenue line and two 2,500 Misc Income lines).
  * Billed is the invoice header total, 117,406.79.
- * Labor expense 21,883.04 is the published ServiceTitan figure. Paid hours
- * times the burden rate can equal it. Gross-pay amounts might be that
- * figure instead. Production payroll is required to tell them apart.
+ * Labor expense 21,883.04 is the published ServiceTitan figure.
  */
 export const DALTON_PROJECT_ID = "290588725";
 export const DALTON_FINANCIALS = {
@@ -107,8 +109,8 @@ export interface ReconciliationLine {
   status?: ReconciliationLaborStatus;
   commission?: number;
   burden?: number;
+  /** The reconciliation billedLabor this commission was taken from. */
   billed_labor?: number;
-  billed_labor_plfe?: number;
 }
 
 /** Published Project Financials Expense > Labor, where ServiceTitan's figure is known. */

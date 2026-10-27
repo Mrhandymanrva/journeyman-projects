@@ -25,12 +25,6 @@ function laborRefreshLine(data, stamp) {
 export function laborCardHtml(row, { esc, stamp }) {
   const data = row || {};
   if (data.labor_source === "billed_labor_25pct") {
-    const plfe =
-      data.billed_labor_plfe == null
-        ? ""
-        : `<div class="row-m">MHM.25PLFE only ${laborMoney(data.billed_labor_plfe)} · 25% ${laborMoney(
-            data.commission_plfe || 0,
-          )}. The commission line uses billed labor, not this code alone.</div>`;
     return `
     <p class="note">${esc(data.labor_label || "Labor at 25% of billed labor (no payroll data)")}. Hours stay the payroll hours already stored. Nothing here writes to ServiceTitan.</p>
     <div class="row"><div class="row-b">
@@ -38,7 +32,6 @@ export function laborCardHtml(row, { esc, stamp }) {
       <div class="row-m">${esc(data.commission_label || "Commission (25% of billed labor)")} ${laborMoney(data.labor_wage || 0)}</div>
       <div class="row-m">${esc(data.burden_label || "Labor burden")} ${laborMoney(data.labor_burden || 0)} · payroll job timesheets, arrived to done, times the burden rate</div>
       <div class="row-m">Total ${laborMoney(data.total || 0)}</div>
-      ${plfe}
       <div class="row-m">${laborRefreshLine(data, stamp)}</div>
     </div></div>`;
   }

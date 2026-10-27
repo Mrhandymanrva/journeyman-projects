@@ -21,7 +21,7 @@ ALTER TABLE projects
   ADD COLUMN IF NOT EXISTS labor_estimate jsonb;
 
 COMMENT ON COLUMN projects.labor_estimate IS
-  'Commission (25% of billed labor), timesheet burden, and the MHM.25PLFE-only comparison. Set only when labor_cost_source is billed_labor_25pct. Null on the payroll path. Does not include technician names or rates.';
+  'Commission (25% of the reconciliation billedLabor) and timesheet burden. Set only when labor_cost_source is billed_labor_25pct. Null on the payroll path. Does not include technician names or rates.';
 
 ALTER TABLE st_financial_reconciliation
   ADD COLUMN IF NOT EXISTS st_labor jsonb;

@@ -49,9 +49,8 @@ export interface LaborEstimate {
   commission: number;
   burden: number;
   total: number;
+  /** Reconciliation billedLabor. Commission is 25% of this figure. */
   billed_labor: number;
-  billed_labor_plfe: number;
-  commission_plfe: number;
   burden_hours: number;
   burden_source: "payroll_job_timesheets_arrived_done";
   label: typeof NO_PAYROLL_LABOR_LABEL;
@@ -228,32 +227,23 @@ export function billedLaborCommission(billedLabor: number): number {
   return roundMoney(billedLabor * BILLED_LABOR_COMMISSION_FRACTION);
 }
 
-/** Invoice lines whose SKU is the labor code MHM.25PLFE, whatever the account label says. */
-export function plfeOnlyBilledLabor(lines: readonly { sku?: string | null; total: number }[]): number {
-  let sum = 0;
-  for (const line of lines) {
-    if ((line.sku ?? "").trim().toLowerCase() !== "mhm.25plfe") continue;
-    if (typeof line.total !== "number" || !Number.isFinite(line.total)) continue;
-    sum += line.total;
-  }
-  return roundMoney(sum);
-}
-
+/**
+ * Commission from the reconciliation's billedLabor.
+ * Pass financialsFromReads().billedLabor. Do not sum invoice lines here.
+ */
 export function laborEstimateFromBilled(input: {
   billedLabor: number;
-  plfeLabor: number;
   burden: number;
   burdenHours: number;
 }): LaborEstimate {
-  const commission = billedLaborCommission(input.billedLabor);
+  const billedLabor = roundMoney(input.billedLabor);
+  const commission = billedLaborCommission(billedLabor);
   const burden = roundMoney(input.burden);
   return {
     commission,
     burden,
     total: roundMoney(commission + burden),
-    billed_labor: roundMoney(input.billedLabor),
-    billed_labor_plfe: roundMoney(input.plfeLabor),
-    commission_plfe: billedLaborCommission(input.plfeLabor),
+    billed_labor: billedLabor,
     burden_hours: roundMoney(input.burdenHours),
     burden_source: "payroll_job_timesheets_arrived_done",
     label: NO_PAYROLL_LABOR_LABEL,

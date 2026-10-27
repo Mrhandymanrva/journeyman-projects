@@ -44,7 +44,6 @@ import {
   isCanceledJobStatus,
   laborEstimateFromBilled,
   nonPtoGrossPayOnJobs,
-  plfeOnlyBilledLabor,
   projectPayrollAge,
   stLaborTotal,
   sumTiedAdjustments,
@@ -558,14 +557,13 @@ export async function refreshLinkedProject(
     technicians,
     connection.client.readStaffName?.bind(connection.client),
   );
-  const estimate =
+  const timesheetBurden =
     laborSource === "billed_labor_25pct"
-      ? await estimateWithoutPayroll({
+      ? await timesheetBurdenForJobs({
           connection,
           jobIds: jobs.rows
             .filter((job) => !isCanceledJobStatus(job.source_job_status))
             .map((job) => job.external_job_id),
-          lines: operational.lines,
           technicians,
           warnings,
         })
@@ -586,15 +584,23 @@ export async function refreshLinkedProject(
       observedAt,
       stamp: paid.stamp,
     });
+    await applyResolvedLaborCode(client, tenantId, laborCode);
+    let jp = await readStoredProjectMoney(client, projectId);
+    const estimate =
+      laborSource === "billed_labor_25pct" && timesheetBurden
+        ? laborEstimateFromBilled({
+            billedLabor: jp.billedLabor,
+            burden: timesheetBurden.burden,
+            burdenHours: timesheetBurden.hours,
+          })
+        : null;
     if (laborSource) {
       await saveLaborCostSource(client, {
         projectId,
         source: laborSource,
-        estimate: laborSource === "billed_labor_25pct" ? estimate : null,
+        estimate,
       });
     }
-    await applyResolvedLaborCode(client, tenantId, laborCode);
-    let jp = await readStoredProjectMoney(client, projectId);
     let st = financialsFromReads({
       invoiceLines: operational.lines.map((line) => ({
         kind: line.kind,
@@ -739,13 +745,12 @@ async function storeProjectFinancialSummary(
   );
 }
 
-async function estimateWithoutPayroll(input: {
+async function timesheetBurdenForJobs(input: {
   connection: ServiceTitanSource;
   jobIds: readonly string[];
-  lines: readonly StoredInvoiceLine[];
   technicians: readonly ResolvedTechPay[];
   warnings: string[];
-}): Promise<LaborEstimate> {
+}): Promise<{ hours: number; burden: number }> {
   const rates = new Map<string, number | null>();
   for (const tech of input.technicians) {
     const id = technicianIdKey(tech.id);
@@ -793,12 +798,7 @@ async function estimateWithoutPayroll(input: {
       `Labor burden: ${burden.techsMissingRate} technician${burden.techsMissingRate === 1 ? "" : "s"} with arrived-to-done hours had no burden rate.`,
     );
   }
-  return laborEstimateFromBilled({
-    billedLabor: roundMoney(input.lines.filter((line) => line.kind === "labor").reduce((sum, line) => sum + line.total, 0)),
-    plfeLabor: plfeOnlyBilledLabor(input.lines),
-    burden: burden.burden,
-    burdenHours: burden.hours,
-  });
+  return { hours: burden.hours, burden: burden.burden };
 }
 
 function laborLine(
@@ -815,7 +815,6 @@ function laborLine(
       commission: estimate.commission,
       burden: estimate.burden,
       billed_labor: estimate.billed_labor,
-      billed_labor_plfe: estimate.billed_labor_plfe,
     };
   }
   if (source === "none_recent_payroll_missing") return { ...line, status: "missing" };

@@ -301,7 +301,6 @@ function presentLines(value: unknown): ReconciliationLine[] {
             ...(record.commission == null ? {} : { commission: Number(record.commission) }),
             ...(record.burden == null ? {} : { burden: Number(record.burden) }),
             ...(record.billed_labor == null ? {} : { billed_labor: Number(record.billed_labor) }),
-            ...(record.billed_labor_plfe == null ? {} : { billed_labor_plfe: Number(record.billed_labor_plfe) }),
           }
         : {};
     return [{

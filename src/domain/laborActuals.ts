@@ -556,9 +556,8 @@ export interface PortfolioLabor {
   labor_warning: string | null;
   commission_label: string | null;
   burden_label: string | null;
+  /** Reconciliation billedLabor the 25% commission was taken from. */
   billed_labor: number | null;
-  billed_labor_plfe: number | null;
-  commission_plfe: number | null;
   /** Arrived-to-done hours used for the estimate's burden. Not the labor hours above. */
   burden_hours: number | null;
 }
@@ -834,8 +833,6 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     commission_label: estimate?.commission_label ?? null,
     burden_label: estimate?.burden_label ?? null,
     billed_labor: estimate?.billed_labor ?? null,
-    billed_labor_plfe: estimate?.billed_labor_plfe ?? null,
-    commission_plfe: estimate?.commission_plfe ?? null,
     burden_hours: estimate?.burden_hours ?? null,
   };
 }
@@ -856,8 +853,6 @@ function laborEstimateOf(value: unknown): LaborEstimate | null {
     burden,
     total: Number.isFinite(Number(record.total)) ? Number(record.total) : roundMoney(commission + burden),
     billed_labor: Number(record.billed_labor ?? 0),
-    billed_labor_plfe: Number(record.billed_labor_plfe ?? 0),
-    commission_plfe: Number(record.commission_plfe ?? 0),
     burden_hours: Number(record.burden_hours ?? 0),
     burden_source: "payroll_job_timesheets_arrived_done",
     label: NO_PAYROLL_LABOR_LABEL,

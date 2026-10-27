@@ -259,8 +259,6 @@ async function presentLabor(
     commission_label: labor.commission_label,
     burden_label: labor.burden_label,
     billed_labor: labor.billed_labor,
-    billed_labor_plfe: labor.billed_labor_plfe,
-    commission_plfe: labor.commission_plfe,
     burden_hours: labor.burden_hours,
     missing: labor.missing,
     rates_forbidden: summary.rows[0]?.labor_rates_forbidden === true,
