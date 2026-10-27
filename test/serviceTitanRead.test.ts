@@ -879,6 +879,27 @@ describe("ServiceTitan 429 backoff", () => {
     expect(fetcher.mock.calls.filter((call) => call[1]?.method === "GET")).toHaveLength(4);
   });
 
+  it("reads project retainage dollars with GET and does not convert a percent", async () => {
+    const { client, fetcher } = setup([{ retainagePercent: 10, retainage: 4180 }]);
+    await expect(client.readProjectRetainage("290588725")).resolves.toBe(4180);
+    const call = fetcher.mock.calls.at(-1);
+    expect(String(call?.[0])).toContain("/jpm/v2/tenant/10/projects/290588725");
+    expect(call?.[1]).toMatchObject({ method: "GET" });
+  });
+
+  it("reads invoice balances with GET and leaves retainage empty when it was omitted", async () => {
+    const { client, fetcher } = setup([
+      { data: [{ id: 9, total: 100, balance: 40, jobId: 7, active: true }], hasMore: false },
+    ]);
+    await expect(client.readJobInvoiceSummaries("7")).resolves.toEqual([
+      { id: "9", total: 100, balance: 40, retainage: null, active: true },
+    ]);
+    expect(fetcher.mock.calls.at(-1)?.[1]).toMatchObject({ method: "GET" });
+    expect(fetcher.mock.calls.some((call) => call[1]?.method === "POST" && String(call[0]).includes("invoices"))).toBe(
+      false,
+    );
+  });
+
   it("reads Retry-After seconds and dates, and caps the wait", () => {
     const now = Date.parse("2026-10-25T15:00:00Z");
     expect(retryAfterMs("0", now)).toBe(0);

@@ -64,6 +64,8 @@ describe("field start", () => {
     expect(html).toContain("Field start Nov 2, 2026 · ServiceTitan.");
     expect(html).toContain("field-start-refresh");
     expect(html).toContain("Save manual date");
+    expect(html).toContain("form-row");
+    expect(html).toContain("Manual date");
     expect(html).toContain('data-source="servicetitan"');
     expect(html).not.toContain("set by hand");
   });

@@ -901,6 +901,11 @@ const ROUTES: RouteCase[] = [
   },
   {
     method: "get",
+    template: `${BASE}/projects/:id/financials/summary`,
+    path: (f) => `${BASE}/projects/${f.projectId}/financials/summary`,
+  },
+  {
+    method: "get",
     template: `${BASE}/projects/:id/plan-appointments`,
     path: (f) => `${BASE}/projects/${f.projectId}/plan-appointments`,
   },

@@ -1,3 +1,5 @@
+import { formRow } from "./formRows.js";
+
 export const UNDO_CONFIRM =
   "Undo the field release? This clears the current release. The history is kept.";
 
@@ -142,9 +144,15 @@ export function fieldStartHtml({
     : "";
   const override = canOverride
     ? `<form class="field-start-override">
-         <label>Manual date<input class="field-start-date" type="date" value="${esc(current.date || "")}"></label>
-         <button class="btn primary" type="submit">Save manual date</button>
-         <button class="btn field-start-clear" type="button"${current.date || source ? "" : " disabled"}>Clear</button>
+         ${formRow(
+           "Manual date",
+           `<input class="field-start-date" id="field-start-manual" type="date" value="${esc(current.date || "")}">`,
+           "field-start-manual",
+         )}
+         <div class="form-actions">
+           <button class="btn primary" type="submit">Save manual date</button>
+           <button class="btn field-start-clear" type="button"${current.date || source ? "" : " disabled"}>Clear</button>
+         </div>
        </form>`
     : "";
   const viewOnly =

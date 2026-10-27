@@ -1,3 +1,4 @@
+import { bindFinancialSections } from "./financialsSections.js";
 import { revealLinkedItem } from "./home.js";
 import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
 import { createPermitOffices } from "./permitOffices.js";
@@ -186,6 +187,13 @@ export function createWorkspace({
     budgetCard.insertAdjacentElement("beforebegin", financialsCard);
   if (laborCard && budgetCard)
     budgetCard.insertAdjacentElement("afterend", laborCard);
+  if (!el("fin-summary")) {
+    el("page-financials").insertAdjacentHTML(
+      "afterbegin",
+      '<div id="fin-summary" class="fin-summary" aria-label="Project financials"></div>',
+    );
+  }
+  bindFinancialSections(el("page-financials"));
   move("permits", PROJECT_PAGE_ID, true);
   el("page-" + PROJECT_PAGE_ID).insertAdjacentHTML(
     "afterbegin",

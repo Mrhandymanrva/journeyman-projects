@@ -26,6 +26,7 @@ import {
   reconcileFinancials,
   type BurdenSlice,
 } from "../domain/projectFinancials.js";
+import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
 import {
   readStoredProjectMoney,
   replaceInvoiceLines,
@@ -37,6 +38,11 @@ import {
   type StoredAppointment,
   type StoredInvoiceLine,
 } from "../domain/projectSync.js";
+import {
+  summarizeServiceTitanReads,
+  type EstimateRead,
+  type InvoiceHeaderRead,
+} from "../domain/stFinancialSummary.js";
 import {
   applyResolvedLaborCode,
   laborCodeRunLabel,
@@ -472,7 +478,82 @@ export async function refreshLinkedProject(
       error: warnings.length > 0 ? warnings.join("; ") : null,
     });
   });
+  try {
+    await storeProjectFinancialSummary(
+      db,
+      connection,
+      tenantId,
+      projectId,
+      observedAt,
+      externalProjectId,
+      jobs.rows.map((job) => job.external_job_id),
+      warnings,
+    );
+  } catch (err) {
+    warnings.push(`Project summary: ${errorText(err)}`);
+  }
   return { warnings };
+}
+
+/**
+ * Contract, budget, change orders, retainage, and open invoices.
+ * A failed read leaves the last stored figures. Nothing is written to ServiceTitan.
+ */
+async function storeProjectFinancialSummary(
+  db: Database,
+  connection: ServiceTitanSource,
+  tenantId: string,
+  projectId: string,
+  observedAt: Date,
+  externalProjectId: string | null,
+  jobIds: readonly string[],
+  warnings: string[],
+): Promise<void> {
+  const readEstimates = connection.client.readProjectEstimates;
+  const readInvoices = connection.client.readJobInvoiceSummaries;
+  const readRetainage = connection.client.readProjectRetainage;
+  if (!readEstimates && !readInvoices && !readRetainage) return;
+
+  let estimates: EstimateRead[] | null = null;
+  let invoices: InvoiceHeaderRead[] | null = null;
+  let projectRetainage: number | null | undefined;
+
+  if (readEstimates && externalProjectId) {
+    try {
+      estimates = await readEstimates.call(connection.client, externalProjectId, jobIds);
+    } catch (err) {
+      warnings.push(`Estimates: ${errorText(err)}`);
+    }
+  }
+  if (readInvoices && jobIds.length > 0) {
+    const collected: InvoiceHeaderRead[] = [];
+    let failed = false;
+    for (const jobId of jobIds) {
+      try {
+        collected.push(...(await readInvoices.call(connection.client, jobId)));
+      } catch (err) {
+        failed = true;
+        warnings.push(`Job ${jobId} invoice summary: ${errorText(err)}`);
+      }
+    }
+    if (!failed) invoices = collected;
+  }
+  if (readRetainage && externalProjectId) {
+    try {
+      projectRetainage = await readRetainage.call(connection.client, externalProjectId);
+    } catch (err) {
+      warnings.push(`Project retainage: ${errorText(err)}`);
+    }
+  }
+  if (!estimates && !invoices && projectRetainage == null) return;
+  const summary = summarizeServiceTitanReads({
+    estimates,
+    invoices,
+    projectRetainage: projectRetainage ?? null,
+  });
+  await db.withTenant(tenantId, (client) =>
+    writeProjectSummary(client, { tenantId, projectId, observedAt, summary }),
+  );
 }
 
 function errorText(err: unknown): string {

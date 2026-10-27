@@ -2,6 +2,7 @@ import { z } from "zod";
 import { technicianIdKey } from "../domain/commissionLabor.js";
 import { allowlistedGet } from "../domain/commissionProbe.js";
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
+import type { EstimateRead, InvoiceHeaderRead } from "../domain/stFinancialSummary.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 
 const sourceId = z
@@ -1711,6 +1712,207 @@ export class ServiceTitanReadAdapter {
         customerAmount: row.subtotal ?? row.total ?? 0,
       })),
     };
+  }
+
+  /**
+   * Estimates on one project. GET only. Rows for a different project are dropped.
+   * When the project filter is ignored or empty, each linked job is read instead.
+   * Sold estimates with no items on the list are read again by id.
+   */
+  async readProjectEstimates(
+    projectId: string,
+    jobIds: readonly string[] = [],
+  ): Promise<EstimateRead[]> {
+    if (!/^\d+$/.test(projectId)) {
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan project ID.");
+    }
+    const itemSchema = z
+      .object({
+        type: z.string().nullish(),
+        qty: z.coerce.number().nullish(),
+        quantity: z.coerce.number().nullish(),
+        total: z.coerce.number().nullish(),
+        totalCost: z.coerce.number().nullish(),
+        soldHours: z.coerce.number().nullish(),
+        sku: z
+          .object({
+            type: z.string().nullish(),
+            soldHours: z.coerce.number().nullish(),
+          })
+          .passthrough()
+          .nullish(),
+      })
+      .passthrough();
+    const estimateSchema = z
+      .object({
+        id: sourceId,
+        projectId: sourceId.nullish(),
+        jobId: sourceId.nullish(),
+        job: z.object({ id: sourceId }).nullish(),
+        status: z.union([z.string(), z.object({ name: z.string() }).passthrough()]).nullish(),
+        subtotal: z.coerce.number().nullish(),
+        tax: z.coerce.number().nullish(),
+        total: z.coerce.number().nullish(),
+        isChangeOrder: z.boolean().nullish(),
+        changeOrder: z.boolean().nullish(),
+        items: z.array(itemSchema).nullish(),
+      })
+      .passthrough();
+    type RawEstimate = z.infer<typeof estimateSchema>;
+    const pages = async (query: URLSearchParams): Promise<RawEstimate[]> => {
+      const rows: RawEstimate[] = [];
+      for (let page = 1; page <= 20; page += 1) {
+        query.set("page", String(page));
+        query.set("pageSize", "50");
+        const raw = await this.get("sales", "estimates", query);
+        const parsed = z
+          .object({ data: z.array(estimateSchema), hasMore: z.boolean().optional() })
+          .safeParse(raw);
+        if (!parsed.success) {
+          throw new ServiceTitanReadError("Unexpected ServiceTitan estimates.");
+        }
+        rows.push(...parsed.data.data);
+        if (parsed.data.hasMore !== true) break;
+      }
+      return rows;
+    };
+    const listed = await pages(new URLSearchParams({ projectId }));
+    const foreign = listed.some((row) => row.projectId != null && row.projectId !== projectId);
+    let rows = foreign ? [] : listed.filter((row) => row.projectId == null || row.projectId === projectId);
+    if (foreign || rows.length === 0) {
+      rows = foreign ? [] : rows;
+      for (const jobId of jobIds) {
+        if (!/^\d+$/.test(jobId)) continue;
+        const jobRows = await pages(new URLSearchParams({ jobId }));
+        rows.push(
+          ...jobRows.filter((row) => {
+            const job = row.job?.id ?? row.jobId;
+            return job == null || job === jobId;
+          }),
+        );
+      }
+    }
+    const byId = new Map<string, RawEstimate>();
+    for (const row of rows) byId.set(row.id, row);
+    const detailed: RawEstimate[] = [];
+    for (const row of byId.values()) {
+      const status = typeof row.status === "string" ? row.status : row.status?.name ?? "";
+      if (row.items == null && status.trim().toLowerCase() === "sold") {
+        const detail = await this.get("sales", `estimates/${row.id}`);
+        const direct = estimateSchema.safeParse(detail);
+        const wrapped = z.object({ data: estimateSchema }).safeParse(detail);
+        if (direct.success) {
+          detailed.push(direct.data);
+          continue;
+        }
+        if (wrapped.success) {
+          detailed.push(wrapped.data.data);
+          continue;
+        }
+      }
+      detailed.push(row);
+    }
+    return detailed.map((row) => {
+      const status = typeof row.status === "string" ? row.status : row.status?.name ?? "";
+      const flag =
+        typeof row.isChangeOrder === "boolean"
+          ? row.isChangeOrder
+          : typeof row.changeOrder === "boolean"
+            ? row.changeOrder
+            : null;
+      const subtotal = row.subtotal ?? null;
+      const tax = row.tax ?? null;
+      const total =
+        subtotal != null && tax != null ? Math.round((subtotal + tax) * 100) / 100 : row.total ?? null;
+      return {
+        id: row.id,
+        status,
+        isChangeOrder: flag,
+        subtotal,
+        tax,
+        total,
+        items:
+          row.items == null
+            ? null
+            : row.items.map((item) => ({
+                skuType: item.sku?.type ?? item.type ?? null,
+                qty: item.qty ?? item.quantity ?? null,
+                total: item.total ?? null,
+                totalCost: item.totalCost ?? null,
+                soldHours: item.soldHours ?? item.sku?.soldHours ?? null,
+              })),
+      };
+    });
+  }
+
+  /** Invoice totals and balances for one job. GET only. Retainage stays null when the payload omits it. */
+  async readJobInvoiceSummaries(jobId: string): Promise<InvoiceHeaderRead[]> {
+    if (!/^\d+$/.test(jobId)) {
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
+    }
+    const schema = z
+      .object({
+        id: sourceId,
+        active: z.boolean().nullish(),
+        total: z.coerce.number().nullish(),
+        balance: z.coerce.number().nullish(),
+        job: z.object({ id: sourceId }).nullish(),
+        jobId: sourceId.nullish(),
+      })
+      .passthrough();
+    const invoices: InvoiceHeaderRead[] = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const raw = await this.get(
+        "accounting",
+        "invoices",
+        new URLSearchParams({ jobId, page: String(page), pageSize: "200" }),
+      );
+      const parsed = z
+        .object({ data: z.array(schema), hasMore: z.boolean().optional() })
+        .safeParse(raw);
+      if (!parsed.success) {
+        throw new ServiceTitanReadError("Unexpected ServiceTitan invoice summary.");
+      }
+      for (const row of parsed.data.data) {
+        const job = row.job?.id ?? row.jobId;
+        if (job != null && job !== jobId) continue;
+        const record = row as Record<string, unknown>;
+        let retainage: number | null = null;
+        for (const key of ["retainage", "retainageAmount", "retainedAmount", "retainageBalance"]) {
+          if (!(key in record) || record[key] == null || record[key] === "") continue;
+          const value = Number(record[key]);
+          if (Number.isFinite(value)) {
+            retainage = value;
+            break;
+          }
+        }
+        invoices.push({
+          id: row.id,
+          total: row.total ?? null,
+          balance: row.balance ?? null,
+          retainage,
+          active: row.active !== false,
+        });
+      }
+      if (parsed.data.hasMore !== true) break;
+    }
+    return invoices;
+  }
+
+  /** Project-level retainage dollars, when ServiceTitan sends them. GET only. A percent is not converted. */
+  async readProjectRetainage(projectId: string): Promise<number | null> {
+    if (!/^\d+$/.test(projectId)) {
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan project ID.");
+    }
+    const raw = await this.get("jpm", "projects/" + projectId);
+    if (!raw || typeof raw !== "object") return null;
+    const record = raw as Record<string, unknown>;
+    for (const key of ["retainage", "retainageAmount", "retainageBalance", "retainedAmount"]) {
+      if (!(key in record) || record[key] == null || record[key] === "") continue;
+      const value = Number(record[key]);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
   }
 
   private async collect<T>(

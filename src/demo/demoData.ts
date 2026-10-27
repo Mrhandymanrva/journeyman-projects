@@ -691,6 +691,26 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       [TENANT_ID, whitfield],
     );
     await c.query(
+      `INSERT INTO projects.st_financial_reconciliation
+         (tenant_id, project_id, observed_at, lines, technicians, error)
+       VALUES ($1, $2, now(), '[]'::jsonb, '[]'::jsonb, NULL)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_project_summary
+         (tenant_id, project_id, contract_value, total_budgeted_expense, change_orders,
+          cost_adjustments, budgeted_labor_expense, budgeted_labor_hours, budgeted_materials,
+          invoice_billed, open_invoices, retainage, estimates_read, invoices_read, observed_at)
+       VALUES ($1, $2, 41800, 25920, 2400, 0, 4800, 32, 8000, 27480, 14940, 4180, true, true, now())`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.project_closeout
+         (project_id, tenant_id, punch_done_at, punch_note, photos_done_at, photos_note)
+       VALUES ($2, $1, now(), 'Tile edge and caulk', now(), 'Filed in the photos folder')`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
       `INSERT INTO projects.st_plan_appointments
          (tenant_id, project_id, external_job_id, external_appointment_id,
           job_number, appointment_number, job_status, starts_at, ends_at,
