@@ -461,9 +461,11 @@ describe("a denied technician read", () => {
     expect(priced.body.data.labor_wage).toBe(160);
     expect(priced.body.data.labor_burden).toBe(48);
     expect(priced.body.data.total).toBe(208);
-    expect(priced.body.data.source).toBe("manual");
+    // Payroll is still denied (403), so stored hours are kept and the labor
+    // stamp does not move: a 403 is a failed read, not a refresh.
+    expect(priced.body.data.source).toBeNull();
     expect(priced.body.data.hours_source).toBe("timesheet");
-    expect(typeof priced.body.data.observed_at).toBe("string");
+    expect(priced.body.data.observed_at).toBeNull();
     expect(priced.body.data.missing).toEqual([]);
     const casey = priced.body.data.technicians[0];
     expect(casey).toMatchObject({ pay_basis: "hourly", wage: 160, burden: 48 });

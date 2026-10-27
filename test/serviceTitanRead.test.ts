@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
 import { retryAfterMs, ServiceTitanReadAdapter } from "../src/adapters/serviceTitan.js";
 const config = {
@@ -721,6 +722,117 @@ describe("job invoice lines", () => {
     expect(urls.some((url) => url.includes("/invoices?") && url.includes("jobId=500") && !url.includes("projectId="))).toBe(true);
     expect(urls.some((url) => url.includes("/invoices/10"))).toBe(true);
     expect(fetcher.mock.calls.every((call) => (call[1]?.method ?? "GET") === "GET" || String(call[0]).includes("/connect/token"))).toBe(true);
+  });
+
+  // Raw GET accounting/v2/.../invoices?jobId= answers for one linked project's five
+  // Estimate jobs, saved unedited on 2026-10-27. Each is a $0 invoice with
+  // items: null. The older st-invoices fixtures were normalized (items: [],
+  // wrapper dropped) and only fed classifyInvoiceItem, so the adapter's
+  // parse never saw this shape.
+  const rawEstimatePages = JSON.parse(
+    readFileSync("test/fixtures/st-invoices/estimate-jobs-null-items-raw.json", "utf8"),
+  ) as Record<string, { data: Array<{ id: number; items: unknown; total: string; job: { type: string } }> }>;
+
+  it.each(Object.keys(rawEstimatePages))(
+    "reads the raw live $0 Estimate invoice page for job %s without failing or fetching invoice detail",
+    async (jobId) => {
+      const page = rawEstimatePages[jobId]!;
+      expect(page.data[0]?.items).toBeNull();
+      expect(page.data[0]?.total).toBe("0.00");
+      expect(page.data[0]?.job.type).toBe("Estimate");
+      const { client, fetcher } = setup([page]);
+      await expect(client.readJobInvoiceLines(jobId)).resolves.toEqual([]);
+      const urls = fetcher.mock.calls.map((call) => String(call[0]));
+      expect(urls.some((url) => /\/invoices\/\d+/.test(url))).toBe(false);
+      expect(
+        fetcher.mock.calls.every(
+          (call) => (call[1]?.method ?? "GET") === "GET" || String(call[0]).includes("/connect/token"),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("keeps billed lines from the same page when a $0 invoice with items: null sits beside them", async () => {
+    const raw = rawEstimatePages["321578684"]!;
+    const { client } = setup([
+      {
+        ...raw,
+        data: [
+          ...raw.data,
+          {
+            id: 21,
+            job: { id: 321578684 },
+            total: "100.00",
+            items: [
+              {
+                id: 5,
+                type: "Service",
+                skuName: "MHM.25PLFE",
+                total: "100.00",
+                generalLedgerAccount: { name: "Labor Revenue:Labor Revenue" },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const lines = await client.readJobInvoiceLines("321578684");
+    expect(lines).toEqual([
+      expect.objectContaining({ invoiceId: "21", sku: "MHM.25PLFE", kind: "labor", total: 100 }),
+    ]);
+  });
+
+  it("names the rejected field when an invoice page does not parse", async () => {
+    const { client } = setup([{ data: [{ id: 30, items: "nope" }], hasMore: false }]);
+    await expect(client.readJobInvoiceLines("700")).rejects.toThrow(
+      /Unexpected ServiceTitan invoice items \(data\.0\.items: /,
+    );
+  });
+});
+
+describe("payroll gross pay items", () => {
+  const doc = JSON.parse(readFileSync("test/fixtures/st-payroll/gross-pay-items-doc.json", "utf8")) as {
+    pages: unknown[];
+  };
+
+  it("reads every page of the documented response with GETs to payroll/v2 gross-pay-items", async () => {
+    const { client, fetcher } = setup(doc.pages);
+    const read = await client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00.000Z" });
+    expect(read.forbidden).toBe(false);
+    expect(read.items).toHaveLength(7);
+    expect(read.items[0]).toEqual({
+      id: "1",
+      technicianId: "6",
+      date: "2026-10-20T00:00:00Z",
+      activity: "Working",
+      amount: 97.5,
+      type: "TimesheetTime",
+      paidDurationHours: 3.25,
+      paidTimeType: "Regular",
+      jobId: "100",
+    });
+    expect(read.items[3]).toMatchObject({ type: "InvoiceRelatedBonus", paidDurationHours: null });
+    const urls = fetcher.mock.calls.slice(1).map((call) => new URL(String(call[0])));
+    expect(urls.map((url) => url.pathname)).toEqual([
+      "/payroll/v2/tenant/10/gross-pay-items",
+      "/payroll/v2/tenant/10/gross-pay-items",
+    ]);
+    expect(urls[0]?.searchParams.get("employeeType")).toBe("Technician");
+    expect(urls[0]?.searchParams.get("dateOnOrAfter")).toBe("2026-09-16T00:00:00.000Z");
+    expect(urls[1]?.searchParams.get("page")).toBe("2");
+    expect(fetcher.mock.calls.slice(1).every((call) => call[1]?.method === "GET")).toBe(true);
+  });
+
+  it("reports a 403 as forbidden and rethrows any other failure", async () => {
+    const denied = setup([new Response("{}", { status: 403 })]);
+    await expect(denied.client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00Z" })).resolves.toEqual({
+      forbidden: true,
+      items: [],
+    });
+    const broken = setup([{ data: [{ id: 1, paidDurationHours: "x" }], hasMore: false }]);
+    await expect(broken.client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00Z" })).rejects.toThrow(
+      /Unexpected gross pay items \(data\.0\.paidDurationHours: /,
+    );
   });
 });
 

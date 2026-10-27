@@ -153,6 +153,20 @@ export class ServiceTitanWriteUncertainError extends ServiceTitanReadError {}
  * technician assignment. It does not create or write customer invoices.
  * Reuses the PO application's host allowlist/authentication pattern, without
  * coupling this module to its singleton state or exposing source payloads. */
+export interface GrossPayItem {
+  id: string;
+  technicianId: string | null;
+  date: string | null;
+  activity: string | null;
+  amount: number | null;
+  /** TimesheetTime, InvoiceRelatedBonus, CustomBonus, Salary, Reimbursement. */
+  type: string | null;
+  paidDurationHours: number | null;
+  /** Regular, Overtime, DoubleOvertime, PaidTimeOff. */
+  paidTimeType: string | null;
+  jobId: string | null;
+}
+
 export class ServiceTitanReadAdapter {
   private token?: { value: string; expiresAt: number };
   private tokenPending?: Promise<string>;
@@ -1245,6 +1259,84 @@ export class ServiceTitanReadAdapter {
   }
 
   /**
+   * Paid payroll time from GET payroll/v2/tenant/{tenant}/gross-pay-items
+   * (scope Payroll -> Gross Pay Items (Read)). This is where ServiceTitan
+   * keeps paidDurationHours. jobs/{job}/timesheets carries only dispatch,
+   * arrive, done, and cancel stamps, which are never hours.
+   * The endpoint has no job filter, so it is read by date window and the
+   * caller keeps the rows whose jobId is on the project. GET only.
+   */
+  async readGrossPayItems(query: { dateOnOrAfter: string; dateOnOrBefore?: string }): Promise<{
+    forbidden: boolean;
+    items: GrossPayItem[];
+  }> {
+    if (Number.isNaN(Date.parse(query.dateOnOrAfter)))
+      throw new ServiceTitanReadError("Use an ISO date for the gross pay window.");
+    const enumText = z
+      .union([z.string(), z.object({ name: z.string().nullish(), type: z.string().nullish(), value: z.string().nullish() }).passthrough()])
+      .nullish()
+      .transform((value) =>
+        value == null ? null : typeof value === "string" ? value : value.name ?? value.type ?? value.value ?? null,
+      );
+    const itemSchema = z
+      .object({
+        id: sourceId,
+        employeeId: sourceId.nullish(),
+        employeeType: enumText,
+        date: z.string().nullish(),
+        activity: z.string().nullish(),
+        activityCode: z.string().nullish(),
+        amount: z.coerce.number().finite().nullish(),
+        grossPayItemType: enumText,
+        paidDurationHours: z.coerce.number().finite().nullish(),
+        paidTimeType: enumText,
+        jobId: sourceId.nullish(),
+        projectId: sourceId.nullish(),
+      })
+      .strip();
+    const items: GrossPayItem[] = [];
+    try {
+      for (let page = 1; page <= 200; page += 1) {
+        const params = new URLSearchParams({
+          page: String(page),
+          pageSize: "500",
+          employeeType: "Technician",
+          dateOnOrAfter: query.dateOnOrAfter,
+        });
+        if (query.dateOnOrBefore) params.set("dateOnOrBefore", query.dateOnOrBefore);
+        const raw = await this.get("payroll", "gross-pay-items", params);
+        const parsed = z.object({ data: z.array(itemSchema), hasMore: z.boolean() }).safeParse(raw);
+        if (!parsed.success) {
+          const issue = parsed.error.issues[0];
+          throw new ServiceTitanReadError(
+            `Unexpected gross pay items (${issue?.path.join(".") || "page"}: ${issue?.message ?? "invalid"}).`,
+          );
+        }
+        for (const row of parsed.data.data) {
+          items.push({
+            id: row.id,
+            technicianId: row.employeeId ?? null,
+            date: row.date ?? null,
+            activity: row.activity ?? row.activityCode ?? null,
+            amount: row.amount ?? null,
+            type: row.grossPayItemType,
+            paidDurationHours: row.paidDurationHours ?? null,
+            paidTimeType: row.paidTimeType,
+            jobId: row.jobId ?? null,
+          });
+        }
+        if (!parsed.data.hasMore) break;
+      }
+    } catch (err) {
+      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
+        return { forbidden: true, items: [] };
+      }
+      throw err;
+    }
+    return { forbidden: false, items };
+  }
+
+  /**
    * Every job whose projectId is this project, in every status, plus the
    * ids on the project object. GET only.
    */
@@ -1336,7 +1428,9 @@ export class ServiceTitanReadAdapter {
     const invoiceSchema = z.object({
       id: sourceId,
       job: z.object({ id: sourceId }).nullish(),
-      items: z.array(itemSchema).optional(),
+      // Estimate-type jobs carry $0 invoices with items: null. null must not fail the page.
+      items: z.array(itemSchema).nullish(),
+      total: z.coerce.number().nullish(),
     });
     const lines: Array<{
       invoiceId: string;
@@ -1375,13 +1469,20 @@ export class ServiceTitanReadAdapter {
         data: z.array(invoiceSchema),
         hasMore: z.boolean().optional(),
       }).safeParse(raw);
-      if (!parsed.success)
-        throw new ServiceTitanReadError("Unexpected ServiceTitan invoice items.");
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        throw new ServiceTitanReadError(
+          `Unexpected ServiceTitan invoice items (${issue?.path.join(".") || "page"}: ${issue?.message ?? "invalid"}).`,
+        );
+      }
       for (const invoice of parsed.data.data) {
         if (invoice.items != null) {
           pushInvoice(invoice);
           continue;
         }
+        // ServiceTitan returns items: null on $0 invoices (Estimate-type jobs).
+        // There is no line to store, and invoices/{id} answers 404 for them.
+        if (invoice.items === null && Number(invoice.total ?? 0) === 0) continue;
         const detail = await this.get("accounting", `invoices/${invoice.id}`);
         const direct = invoiceSchema.safeParse(detail);
         const wrapped = z.object({ data: invoiceSchema }).safeParse(detail);

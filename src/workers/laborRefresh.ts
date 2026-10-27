@@ -9,7 +9,8 @@ import {
   type ResolvedTechPay,
 } from "../domain/commissionLabor.js";
 import {
-  readLaborJobs,
+  PAID_LABOR_LOOKBACK_DAYS,
+  readPaidLabor,
   readTechnicianDirectoryForLabor,
   saveLaborRefresh,
   withResolvedTechnicianNames,
@@ -241,7 +242,7 @@ async function storeOperationalReads(
   const lines: StoredInvoiceLine[] = [];
   const orders: Array<{ id: string; externalJobId: string; total: number }> = [];
   let appointmentsFailed = false;
-  let invoicesFailed = false;
+  const invoiceFailedJobs: string[] = [];
   let ordersFailed = false;
   const readJob = connection.client.readJob.bind(connection.client);
   for (const job of jobs) {
@@ -286,7 +287,8 @@ async function storeOperationalReads(
           })),
         );
       } catch (err) {
-        invoicesFailed = true;
+        // Only this job keeps its last stored lines. The other jobs still refresh.
+        invoiceFailedJobs.push(job.external_job_id);
         warnings.push(`Job ${job.external_job_id} invoices: ${errorText(err)}`);
       }
     }
@@ -313,8 +315,14 @@ async function storeOperationalReads(
     if (!appointmentsFailed) {
       await replacePlanAppointments(client, { tenantId, projectId, appointments, observedAt });
     }
-    if (connection.client.readJobInvoiceLines && !invoicesFailed) {
-      await replaceInvoiceLines(client, { tenantId, projectId, lines, observedAt });
+    if (connection.client.readJobInvoiceLines) {
+      await replaceInvoiceLines(client, {
+        tenantId,
+        projectId,
+        lines,
+        observedAt,
+        keepJobIds: invoiceFailedJobs,
+      });
     }
     if (connection.client.readJobPurchaseOrders && !ordersFailed) {
       await replaceMaterialExpenses(client, { tenantId, projectId, orders, observedAt });
@@ -347,9 +355,14 @@ export async function refreshLinkedProject(
   );
   const externalProjectId = connectionRow.rows[0]?.external_project_id ?? null;
   const readProjectJobs = connection.client.readProjectJobs;
+  let earliestJob: number | null = null;
   if (readProjectJobs && externalProjectId) {
     try {
       const listed = await readProjectJobs.call(connection.client, externalProjectId);
+      for (const job of listed) {
+        const created = job.createdOn ? Date.parse(job.createdOn) : NaN;
+        if (Number.isFinite(created) && (earliestJob === null || created < earliestJob)) earliestJob = created;
+      }
       await db.withTenant(tenantId, (client) =>
         replaceProjectJobs(client, {
           tenantId,
@@ -395,16 +408,27 @@ export async function refreshLinkedProject(
       warnings.push(`Appointments, invoices, or purchase orders: ${errorText(err)}`);
     }
   }
-  const results = await readLaborJobs(
+  // Gross pay items have no job filter: read from a day before the
+  // project's first job, or the last PAID_LABOR_LOOKBACK_DAYS.
+  const windowStart = new Date(
+    (earliestJob ?? observedAt.getTime() - PAID_LABOR_LOOKBACK_DAYS * 86_400_000) - 86_400_000,
+  );
+  const paid = await readPaidLabor(
     jobs.rows.map((job) => job.external_job_id),
     {
       // Same call as POST /projects/:id/labor/refresh. Pulling the method off
       // the client and invoking it drops `this`, and ServiceTitanReadAdapter
       // then throws before any project is stamped.
+      readGrossPayItems: connection.client.readGrossPayItems
+        ? (query) => connection.client.readGrossPayItems!.call(connection.client, query)
+        : undefined,
       readJobTimesheets: (jobId) => readJobTimesheets.call(connection.client, jobId),
       readJob: (jobId) => connection.client.readJob(jobId),
     },
+    { dateOnOrAfter: windowStart.toISOString() },
   );
+  const results = paid.results;
+  warnings.push(...paid.warnings);
   const directory = await readTechnicianDirectoryForLabor({
     readTechnicians: connection.client.readTechnicians?.bind(connection.client),
   });
@@ -426,6 +450,7 @@ export async function refreshLinkedProject(
       directory: { ...directory, technicians },
       source,
       observedAt,
+      stamp: paid.stamp,
     });
     await applyResolvedLaborCode(client, tenantId, laborCode);
     const jp = await readStoredProjectMoney(client, projectId);
@@ -595,24 +620,6 @@ async function stampOvernightDue(db: Database, tenantId: string, dueAt: Date): P
       [tenantId, dueAt],
     ),
   );
-}
-
-/**
- * Boot hook for src/server.ts. The 2 AM run stays off unless
- * JP_OVERNIGHT_REFRESH is exactly "on", so a deploy pauses it without a
- * Railway setting change. The manual Refresh route does not come through here.
- */
-export function startLaborRefreshSchedulerIfEnabled(
-  db: Database,
-  sources: SourceConnections,
-  env: NodeJS.ProcessEnv = process.env,
-  options: LaborSchedulerOptions = {},
-): { cancel: () => void } | undefined {
-  if (env.JP_OVERNIGHT_REFRESH !== "on") {
-    console.log("Overnight ServiceTitan refresh paused (set JP_OVERNIGHT_REFRESH=on to enable).");
-    return undefined;
-  }
-  return startLaborRefreshScheduler(db, sources, options);
 }
 
 /**

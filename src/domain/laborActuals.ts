@@ -1,3 +1,4 @@
+import type { GrossPayItem } from "../adapters/serviceTitan.js";
 import type { SqlClient } from "../db/database.js";
 import {
   BURDEN_NOT_SET_MESSAGE,
@@ -55,6 +56,10 @@ export interface LaborJobResult {
   jobId: string;
   outcome: "timesheet" | "appointment_window" | "keep";
   drafts: LaborDraft[];
+  /** Why stored hours were kept instead of replaced. Reported as a refresh warning. */
+  warning?: string;
+  /** The payroll read failed, including a 403. The labor stamp must not move. */
+  failed?: boolean;
 }
 
 export async function readLaborJobs(
@@ -83,18 +88,150 @@ export async function readLaborJobs(
     const batch = jobIds.slice(offset, offset + LABOR_READ_BATCH);
     const reads = await Promise.all(
       batch.map(async (jobId): Promise<LaborJobResult> => {
-        const sheet = await client.readJobTimesheets(jobId);
-        if (!sheet.forbidden) {
-          return { jobId, outcome: "timesheet", drafts: draftsFromTimesheets(sheet.timesheets) };
+        let sheet: { forbidden: boolean; timesheets: TimesheetRow[] };
+        try {
+          sheet = await client.readJobTimesheets(jobId);
+        } catch (err) {
+          // A failed read never clears hours. The last stored rows stay.
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            jobId,
+            outcome: "keep",
+            drafts: [],
+            failed: true,
+            warning: `Job ${jobId} timesheets: ${message}`,
+          };
         }
-        // A payroll denial keeps the last payroll rows. Appointment windows,
-        // dispatch clicks, and arrive clicks are not hours.
-        return { jobId, outcome: "keep", drafts: [] };
+        if (sheet.forbidden) {
+          // A payroll denial is a failed read: keep the last rows, no stamp.
+          return {
+            jobId,
+            outcome: "keep",
+            drafts: [],
+            failed: true,
+            warning: `Job ${jobId} timesheets: ServiceTitan read failed (HTTP 403).`,
+          };
+        }
+        const drafts = draftsFromTimesheets(sheet.timesheets);
+        if (drafts.length === 0) {
+          // An empty or unpriced answer must not overwrite stored hours with zero.
+          return {
+            jobId,
+            outcome: "keep",
+            drafts: [],
+            warning:
+              sheet.timesheets.length > 0
+                ? `Job ${jobId} timesheets: ${sheet.timesheets.length} row(s) without usable hours; stored hours kept`
+                : undefined,
+          };
+        }
+        return { jobId, outcome: "timesheet", drafts };
       }),
     );
     results.push(...reads);
   }
   return results;
+}
+
+/** Gross pay window when ServiceTitan gives no job creation date. */
+export const PAID_LABOR_LOOKBACK_DAYS = 120;
+
+export interface PaidLaborRead {
+  results: LaborJobResult[];
+  warnings: string[];
+  /** False when payroll failed, was denied, or had no paid hours. Stored hours stay. */
+  stamp: boolean;
+}
+
+interface GrossPaySource {
+  readGrossPayItems(query: { dateOnOrAfter: string; dateOnOrBefore?: string }): Promise<{
+    forbidden: boolean;
+    items: GrossPayItem[];
+  }>;
+}
+
+/**
+ * Paid hours per technician per job from ServiceTitan gross pay items:
+ * TimesheetTime rows with a paid duration whose jobId is on the project.
+ * Bonuses, salary, and reimbursements are not hours.
+ */
+export function draftsFromGrossPay(jobIds: readonly string[], items: readonly GrossPayItem[]): Map<string, LaborDraft[]> {
+  const wanted = new Set(jobIds);
+  const sums = new Map<string, { jobId: string; tech: string | null; hours: number; date: string | null }>();
+  for (const item of items) {
+    if (!item.jobId || !wanted.has(item.jobId)) continue;
+    if ((item.type ?? "").toLowerCase() !== "timesheettime") continue;
+    if ((item.paidTimeType ?? "").toLowerCase() === "paidtimeoff") continue;
+    const hours = item.paidDurationHours;
+    if (typeof hours !== "number" || !Number.isFinite(hours) || hours <= 0 || hours >= 1000) continue;
+    const key = `${item.jobId}:${item.technicianId ?? ""}`;
+    const sum = sums.get(key) ?? { jobId: item.jobId, tech: item.technicianId, hours: 0, date: null };
+    sum.hours += hours;
+    if (item.date && (!sum.date || item.date > sum.date)) sum.date = item.date;
+    sums.set(key, sum);
+  }
+  const byJob = new Map<string, LaborDraft[]>();
+  for (const sum of sums.values()) {
+    const drafts = byJob.get(sum.jobId) ?? [];
+    drafts.push({
+      externalTimesheetId: `gpi:${sum.jobId}:${sum.tech ?? "unknown"}`,
+      externalAppointmentId: null,
+      externalTechnicianId: sum.tech,
+      technicianName: null,
+      workDate: newYorkDate(sum.date ?? new Date().toISOString()),
+      hours: Math.round(sum.hours * 100) / 100,
+      source: "timesheet",
+    });
+    byJob.set(sum.jobId, drafts);
+  }
+  return byJob;
+}
+
+/**
+ * Hours for a refresh. Gross pay items when the client has them (the live
+ * adapter does). Otherwise payroll timesheets that carry a paid duration.
+ * Any failure, denial, or empty answer keeps stored hours and the stamp.
+ */
+export async function readPaidLabor(
+  jobIds: string[],
+  client: Partial<GrossPaySource> & Parameters<typeof readLaborJobs>[1],
+  options: { dateOnOrAfter: string },
+): Promise<PaidLaborRead> {
+  const keepAll = (warning: string): PaidLaborRead => ({
+    results: jobIds.map((jobId) => ({ jobId, outcome: "keep", drafts: [], failed: true })),
+    warnings: [warning],
+    stamp: false,
+  });
+  if (client.readGrossPayItems) {
+    let read: { forbidden: boolean; items: GrossPayItem[] };
+    try {
+      read = await client.readGrossPayItems({ dateOnOrAfter: options.dateOnOrAfter });
+    } catch (err) {
+      return keepAll(`Payroll gross pay items: ${err instanceof Error ? err.message : String(err)} Stored hours kept.`);
+    }
+    if (read.forbidden) {
+      return keepAll("Payroll gross pay items: ServiceTitan read failed (HTTP 403). Stored hours kept.");
+    }
+    const byJob = draftsFromGrossPay(jobIds, read.items);
+    if (byJob.size === 0) {
+      return keepAll("Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept.");
+    }
+    return {
+      results: jobIds.map((jobId) => {
+        const drafts = byJob.get(jobId);
+        return drafts ? { jobId, outcome: "timesheet", drafts } : { jobId, outcome: "keep", drafts: [] };
+      }),
+      warnings: [],
+      stamp: true,
+    };
+  }
+  const results = await readLaborJobs(jobIds, client);
+  const warnings = results.flatMap((result) => (result.warning ? [result.warning] : []));
+  const anyHours = results.some((result) => result.outcome === "timesheet");
+  if (!anyHours && !results.some((result) => result.failed) && jobIds.length > 0) {
+    warnings.push("Payroll timesheets: no paid hours for this project's jobs. Stored hours kept.");
+  }
+  return { results, warnings, stamp: anyHours && !results.some((result) => result.failed) };
 }
 
 export function hoursBetween(start: string, end: string): number | null {
@@ -109,6 +246,7 @@ export function hoursBetween(start: string, end: string): number | null {
 export function draftsFromTimesheets(rows: TimesheetRow[]): LaborDraft[] {
   const drafts: LaborDraft[] = [];
   for (const row of rows) {
+    // Payroll paid duration only. Dispatch and arrive clicks are never hours.
     const hours = payrollHours(row);
     if (hours === null) continue;
     const stamp = row.doneOn || row.arrivedOn || row.dispatchedOn;
@@ -934,6 +1072,8 @@ export async function saveLaborRefresh(
     directory: TechnicianDirectory;
     source: LaborRefreshSource;
     observedAt: Date;
+    /** False when a timesheet read failed: hours were kept, so the stamp stays put. */
+    stamp?: boolean;
   },
 ): Promise<void> {
   for (const result of input.results) {
@@ -948,6 +1088,7 @@ export async function saveLaborRefresh(
     });
   }
   await applyTechnicianDirectory(db, input.tenantId, input.directory, input.observedAt);
+  if (input.stamp === false) return;
   await db.query(
     `UPDATE projects.projects
         SET labor_refreshed_at = $2,
