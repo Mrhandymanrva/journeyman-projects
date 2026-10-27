@@ -6,11 +6,13 @@ import type { GrossPayItem } from "../src/adapters/serviceTitan.js";
 import { readPaidLabor } from "../src/domain/laborActuals.js";
 import {
   billedLaborCommission,
-  burdenFromArrivedDone,
+  burdenComparisonTarget,
   chooseLaborCostSource,
   chooseStLaborBurden,
+  laborCostFromPosted,
   laborEstimateFromBilled,
   nonPtoGrossPayOnJobs,
+  postedInvoiceRelatedBonus,
   projectPayrollAge,
   stLaborTotal,
 } from "../src/domain/stLabor.js";
@@ -117,10 +119,10 @@ describe("payroll hours stay on gross pay", () => {
   });
 });
 
-describe("no-payroll labor cost", () => {
+describe("posted commission and the 25% fallback", () => {
   const now = Date.parse("2026-10-27T12:00:00Z");
 
-  it("treats Dalton as older and Segreto as recent", () => {
+  it("keeps project age informational and does not use it to choose commission", () => {
     expect(
       projectPayrollAge(
         [
@@ -134,21 +136,52 @@ describe("no-payroll labor cost", () => {
       projectPayrollAge([{ jobStatus: "Completed", createdOn: "2026-10-02T00:00:00Z" }], now),
     ).toBe("recent");
     expect(projectPayrollAge([{ jobStatus: "Completed", createdOn: null }], now)).toBe("recent");
-    expect(
-      chooseLaborCostSource({ payrollReadSucceeded: true, matchingPaidHourRows: 0, age: "older" }),
-    ).toBe("billed_labor_25pct");
-    expect(
-      chooseLaborCostSource({ payrollReadSucceeded: true, matchingPaidHourRows: 0, age: "recent" }),
-    ).toBe("none_recent_payroll_missing");
-    expect(
-      chooseLaborCostSource({ payrollReadSucceeded: true, matchingPaidHourRows: 2, age: "older" }),
-    ).toBe("payroll");
-    expect(
-      chooseLaborCostSource({ payrollReadSucceeded: false, matchingPaidHourRows: 0, age: "older" }),
-    ).toBeNull();
+    expect(chooseLaborCostSource({ payrollReadSucceeded: true, postedCommissionRows: 8 })).toBe("posted_commission");
+    expect(chooseLaborCostSource({ payrollReadSucceeded: true, postedCommissionRows: 0 })).toBe("billed_labor_25pct");
+    expect(chooseLaborCostSource({ payrollReadSucceeded: false, postedCommissionRows: 0 })).toBeNull();
   });
 
-  it("prices commission from the reconciled billed labor, excluding MHM 250.Labor", () => {
+  it("sums posted InvoiceRelatedBonus and ignores paid time off, old rows, and other jobs", () => {
+    const posted = postedInvoiceRelatedBonus(
+      ["100"],
+      [
+        { id: "1", technicianId: "6", date: "2026-10-01", activity: null, amount: 100, amountAdjustment: 0.5, type: "InvoiceRelatedBonus", paidDurationHours: null, paidTimeType: null, jobId: "100" },
+        { id: "pto", technicianId: "6", date: "2026-10-01", activity: null, amount: 40, type: "InvoiceRelatedBonus", paidDurationHours: null, paidTimeType: "PaidTimeOff", jobId: "100" },
+        { id: "old", technicianId: "6", date: "2022-08-01", activity: null, amount: 999, type: "InvoiceRelatedBonus", paidDurationHours: null, paidTimeType: null, jobId: "100" },
+        { id: "other", technicianId: "6", date: "2026-10-01", activity: null, amount: 80, type: "InvoiceRelatedBonus", paidDurationHours: null, paidTimeType: null, jobId: "200" },
+        { id: "wage", technicianId: "6", date: "2026-10-01", activity: null, amount: 50, type: "TimesheetTime", paidDurationHours: 2, paidTimeType: "Regular", jobId: "100" },
+      ],
+    );
+    expect(posted).toEqual({ rows: 1, amount: 100.5 });
+    const cost = laborCostFromPosted(posted);
+    expect(cost.commission).toBe(100.5);
+    expect(cost.commission_label).toBe("Commission (posted in ServiceTitan payroll)");
+    expect(cost.burden).toBeNull();
+    expect(cost.burden_label).toBe("not available from ServiceTitan");
+    expect(cost.total).toBe(100.5);
+    expect(cost.total_label).toBe("Total (excluding burden)");
+    const html = laborCardHtml(
+      {
+        hours: 0,
+        labor_source: "posted_commission",
+        labor_label: cost.label,
+        commission_label: cost.commission_label,
+        burden_label: cost.burden_label,
+        total_label: cost.total_label,
+        labor_wage: cost.commission,
+        labor_burden: cost.burden,
+        total: cost.total,
+        observed_at: "2026-10-27T12:00:00.000Z",
+      },
+      { esc: (value: unknown) => String(value ?? ""), stamp: () => "Oct 27" },
+    );
+    expect(html).toContain("Commission (posted in ServiceTitan payroll) $100.50");
+    expect(html).toContain("Labor burden not available from ServiceTitan");
+    expect(html).toContain("Total (excluding burden) $100.50");
+    expect(html).not.toContain("Labor burden $0.00");
+  });
+
+  it("prices commission from the reconciled billed labor when no posted rows exist, excluding MHM 250.Labor", () => {
     const raw = [
       { sku: "MHM.25PLFE", accountName: "Labor Revenue", type: "Service", total: 50000 },
       { sku: "Labor", accountName: "Labor Revenue - Install", type: "Service", total: 16410 },
@@ -162,47 +195,13 @@ describe("no-payroll labor cost", () => {
     });
     expect(money.billedLabor).toBe(66410);
     expect(money.billedLabor).not.toBe(DALTON_FINANCIALS.billedLabor);
-    const burden = burdenFromArrivedDone(
-      [
-        {
-          id: "ts-1",
-          technicianId: "6",
-          dispatchedOn: "2026-10-20T11:00:00Z",
-          arrivedOn: "2026-10-20T12:00:00Z",
-          doneOn: "2026-10-20T16:00:00Z",
-        },
-        {
-          id: "drive-only",
-          technicianId: "6",
-          dispatchedOn: "2026-10-20T10:00:00Z",
-          arrivedOn: "2026-10-20T11:00:00Z",
-          doneOn: null,
-        },
-        {
-          id: "ts-long",
-          technicianId: "7",
-          arrivedOn: "2026-10-21T06:00:00Z",
-          doneOn: "2026-10-22T02:00:00Z",
-        },
-      ],
-      new Map([
-        ["6", 10],
-        ["7", 20],
-      ]),
-    );
-    expect(burden).toEqual({ hours: 18, burden: 320, techsMissingRate: 0 });
-    const estimate = laborEstimateFromBilled({
-      billedLabor: money.billedLabor,
-      burden: burden.burden,
-      burdenHours: burden.hours,
-    });
+    const estimate = laborEstimateFromBilled({ billedLabor: money.billedLabor });
     expect(estimate.billed_labor).toBe(66410);
     expect(estimate.commission).toBe(16602.5);
-    expect(billedLaborCommission(estimate.billed_labor)).toBe(16602.5);
-    expect(estimate.burden).toBe(320);
-    expect(estimate.total).toBe(16922.5);
-    expect(estimate.label).toBe("Labor at 25% of billed labor (no payroll data)");
-    expect(estimate.commission_label).toBe("Commission (25% of billed labor)");
+    expect(estimate.billed_labor == null ? null : billedLaborCommission(estimate.billed_labor)).toBe(16602.5);
+    expect(estimate.burden).toBeNull();
+    expect(estimate.total).toBe(16602.5);
+    expect(estimate.commission_label).toBe("Commission (estimated at 25% of billed labor)");
     const html = laborCardHtml(
       {
         hours: 0,
@@ -210,6 +209,7 @@ describe("no-payroll labor cost", () => {
         labor_label: estimate.label,
         commission_label: estimate.commission_label,
         burden_label: estimate.burden_label,
+        total_label: estimate.total_label,
         labor_wage: estimate.commission,
         labor_burden: estimate.burden,
         total: estimate.total,
@@ -217,11 +217,24 @@ describe("no-payroll labor cost", () => {
       },
       { esc: (value: unknown) => String(value ?? ""), stamp: () => "Oct 27" },
     );
-    expect(html).toContain("Commission (25% of billed labor) $16,602.50");
-    expect(html).toContain("Labor burden $320.00");
-    expect(html).toContain("Total $16,922.50");
+    expect(html).toContain("Commission (estimated at 25% of billed labor) $16,602.50");
+    expect(html).toContain("Labor burden not available from ServiceTitan");
+    expect(html).toContain("Total (excluding burden) $16,602.50");
     expect(html).not.toContain("MHM.25PLFE only");
-    expect(html).not.toContain("drive");
+    expect(html).not.toContain("Labor burden $0.00");
+  });
+
+  it("compares Dalton candidates with labor minus posted commission, and Segreto with burden only", () => {
+    expect(burdenComparisonTarget({ knownLabor: 21883.04, postedCommission: 16788.54 })).toEqual({
+      basis: "st_labor_minus_posted_commission",
+      amount: 5094.5,
+      note: expect.any(String),
+    });
+    expect(burdenComparisonTarget({ knownLabor: 2440.43, postedCommission: 3142.42 })).toEqual({
+      basis: "st_labor_burden_only",
+      amount: 2440.43,
+      note: expect.any(String),
+    });
   });
 });
 
@@ -269,6 +282,14 @@ describe("ServiceTitan labor reconciliation breakdown", () => {
         priorBurden: 12,
       }).carriedPrior,
     ).toBe(true);
+    expect(
+      chooseStLaborBurden({
+        breakdown: null,
+        projectGrossPayRows: 0,
+        previouslyStamped: true,
+        priorBurden: 0,
+      }),
+    ).toEqual({ laborBurden: null, carriedPrior: false, breakdown: null });
   });
 });
 
@@ -334,7 +355,13 @@ describe("st labor diagnostic", () => {
     expect(body.gross_pay.date_range.earliest).toBe("2026-10-20T00:00:00Z");
     expect(body.gross_pay.payroll_ids).toEqual([]);
     expect(body.project_age).toBe("older");
-    expect(body.labor_source).toBe("payroll");
+    expect(body.labor_source).toBe("posted_commission");
+    expect(body.posted_commission).toEqual({
+      rows: 1,
+      amount: 85,
+      label: "Commission (posted in ServiceTitan payroll)",
+    });
+    expect(body.live_burden).toMatchObject({ available: false, amount: null, included_in_total: false });
     expect(body.gross_pay.project_rows_job_not_in_list).toBe(1);
     expect(body.gross_pay.timesheet_time_without_job_id).toEqual({ count: 3, with_paid_hours: 1 });
     expect(body.job_timesheets.skipped_canceled_jobs).toBe(1);
@@ -347,12 +374,159 @@ describe("st labor diagnostic", () => {
       hours: 18,
       amount: 333.48,
       included_in_labor_hours: false,
+      included_in_burden: false,
       service_titan_labor: 21883.04,
-      delta: -21549.56,
+      comparison_amount: 21798.04,
+      delta: -21464.56,
     });
+    expect(body.burden_candidates.every((row) => row.included_in_burden === false)).toBe(true);
+    expect(body.burden_candidate_matches).toEqual([]);
     expect(body.payroll_adjustments).toMatchObject({ available: true, count: 2, sum: 15, tied_by: "job-or-invoice", untied: 1 });
     expect(body.timesheet_burden.note).toMatch(/not a match/);
     expect(body.timesheet_burden.included_in_labor_hours).toBe(false);
+  });
+
+  it("reports a matching burden candidate without adopting it or leaking personal data", () => {
+    const body = buildStLaborDiagnostic(
+      {
+        stProjectId: "290588725",
+        windowStart: "2026-01-01T00:00:00.000Z",
+        jobs: [{ id: "100", jobStatus: "Completed", createdOn: "2026-10-20T00:00:00Z" }],
+        grossPay: {
+          pagesRead: 1,
+          capped: false,
+          forbidden: false,
+          skipped: 0,
+          omitted: 0,
+          items: [
+            {
+              id: "bonus",
+              technicianId: "tech-SECRET-77",
+              date: "2026-10-20T00:00:00Z",
+              activity: "Commission",
+              amount: 21783.04,
+              type: "InvoiceRelatedBonus",
+              paidDurationHours: null,
+              paidTimeType: null,
+              jobId: "100",
+              projectId: "290588725",
+            },
+          ],
+          timesheetTimeWithoutJob: { count: 0, withPaidHours: 0 },
+        },
+        timesheets: [
+          {
+            id: "ts",
+            jobId: "100",
+            technicianId: "tech-SECRET-77",
+            technicianName: "Quinlan Placeholder",
+            arrivedOn: "2026-10-20T12:00:00Z",
+            doneOn: "2026-10-20T13:00:00Z",
+          },
+        ],
+        timesheetsForbidden: false,
+        burdenRateByTechnician: new Map([["tech-SECRET-77", 10]]),
+        adjustments: { available: false, items: [] },
+        invoiceIds: [],
+        invoicesUnread: false,
+        candidates: {
+          technician_shifts: {
+            available: true,
+            endpoint: "GET dispatch/v2/tenant/{tenant}/technician-shifts",
+            shifts: [
+              {
+                technicianId: "tech-SECRET-77",
+                start: "2026-10-20T08:00:00Z",
+                end: "2026-10-20T18:00:00Z",
+                active: true,
+              },
+            ],
+            note: null,
+          },
+          appointments: {
+            available: true,
+            endpoint: "GET jpm/v2/tenant/{tenant}/appointments",
+            appointments: [
+              {
+                id: "appt-1",
+                jobId: "100",
+                start: "2026-10-20T08:00:00Z",
+                end: "2026-10-20T09:00:00Z",
+                arrivalWindowStart: "2026-10-20T08:00:00Z",
+                arrivalWindowEnd: "2026-10-20T08:30:00Z",
+                status: "Done",
+              },
+            ],
+            note: null,
+          },
+          assignments: {
+            available: true,
+            endpoint: "GET dispatch/v2/tenant/{tenant}/appointment-assignments",
+            assignments: [
+              {
+                appointmentId: "appt-1",
+                jobId: "100",
+                technicianId: "tech-SECRET-77",
+                active: true,
+                status: "Done",
+              },
+            ],
+            note: null,
+          },
+          payroll_probes: [
+            {
+              id: "payroll_timesheet_codes",
+              endpoint: "GET payroll/v2/tenant/{tenant}/timesheet-codes",
+              available: true,
+              hours_applicable: false,
+              slices: [],
+              note: "This payroll list names codes. It does not carry job hours, so no burden dollars are computed.",
+            },
+            {
+              id: "payroll_non_job_timesheets",
+              endpoint: "GET payroll/v2/tenant/{tenant}/non-job-timesheets",
+              available: true,
+              hours_applicable: true,
+              slices: [{ technicianId: "tech-SECRET-77", hours: 1 }],
+              note: "Non-job timesheets can hold hours that are not on a job.",
+            },
+            {
+              id: "payroll_activity_codes",
+              endpoint: "GET payroll/v2/tenant/{tenant}/activity-codes",
+              available: false,
+              hours_applicable: false,
+              slices: [],
+              note: "GET payroll/v2/tenant/{tenant}/activity-codes returned HTTP 404.",
+            },
+          ],
+        },
+      },
+      new Date("2026-10-27T12:00:00Z"),
+    );
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("SECRET");
+    expect(raw).not.toContain("Quinlan");
+    expect(raw).not.toContain("burdenRate");
+    expect(body.posted_commission.amount).toBe(21783.04);
+    expect(body.burden_comparison).toMatchObject({
+      basis: "st_labor_minus_posted_commission",
+      amount: 100,
+    });
+    expect(body.live_burden.amount).toBeNull();
+    expect(body.live_burden.included_in_total).toBe(false);
+    const shift = body.burden_candidates.find((row) => row.id === "technician_shifts");
+    expect(shift).toMatchObject({
+      available: true,
+      hours: 10,
+      amount: 100,
+      comparison_amount: 100,
+      delta: 0,
+      matches: true,
+      included_in_burden: false,
+    });
+    expect(body.burden_candidate_matches).toEqual(["technician_shifts"]);
+    expect(body.burden_candidates.find((row) => row.id === "appointments")?.amount).toBeNull();
+    expect(body.burden_candidates.find((row) => row.id === "payroll_activity_codes")?.available).toBe(false);
   });
 
   it("does not request timesheets for a canceled job", async () => {
@@ -414,7 +588,18 @@ describe("st labor diagnostic", () => {
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(asked).toEqual([["100"]]);
     expect(JSON.stringify(ok.body)).not.toContain("Quinlan");
-    expect(ok.body.data.labor_source).toBe("payroll");
+    expect(ok.body.data.labor_source).toBe("posted_commission");
+    expect(ok.body.data.live_burden.amount).toBeNull();
+    expect(ok.body.data.burden_candidates.map((row: { id: string }) => row.id)).toEqual(
+      expect.arrayContaining([
+        "technician_shifts",
+        "appointment_assignments",
+        "appointments",
+        "payroll_timesheet_codes",
+        "payroll_non_job_timesheets",
+        "payroll_activity_codes",
+      ]),
+    );
     expect(ok.body.data.timesheet_burden.included_in_labor_hours).toBe(false);
     expect(ok.body.data.project_labor_expense.available).toBe(false);
     const report = await readStLaborDiagnostic(

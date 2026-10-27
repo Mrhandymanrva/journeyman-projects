@@ -52,10 +52,12 @@ describe("portfolio project feed", () => {
       labor_source: null,
       labor_label: null,
       labor_warning: null,
+      commission_source: null,
       commission_label: null,
       burden_label: null,
       billed_labor: null,
       burden_hours: null,
+      total_label: null,
     });
     expect(res.body.data.projects[0].labor_refresh).toEqual({
       status: null,

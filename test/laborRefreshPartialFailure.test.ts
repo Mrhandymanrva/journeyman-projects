@@ -292,9 +292,15 @@ describe("manual refresh with partial ServiceTitan failures", () => {
       ]),
     );
     expect(rec?.lines.find((line) => line.key === "laborBurden")).toMatchObject({
-      jp: 87.5,
+      jp: 150,
       st: 470,
-      delta: -382.5,
+      delta: -320,
+      status: "posted",
+      commission: 150,
+      commission_source: "posted_invoice_bonus",
+      commission_label: "Commission (posted in ServiceTitan payroll)",
+      burden: null,
+      burden_label: "not available from ServiceTitan",
     });
     expect(rec?.st_labor).toMatchObject({
       burden: 87.5,

@@ -256,10 +256,12 @@ async function presentLabor(
     labor_source: labor.labor_source,
     labor_label: labor.labor_label,
     labor_warning: labor.labor_warning,
+    commission_source: labor.commission_source,
     commission_label: labor.commission_label,
     burden_label: labor.burden_label,
     billed_labor: labor.billed_labor,
     burden_hours: labor.burden_hours,
+    total_label: labor.total_label,
     missing: labor.missing,
     rates_forbidden: summary.rows[0]?.labor_rates_forbidden === true,
     ...(showMoney

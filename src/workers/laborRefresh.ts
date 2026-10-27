@@ -36,21 +36,17 @@ import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
 import { isBeforeSourceFloor, sourceWindowStart } from "../domain/sourceFloor.js";
 import { grossPayItemTooOld } from "../domain/grossPay.js";
 import {
-  RECENT_PAYROLL_MISSING_WARNING,
-  burdenFromArrivedDone,
   chooseLaborCostSource,
   chooseStLaborBurden,
-  countMatchingPaidHourRows,
-  isCanceledJobStatus,
+  laborCostFromPosted,
   laborEstimateFromBilled,
   nonPtoGrossPayOnJobs,
-  projectPayrollAge,
+  postedInvoiceRelatedBonus,
   stLaborTotal,
   sumTiedAdjustments,
   type LaborCostSource,
   type LaborEstimate,
   type StLaborBreakdown,
-  type WorkedTimesheet,
 } from "../domain/stLabor.js";
 import type { GrossPayItem } from "../adapters/serviceTitan.js";
 import {
@@ -432,15 +428,9 @@ export async function refreshLinkedProject(
   const externalProjectId = connectionRow.rows[0]?.external_project_id ?? null;
   const readProjectJobs = connection.client.readProjectJobs;
   let earliestJob: number | null = null;
-  let datedJobs: Array<{ id: string; jobStatus: string | null; createdOn: string | null }> = [];
   if (readProjectJobs && externalProjectId) {
     try {
       const listed = await readProjectJobs.call(connection.client, externalProjectId);
-      datedJobs = listed.map((job) => ({
-        id: job.id,
-        jobStatus: job.jobStatus,
-        createdOn: job.createdOn,
-      }));
       for (const job of listed) {
         const created = job.createdOn ? Date.parse(job.createdOn) : NaN;
         if (Number.isFinite(created) && (earliestJob === null || created < earliestJob)) earliestJob = created;
@@ -512,12 +502,11 @@ export async function refreshLinkedProject(
     },
     { dateOnOrAfter: windowStart.toISOString() },
   );
+  const postedCommission = paid.grossPay ? postedInvoiceRelatedBonus(jobIds, paid.grossPay) : null;
   const laborSource = chooseLaborCostSource({
     payrollReadSucceeded: paid.grossPay != null,
-    matchingPaidHourRows: paid.grossPay ? countMatchingPaidHourRows(jobIds, paid.grossPay) : 0,
-    age: projectPayrollAge(datedJobs, observedAt.getTime()),
+    postedCommissionRows: postedCommission?.rows ?? 0,
   });
-  if (laborSource === "none_recent_payroll_missing") warnings.push(RECENT_PAYROLL_MISSING_WARNING);
   let adjustmentItems: Array<{
     id: string | null;
     employeeId: string | null;
@@ -557,17 +546,6 @@ export async function refreshLinkedProject(
     technicians,
     connection.client.readStaffName?.bind(connection.client),
   );
-  const timesheetBurden =
-    laborSource === "billed_labor_25pct"
-      ? await timesheetBurdenForJobs({
-          connection,
-          jobIds: jobs.rows
-            .filter((job) => !isCanceledJobStatus(job.source_job_status))
-            .map((job) => job.external_job_id),
-          technicians,
-          warnings,
-        })
-      : null;
   await db.withTenant(tenantId, async (client) => {
     const stampRow = await client.query<{ labor_refreshed_at: Date | null }>(
       `SELECT labor_refreshed_at FROM projects.projects WHERE id = $1`,
@@ -587,13 +565,11 @@ export async function refreshLinkedProject(
     await applyResolvedLaborCode(client, tenantId, laborCode);
     let jp = await readStoredProjectMoney(client, projectId);
     const estimate =
-      laborSource === "billed_labor_25pct" && timesheetBurden
-        ? laborEstimateFromBilled({
-            billedLabor: jp.billedLabor,
-            burden: timesheetBurden.burden,
-            burdenHours: timesheetBurden.hours,
-          })
-        : null;
+      laborSource === "posted_commission" && postedCommission
+        ? laborCostFromPosted(postedCommission)
+        : laborSource === "billed_labor_25pct"
+          ? laborEstimateFromBilled({ billedLabor: jp.billedLabor })
+          : null;
     if (laborSource) {
       await saveLaborCostSource(client, {
         projectId,
@@ -650,7 +626,7 @@ export async function refreshLinkedProject(
     } else if (choice.laborBurden != null) {
       st = withLaborBurden(st, choice.laborBurden);
     }
-    if (laborSource === "billed_labor_25pct" && estimate) {
+    if (estimate) {
       jp = withLaborBurden(jp, estimate.total);
       const published = publishedServiceTitanLabor(externalProjectId);
       if (published != null) st = withLaborBurden(st, published);
@@ -745,80 +721,27 @@ async function storeProjectFinancialSummary(
   );
 }
 
-async function timesheetBurdenForJobs(input: {
-  connection: ServiceTitanSource;
-  jobIds: readonly string[];
-  technicians: readonly ResolvedTechPay[];
-  warnings: string[];
-}): Promise<{ hours: number; burden: number }> {
-  const rates = new Map<string, number | null>();
-  for (const tech of input.technicians) {
-    const id = technicianIdKey(tech.id);
-    if (id) rates.set(id, tech.appliedBurdenRate);
-  }
-  let rows: WorkedTimesheet[] = [];
-  const bulk = input.connection.client.readJobTimesheetsForJobs;
-  if (input.jobIds.length === 0) {
-    rows = [];
-  } else if (bulk) {
-    try {
-      const read = await bulk.call(input.connection.client, input.jobIds);
-      if (read.forbidden) {
-        input.warnings.push("Payroll job timesheets: ServiceTitan read failed (HTTP 403). Burden was left at 0.");
-      } else if (read.capped) {
-        input.warnings.push("Payroll job timesheets: pagination limit reached. Burden was left at 0.");
-      } else {
-        rows = read.timesheets;
-      }
-    } catch (err) {
-      input.warnings.push(`Payroll job timesheets: ${errorText(err)} Burden was left at 0.`);
-    }
-  } else {
-    const readOne = input.connection.client.readJobTimesheets;
-    for (const jobId of input.jobIds) {
-      if (!readOne) {
-        input.warnings.push("Payroll job timesheets are not configured. Burden was left at 0.");
-        break;
-      }
-      try {
-        const read = await readOne.call(input.connection.client, jobId);
-        if (read.forbidden) {
-          input.warnings.push(`Job ${jobId} timesheets: ServiceTitan read failed (HTTP 403).`);
-          continue;
-        }
-        rows.push(...read.timesheets.map((row) => ({ ...row, jobId })));
-      } catch (err) {
-        input.warnings.push(`Job ${jobId} timesheets: ${errorText(err)}`);
-      }
-    }
-  }
-  const burden = burdenFromArrivedDone(rows, rates);
-  if (burden.techsMissingRate > 0) {
-    input.warnings.push(
-      `Labor burden: ${burden.techsMissingRate} technician${burden.techsMissingRate === 1 ? "" : "s"} with arrived-to-done hours had no burden rate.`,
-    );
-  }
-  return { hours: burden.hours, burden: burden.burden };
-}
-
 function laborLine(
   line: ReconciliationLine,
   source: LaborCostSource | null,
   estimate: LaborEstimate | null,
 ): ReconciliationLine {
-  if (line.key !== "laborBurden") return line;
-  if (source === "billed_labor_25pct" && estimate) {
-    return {
-      ...line,
-      label: "Labor cost (commission + burden)",
-      status: "estimated",
-      commission: estimate.commission,
-      burden: estimate.burden,
-      billed_labor: estimate.billed_labor,
-    };
-  }
-  if (source === "none_recent_payroll_missing") return { ...line, status: "missing" };
-  return line;
+  if (line.key !== "laborBurden" || !estimate || !source) return line;
+  return {
+    ...line,
+    label:
+      estimate.commission_source === "posted_invoice_bonus"
+        ? "Labor cost (posted commission, burden not available)"
+        : "Labor cost (estimated commission, burden not available)",
+    status: estimate.commission_source === "posted_invoice_bonus" ? "posted" : "estimated",
+    commission: estimate.commission,
+    commission_source: estimate.commission_source,
+    commission_label: estimate.commission_label,
+    burden: null,
+    burden_label: estimate.burden_label,
+    total_label: estimate.total_label,
+    ...(estimate.billed_labor == null ? {} : { billed_labor: estimate.billed_labor }),
+  };
 }
 
 function errorText(err: unknown): string {

@@ -5,19 +5,31 @@ import { PAID_LABOR_LOOKBACK_DAYS } from "./laborActuals.js";
 import { publishedServiceTitanLabor, roundMoney } from "./projectFinancials.js";
 import { sourceWindowStart } from "./sourceFloor.js";
 import {
+  BURDEN_MATCH_DOLLARS,
+  BURDEN_UNAVAILABLE_LABEL,
+  POSTED_COMMISSION_LABEL,
   PROJECT_LABOR_EXPENSE_UNAVAILABLE,
   RECENT_PROJECT_DAYS,
   TIMESHEET_BURDEN_ENDPOINT,
+  appointmentHourSlices,
   arrivedDoneHours,
+  burdenComparisonTarget,
+  burdenDollarsFromHours,
+  cappedStretchHours,
   chooseLaborCostSource,
   countMatchingPaidHourRows,
   grossPayRowDollars,
   isCanceledJobStatus,
   isPaidTimeOff,
+  postedInvoiceRelatedBonus,
+  projectJobDates,
   projectPayrollAge,
+  shiftHoursOnJobDates,
   sumTiedAdjustments,
+  type BurdenCandidateRead,
   type LaborCostSource,
   type PayrollAdjustmentRow,
+  type TechHourSlice,
   type WorkedTimesheet,
 } from "./stLabor.js";
 
@@ -51,10 +63,27 @@ export interface StLaborDiagnosticRead {
   };
   invoiceIds: readonly string[];
   invoicesUnread: boolean;
+  /** Absent when the caller did not run the extra GET search. Those candidates are reported as not read. */
+  candidates?: BurdenCandidateRead | null;
 }
 
 export const PROJECT_AGE_RULE =
-  "A project is older when its earliest non-canceled job was created more than 60 days before the read. Otherwise it is recent, including when created dates are missing. Recent projects with no matching payroll rows are not estimated at 25% of billed labor.";
+  "Project age is informational and does not choose commission. A project is older when its earliest non-canceled job was created more than 60 days before the read. Otherwise it is recent, including when created dates are missing. Commission is posted InvoiceRelatedBonus when those rows exist, and 25% of reconciled billed labor when they do not.";
+
+export interface BurdenCandidateReport {
+  id: string;
+  endpoint: string;
+  available: boolean;
+  hours: number | null;
+  amount: number | null;
+  techs_missing_rate: number | null;
+  comparison_basis: "st_labor_minus_posted_commission" | "st_labor_burden_only" | "none";
+  comparison_amount: number | null;
+  delta: number | null;
+  matches: boolean;
+  included_in_burden: false;
+  note: string;
+}
 
 export interface StLaborDiagnostic {
   st_project_id: string;
@@ -65,6 +94,18 @@ export interface StLaborDiagnostic {
   recent_window_days: number;
   age_rule: string;
   labor_source: LaborCostSource | null;
+  posted_commission: {
+    rows: number;
+    amount: number;
+    label: string;
+  };
+  live_burden: {
+    available: false;
+    amount: null;
+    label: string;
+    included_in_total: false;
+    note: string;
+  };
   gross_pay: {
     pages_read: number;
     capped: boolean;
@@ -119,10 +160,21 @@ export interface StLaborDiagnostic {
     amount: number;
     techs_missing_rate: number;
     included_in_labor_hours: false;
+    included_in_burden: false;
     service_titan_labor: number | null;
+    comparison_basis: BurdenCandidateReport["comparison_basis"];
+    comparison_amount: number | null;
     delta: number | null;
     note: string;
   };
+  burden_comparison: {
+    basis: BurdenCandidateReport["comparison_basis"];
+    amount: number | null;
+    note: string;
+  };
+  burden_candidates: BurdenCandidateReport[];
+  /** Candidate ids whose dollars are within $1 of the comparison. None of them is the live burden. */
+  burden_candidate_matches: string[];
   payroll_adjustments: {
     available: boolean;
     count: number;
@@ -175,11 +227,14 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
   const matchingPaidHours = input.grossPay.forbidden
     ? 0
     : countMatchingPaidHourRows(jobIds, input.grossPay.items);
+  const posted = input.grossPay.forbidden
+    ? { rows: 0, amount: 0 }
+    : postedInvoiceRelatedBonus(jobIds, input.grossPay.items);
   const laborSource = chooseLaborCostSource({
     payrollReadSucceeded: !input.grossPay.forbidden,
-    matchingPaidHourRows: matchingPaidHours,
-    age,
+    postedCommissionRows: posted.rows,
   });
+  const comparison = burdenComparisonTarget({ knownLabor: known, postedCommission: posted.amount });
 
   const typeBuckets = new Map<
     string,
@@ -281,7 +336,15 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     }
     burden = roundMoney(burden + roundMoney(hours * rate));
   }
-  const burdenDelta = known == null ? null : roundMoney(burden - known);
+  const burdenDelta = comparison.amount == null ? null : roundMoney(burden - comparison.amount);
+  const activeJobIds = new Set(jobIds.filter((id) => !canceled.has(id)));
+  const candidates = burdenCandidateReports({
+    input,
+    activeJobIds,
+    rates: input.burdenRateByTechnician,
+    comparison,
+    timesheetSlices: [...hoursByTech.entries()].map(([technicianId, hours]) => ({ technicianId, hours })),
+  });
   const tied = sumTiedAdjustments(input.adjustments.items, {
     jobIds,
     invoiceIds: input.invoiceIds,
@@ -297,6 +360,18 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     recent_window_days: RECENT_PROJECT_DAYS,
     age_rule: PROJECT_AGE_RULE,
     labor_source: laborSource,
+    posted_commission: {
+      rows: posted.rows,
+      amount: posted.amount,
+      label: POSTED_COMMISSION_LABEL,
+    },
+    live_burden: {
+      available: false,
+      amount: null,
+      label: BURDEN_UNAVAILABLE_LABEL,
+      included_in_total: false,
+      note: "No burden source is approved. Candidates below are not used as burden.",
+    },
     gross_pay: {
       pages_read: input.grossPay.pagesRead,
       capped: input.grossPay.capped,
@@ -360,10 +435,16 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
       amount: burden,
       techs_missing_rate: techsMissingRate,
       included_in_labor_hours: false,
+      included_in_burden: false,
       service_titan_labor: known,
+      comparison_basis: comparison.basis,
+      comparison_amount: comparison.amount,
       delta: burdenDelta,
-      note: "Arrived to done, 14 hour cap, no drive time. Shown next to ServiceTitan Expense > Labor as a difference, not a match.",
+      note: "Arrived to done, 14 hour cap. A candidate only, not the labor burden, and not a match.",
     },
+    burden_comparison: comparison,
+    burden_candidates: candidates,
+    burden_candidate_matches: candidates.filter((row) => row.matches).map((row) => row.id),
     payroll_adjustments: {
       available: input.adjustments.available,
       count: tied.count,
@@ -374,12 +455,230 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     },
     notes: [
       PROJECT_AGE_RULE,
-      "Labor hours stay ServiceTitan gross-pay paid duration. Job-timesheet stamps are used only for burden when payroll has no matching rows.",
-      "Dispatch time is not part of labor hours or burden.",
+      "Commission is the sum of InvoiceRelatedBonus on the project's jobs. When none exist, commission is 25% of reconciled billed labor.",
+      "Burden is not available from ServiceTitan. Job-timesheet hours are not used as burden.",
+      "Burden candidates are aggregates only. A match within $1 is reported and is not adopted.",
       PROJECT_LABOR_EXPENSE_UNAVAILABLE,
-      "Gross pay of every type except paid time off still feeds the reconciliation breakdown when payroll rows exist.",
-      "Rows dated before 2022-08-02 are omitted.",
+      "Rows dated before 2022-08-02 are omitted. Paid time off is excluded from posted commission.",
     ],
+  };
+}
+
+function burdenCandidateReports(input: {
+  input: StLaborDiagnosticRead;
+  activeJobIds: ReadonlySet<string>;
+  rates: ReadonlyMap<string, number | null>;
+  comparison: ReturnType<typeof burdenComparisonTarget>;
+  timesheetSlices: TechHourSlice[];
+}): BurdenCandidateReport[] {
+  const read = input.input.candidates;
+  const appointmentStamps = (read?.appointments.appointments ?? []).flatMap((row) => [row.start, row.end]);
+  const timesheetStamps = input.input.timesheets.flatMap((row) => [row.arrivedOn, row.doneOn]);
+  const jobDates = new Set(projectJobDates(input.input.jobs, [...appointmentStamps, ...timesheetStamps]));
+  const technicianIds = new Set<string>();
+  for (const item of input.input.grossPay.items) {
+    if (item.technicianId && item.jobId && input.activeJobIds.has(item.jobId)) technicianIds.add(item.technicianId);
+  }
+  for (const row of input.input.timesheets) {
+    if (row.technicianId && row.jobId && input.activeJobIds.has(row.jobId)) technicianIds.add(row.technicianId);
+  }
+  for (const row of read?.assignments.assignments ?? []) {
+    if (row.technicianId) technicianIds.add(row.technicianId);
+  }
+
+  const grossPaid: TechHourSlice[] = [];
+  const grossClock: TechHourSlice[] = [];
+  for (const item of input.input.grossPay.items) {
+    if (input.input.grossPay.forbidden) break;
+    if (!item.jobId || !input.activeJobIds.has(item.jobId)) continue;
+    if (isPaidTimeOff(item)) continue;
+    if (typeof item.paidDurationHours === "number" && item.paidDurationHours > 0 && item.paidDurationHours < 1000) {
+      grossPaid.push({ technicianId: item.technicianId, hours: roundMoney(Math.min(item.paidDurationHours, 14)) });
+    }
+    const clock = cappedStretchHours(item.startedOn, item.endedOn);
+    if (clock != null) grossClock.push({ technicianId: item.technicianId, hours: clock });
+  }
+
+  const appointmentHours = appointmentHourSlices({
+    assignments: read?.assignments.assignments ?? [],
+    appointments: read?.appointments.appointments ?? [],
+    jobIds: input.activeJobIds,
+  });
+  const shiftSlices = shiftHoursOnJobDates({
+    shifts: read?.technician_shifts.shifts ?? [],
+    technicianIds,
+    jobDates,
+  });
+
+  const reports: BurdenCandidateReport[] = [
+    priceCandidate({
+      id: "payroll_job_timesheets",
+      endpoint: TIMESHEET_BURDEN_ENDPOINT,
+      available: !input.input.timesheetsForbidden,
+      slices: input.timesheetSlices,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: input.input.timesheetsForbidden
+        ? "Payroll job timesheets were denied."
+        : "Arrived to done, 14 hour cap. Not used as the labor burden.",
+    }),
+    priceCandidate({
+      id: "gross_pay_paid_duration",
+      endpoint: "GET payroll/v2/tenant/{tenant}/gross-pay-items",
+      available: !input.input.grossPay.forbidden,
+      slices: grossPaid,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: "Paid duration on the project's jobs, excluding paid time off. Not used as the labor burden.",
+    }),
+    priceCandidate({
+      id: "gross_pay_started_ended",
+      endpoint: "GET payroll/v2/tenant/{tenant}/gross-pay-items",
+      available: !input.input.grossPay.forbidden,
+      slices: grossClock,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: "Started-to-ended duration on gross-pay rows for the project's jobs. Not used as the labor burden.",
+    }),
+    priceCandidate({
+      id: "technician_shifts",
+      endpoint: read?.technician_shifts.endpoint ?? "GET dispatch/v2/tenant/{tenant}/technician-shifts",
+      available: read?.technician_shifts.available === true,
+      slices: shiftSlices,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: read?.technician_shifts.note ?? (read ? "Shifts for project technicians on project job dates." : "Technician shifts were not read."),
+    }),
+    priceCandidate({
+      id: "appointment_assignments",
+      endpoint: read?.assignments.endpoint ?? "GET dispatch/v2/tenant/{tenant}/appointment-assignments",
+      available: read?.assignments.available === true && read?.appointments.available === true,
+      slices: appointmentHours.scheduled,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: "Assigned technician, appointment start to end, 14 hour cap. Not used as the labor burden.",
+    }),
+    priceCandidate({
+      id: "appointment_arrival_windows",
+      endpoint: read?.appointments.endpoint ?? "GET jpm/v2/tenant/{tenant}/appointments",
+      available: read?.appointments.available === true && read?.assignments.available === true,
+      slices: appointmentHours.arrivalWindow,
+      rates: input.rates,
+      comparison: input.comparison,
+      note: "Assigned technician, arrival window start to end, 14 hour cap. Not used as the labor burden.",
+    }),
+    priceCandidate({
+      id: "appointments",
+      endpoint: read?.appointments.endpoint ?? "GET jpm/v2/tenant/{tenant}/appointments",
+      available: read?.appointments.available === true,
+      slices: appointmentHours.appointmentOnly,
+      rates: input.rates,
+      comparison: input.comparison,
+      hoursOnly: true,
+      note: "Appointment start to end with no technician, so the burden rate is not applied. Not used as the labor burden.",
+    }),
+  ];
+  const probes = read?.payroll_probes ?? [
+    {
+      id: "payroll_timesheet_codes" as const,
+      endpoint: "GET payroll/v2/tenant/{tenant}/timesheet-codes",
+      available: false,
+      hours_applicable: false,
+      slices: [],
+      note: "Timesheet codes were not read.",
+    },
+    {
+      id: "payroll_non_job_timesheets" as const,
+      endpoint: "GET payroll/v2/tenant/{tenant}/non-job-timesheets",
+      available: false,
+      hours_applicable: true,
+      slices: [],
+      note: "Non-job timesheets were not read.",
+    },
+    {
+      id: "payroll_activity_codes" as const,
+      endpoint: "GET payroll/v2/tenant/{tenant}/activity-codes",
+      available: false,
+      hours_applicable: false,
+      slices: [],
+      note: "Activity codes were not read.",
+    },
+  ];
+  for (const probe of probes) {
+    reports.push(
+      priceCandidate({
+        id: probe.id,
+        endpoint: probe.endpoint,
+        available: probe.available,
+        slices: probe.hours_applicable ? probe.slices : [],
+        rates: input.rates,
+        comparison: input.comparison,
+        hoursOnly: probe.available && !probe.hours_applicable,
+        note: probe.note,
+      }),
+    );
+  }
+  return reports;
+}
+
+function priceCandidate(input: {
+  id: string;
+  endpoint: string;
+  available: boolean;
+  slices: readonly TechHourSlice[];
+  rates: ReadonlyMap<string, number | null>;
+  comparison: ReturnType<typeof burdenComparisonTarget>;
+  note: string;
+  hoursOnly?: boolean;
+}): BurdenCandidateReport {
+  if (!input.available) {
+    return {
+      id: input.id,
+      endpoint: input.endpoint,
+      available: false,
+      hours: null,
+      amount: null,
+      techs_missing_rate: null,
+      comparison_basis: input.comparison.basis,
+      comparison_amount: input.comparison.amount,
+      delta: null,
+      matches: false,
+      included_in_burden: false,
+      note: input.note,
+    };
+  }
+  if (input.hoursOnly) {
+    const hours = roundMoney(input.slices.reduce((sum, slice) => sum + (slice.hours > 0 ? slice.hours : 0), 0));
+    return {
+      id: input.id,
+      endpoint: input.endpoint,
+      available: true,
+      hours,
+      amount: null,
+      techs_missing_rate: null,
+      comparison_basis: input.comparison.basis,
+      comparison_amount: input.comparison.amount,
+      delta: null,
+      matches: false,
+      included_in_burden: false,
+      note: input.note,
+    };
+  }
+  const priced = burdenDollarsFromHours(input.slices, input.rates);
+  const delta = input.comparison.amount == null ? null : roundMoney(priced.amount - input.comparison.amount);
+  return {
+    id: input.id,
+    endpoint: input.endpoint,
+    available: true,
+    hours: priced.hours,
+    amount: priced.amount,
+    techs_missing_rate: priced.techsMissingRate,
+    comparison_basis: input.comparison.basis,
+    comparison_amount: input.comparison.amount,
+    delta,
+    matches: delta != null && Math.abs(delta) <= BURDEN_MATCH_DOLLARS,
+    included_in_burden: false,
+    note: input.note,
   };
 }
 
@@ -428,6 +727,12 @@ export interface StLaborDiagnosticClient {
     forbidden: boolean;
     invoices: Array<{ externalInvoiceId: string }>;
   }>;
+  readBurdenCandidates?(input: {
+    jobIds: readonly string[];
+    technicianIds: readonly string[];
+    startsOnOrAfter: string;
+    endsOnOrBefore: string;
+  }): Promise<BurdenCandidateRead>;
 }
 
 const TIMESHEET_BATCH = 4;
@@ -546,6 +851,47 @@ export async function readStLaborDiagnostic(
       }
     }
   }
+  const technicianIds = new Set<string>();
+  for (const item of gross.items) {
+    if (item.technicianId && item.jobId && activeIds.includes(item.jobId)) technicianIds.add(item.technicianId);
+  }
+  for (const row of timesheets) {
+    if (row.technicianId && row.jobId && activeIds.includes(row.jobId)) technicianIds.add(row.technicianId);
+  }
+  let candidates: BurdenCandidateRead | null = null;
+  if (client.readBurdenCandidates) {
+    try {
+      candidates = await client.readBurdenCandidates({
+        jobIds: activeIds,
+        technicianIds: [...technicianIds],
+        startsOnOrAfter: window.start,
+        endsOnOrBefore: now.toISOString(),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      candidates = {
+        technician_shifts: {
+          available: false,
+          endpoint: "GET dispatch/v2/tenant/{tenant}/technician-shifts",
+          shifts: [],
+          note: `Technician shifts: ${message}`,
+        },
+        appointments: {
+          available: false,
+          endpoint: "GET jpm/v2/tenant/{tenant}/appointments",
+          appointments: [],
+          note: message,
+        },
+        assignments: {
+          available: false,
+          endpoint: "GET dispatch/v2/tenant/{tenant}/appointment-assignments",
+          assignments: [],
+          note: message,
+        },
+        payroll_probes: [],
+      };
+    }
+  }
   return buildStLaborDiagnostic(
     {
       stProjectId,
@@ -566,6 +912,7 @@ export async function readStLaborDiagnostic(
       adjustments,
       invoiceIds,
       invoicesUnread,
+      candidates,
     },
     now,
   );

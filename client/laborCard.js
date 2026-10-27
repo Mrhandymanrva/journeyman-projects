@@ -24,14 +24,18 @@ function laborRefreshLine(data, stamp) {
  */
 export function laborCardHtml(row, { esc, stamp }) {
   const data = row || {};
-  if (data.labor_source === "billed_labor_25pct") {
+  if (data.labor_source === "billed_labor_25pct" || data.labor_source === "posted_commission") {
+    const burden =
+      data.labor_burden == null
+        ? esc(data.burden_label || "not available from ServiceTitan")
+        : laborMoney(data.labor_burden);
     return `
-    <p class="note">${esc(data.labor_label || "Labor at 25% of billed labor (no payroll data)")}. Hours stay the payroll hours already stored. Nothing here writes to ServiceTitan.</p>
+    <p class="note">${esc(data.labor_label || "Labor")}. Hours stay the payroll hours already stored. Nothing here writes to ServiceTitan.</p>
     <div class="row"><div class="row-b">
       <div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
-      <div class="row-m">${esc(data.commission_label || "Commission (25% of billed labor)")} ${laborMoney(data.labor_wage || 0)}</div>
-      <div class="row-m">${esc(data.burden_label || "Labor burden")} ${laborMoney(data.labor_burden || 0)} · payroll job timesheets, arrived to done, times the burden rate</div>
-      <div class="row-m">Total ${laborMoney(data.total || 0)}</div>
+      <div class="row-m">${esc(data.commission_label || "Commission")} ${laborMoney(data.labor_wage || 0)}</div>
+      <div class="row-m">Labor burden ${burden}</div>
+      <div class="row-m">${esc(data.total_label || "Total (excluding burden)")} ${laborMoney(data.total || 0)}</div>
       <div class="row-m">${laborRefreshLine(data, stamp)}</div>
     </div></div>`;
   }

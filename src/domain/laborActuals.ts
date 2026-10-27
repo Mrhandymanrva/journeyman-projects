@@ -22,13 +22,17 @@ import {
 } from "./projectFinancials.js";
 import { newYorkDate } from "./fieldStart.js";
 import {
-  BURDEN_LINE_LABEL,
-  COMMISSION_LINE_LABEL,
-  NO_PAYROLL_LABOR_LABEL,
+  BURDEN_UNAVAILABLE_LABEL,
+  ESTIMATED_COMMISSION_LABEL,
+  ESTIMATED_LABOR_LABEL,
+  POSTED_COMMISSION_LABEL,
+  POSTED_LABOR_LABEL,
+  TOTAL_EXCLUDES_BURDEN_LABEL,
   RECENT_PAYROLL_MISSING_WARNING,
   type HoursPayrollSource,
   type LaborCostSource,
   type LaborEstimate,
+  type LegacyLaborCostSource,
 } from "./stLabor.js";
 
 /** Read batches match the schedule route. */
@@ -538,7 +542,8 @@ export type LaborRefreshSource = "manual" | "scheduled" | "auto-hourly";
 export interface PortfolioLabor {
   labor_hours: number;
   labor_wage: number;
-  labor_burden: number;
+  /** Null when burden is not available from ServiceTitan. Not a stand-in zero. */
+  labor_burden: number | null;
   total: number;
   missing: string[];
   notices: string[];
@@ -550,16 +555,18 @@ export interface PortfolioLabor {
   hours_source: "timesheet" | "appointment_window" | "mixed" | null;
   /** When the last refresh finished. Null until a refresh is recorded. */
   observed_at: string | null;
-  /** payroll, the 25% estimate, or a recent project with no payroll rows. */
-  labor_source: LaborCostSource | null;
+  /** Posted InvoiceRelatedBonus, or the 25% estimate when payroll has no such rows. */
+  labor_source: LaborCostSource | LegacyLaborCostSource | null;
   labor_label: string | null;
   labor_warning: string | null;
+  commission_source: LaborEstimate["commission_source"] | null;
   commission_label: string | null;
   burden_label: string | null;
   /** Reconciliation billedLabor the 25% commission was taken from. */
   billed_labor: number | null;
-  /** Arrived-to-done hours used for the estimate's burden. Not the labor hours above. */
+  /** Not used. Job-timesheet hours are not burden. */
   burden_hours: number | null;
+  total_label: string | null;
 }
 
 /** `alias` is a query alias we wrote, never request input. */
@@ -812,14 +819,15 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     technicians.reduce((sum, tech) => sum + (tech.budget_burden ?? 0), 0),
   );
   const source = laborCostSourceOf(row.labor_cost_source);
-  const estimate = source === "billed_labor_25pct" ? laborEstimateOf(row.labor_estimate) : null;
+  const estimate =
+    source === "billed_labor_25pct" || source === "posted_commission" ? laborEstimateOf(row.labor_estimate, source) : null;
   const labor_wage = estimate ? estimate.commission : summedWage;
-  const labor_burden = estimate ? estimate.burden : summedBurden;
+  const labor_burden = estimate ? null : summedBurden;
   return {
     labor_hours: hours,
     labor_wage,
     labor_burden,
-    total: roundMoney(labor_wage + labor_burden),
+    total: estimate ? estimate.total : roundMoney(labor_wage + (labor_burden ?? 0)),
     missing: technicians.flatMap((tech) => tech.missing),
     notices: technicians.flatMap((tech) => tech.notices),
     technicians,
@@ -830,34 +838,45 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     labor_source: source,
     labor_label: estimate?.label ?? null,
     labor_warning: source === "none_recent_payroll_missing" ? RECENT_PAYROLL_MISSING_WARNING : null,
+    commission_source: estimate?.commission_source ?? null,
     commission_label: estimate?.commission_label ?? null,
     burden_label: estimate?.burden_label ?? null,
     billed_labor: estimate?.billed_labor ?? null,
-    burden_hours: estimate?.burden_hours ?? null,
+    burden_hours: null,
+    total_label: estimate?.total_label ?? null,
   };
 }
 
-function laborCostSourceOf(value: unknown): LaborCostSource | null {
-  if (value === "payroll" || value === "billed_labor_25pct" || value === "none_recent_payroll_missing") return value;
+function laborCostSourceOf(value: unknown): LaborCostSource | LegacyLaborCostSource | null {
+  if (
+    value === "posted_commission" ||
+    value === "billed_labor_25pct" ||
+    value === "payroll" ||
+    value === "none_recent_payroll_missing"
+  ) {
+    return value;
+  }
   return null;
 }
 
-function laborEstimateOf(value: unknown): LaborEstimate | null {
+function laborEstimateOf(value: unknown, source: LaborCostSource): LaborEstimate | null {
   const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
   if (!record) return null;
   const commission = Number(record.commission);
-  const burden = Number(record.burden);
-  if (!Number.isFinite(commission) || !Number.isFinite(burden)) return null;
+  if (!Number.isFinite(commission)) return null;
+  const posted = source === "posted_commission" || record.commission_source === "posted_invoice_bonus";
+  const billed = Number(record.billed_labor);
   return {
     commission,
-    burden,
-    total: Number.isFinite(Number(record.total)) ? Number(record.total) : roundMoney(commission + burden),
-    billed_labor: Number(record.billed_labor ?? 0),
-    burden_hours: Number(record.burden_hours ?? 0),
-    burden_source: "payroll_job_timesheets_arrived_done",
-    label: NO_PAYROLL_LABOR_LABEL,
-    commission_label: COMMISSION_LINE_LABEL,
-    burden_label: BURDEN_LINE_LABEL,
+    commission_source: posted ? "posted_invoice_bonus" : "billed_labor_25pct",
+    billed_labor: posted ? null : Number.isFinite(billed) ? billed : null,
+    posted_rows: Number.isFinite(Number(record.posted_rows)) ? Number(record.posted_rows) : 0,
+    burden: null,
+    total: commission,
+    label: posted ? POSTED_LABOR_LABEL : ESTIMATED_LABOR_LABEL,
+    commission_label: posted ? POSTED_COMMISSION_LABEL : ESTIMATED_COMMISSION_LABEL,
+    burden_label: BURDEN_UNAVAILABLE_LABEL,
+    total_label: TOTAL_EXCLUDES_BURDEN_LABEL,
   };
 }
 

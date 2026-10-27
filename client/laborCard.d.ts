@@ -6,13 +6,15 @@ export function laborCardHtml(
     hours_source?: string | null;
     observed_at?: string | null;
     labor_wage?: number;
-    labor_burden?: number;
+    labor_burden?: number | null;
     total?: number;
     labor_source?: string | null;
     labor_label?: string | null;
     labor_warning?: string | null;
+    commission_source?: string | null;
     commission_label?: string | null;
     burden_label?: string | null;
+    total_label?: string | null;
     missing?: string[];
     rate_gaps?: Array<{ technician_name?: string; messages?: string[] }>;
     technicians?: Array<{
