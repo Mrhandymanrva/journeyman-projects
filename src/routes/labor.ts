@@ -11,7 +11,8 @@ import {
   updateBillableRate,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
-import { readStoredProjectMoney, readStoredReconciliation, reconciliationNote } from "../domain/projectSync.js";
+import { readFinancialsDashboard, readFinancialsDetail } from "../domain/financialsDashboardStore.js";
+import { readStoredReconciliation, reconciliationNote } from "../domain/projectSync.js";
 import {
   presentStLaborCode,
   readStLaborCode,
@@ -102,13 +103,16 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
     staffRoute(deps, async (ctx) => {
       const projectId = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, projectId, "id");
-      const money = await readStoredProjectMoney(ctx.db, projectId);
-      const stored = await readStoredReconciliation(ctx.db, projectId);
-      sendData(ctx.res, {
-        ...money,
-        observed_at: stored?.observed_at ?? null,
-        error: stored?.error ?? null,
-      });
+      sendData(ctx.res, await readFinancialsDetail(ctx.db, projectId));
+    }),
+  );
+
+  router.get(
+    "/projects/:id/financials/summary",
+    staffRoute(deps, async (ctx) => {
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, projectId, "id");
+      sendData(ctx.res, await readFinancialsDashboard(ctx.db, projectId));
     }),
   );
 

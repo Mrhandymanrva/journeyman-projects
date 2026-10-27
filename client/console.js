@@ -13,6 +13,28 @@ import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
 import { laborCardHtml } from "./laborCard.js";
 import { createPlanning } from "./planning.js";
+import {
+  closeoutCardHtml,
+  closeoutDoneCount,
+  closeoutDoneLabel,
+  closeoutSavePayload,
+} from "./closeoutCard.js";
+import { financialsDashboardHtml } from "./financialsDashboard.js";
+import {
+  budgetEntryHtml,
+  budgetEntryPayload,
+  budgetEntryTotal,
+  formatBudgetMoney,
+} from "./budgetEntry.js";
+import {
+  budgetSummary,
+  changeOrderSummary,
+  drawSummary,
+  laborSummary,
+  purchaseOrderSummary,
+  setSectionExpanded,
+  stDetailSummary,
+} from "./financialsSections.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
 
 const API = "/api/v1/projects";
@@ -347,6 +369,7 @@ async function select(projectId) {
       closeout,
       labor,
       stFinancials,
+      financialSummary,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -362,6 +385,7 @@ async function select(projectId) {
       api(`/projects/${projectId}/closeout`),
       api(`/projects/${projectId}/labor`),
       api(`/projects/${projectId}/service-titan-financials`).catch(() => null),
+      api(`/projects/${projectId}/financials/summary`).catch(() => null),
     ]);
 
     if (revision !== selectionRevision) return;
@@ -395,6 +419,7 @@ async function select(projectId) {
       closeout,
       labor,
       stFinancials,
+      financialSummary,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -436,6 +461,7 @@ function render(d) {
   renderNotice(d.budget, d.drawData);
   renderStageBar(p, p.gates);
   renderGates(p);
+  renderFinancialsDashboard(d.financialSummary);
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
@@ -597,20 +623,89 @@ async function saveFieldRelease(note, undo) {
   await select(current.id);
 }
 
-function renderBudget(cost, budget) {
-  if (cost.length === 0) {
-    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
-    el("btag").textContent = "No budget";
-    el("btag").className = "tag";
-    return;
-  }
+function setFinSummary(id, text) {
+  const node = el("fin-sum-" + id);
+  if (node) node.textContent = text;
+}
 
+function renderFinancialsDashboard(summary) {
+  const node = el("fin-summary");
+  if (!node) return;
+  node.innerHTML = financialsDashboardHtml(summary);
+}
+
+function renderBudgetEntry(budget) {
+  const host = el("budget-entry");
+  if (!host) return;
+  const editable = can("edit_budget_before_freeze") && !budget?.baseline_frozen;
+  host.innerHTML = budgetEntryHtml(budget?.entry, {
+    editable,
+    frozen: Boolean(budget?.baseline_frozen),
+  });
+  const form = el("budget-entry-form");
+  if (!form || !editable) return;
+  const refresh = () => {
+    const total = budgetEntryTotal({
+      labor: el("budget-labor")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    const node = el("budget-total");
+    if (node) node.textContent = formatBudgetMoney(total);
+  };
+  for (const id of ["budget-labor", "budget-materials", "budget-sub", "budget-other"]) {
+    el(id)?.addEventListener("input", refresh);
+  }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const msg = el("budget-entry-msg");
+    const parsed = budgetEntryPayload({
+      contract_value: el("budget-contract")?.value,
+      labor: el("budget-labor")?.value,
+      labor_hours: el("budget-hours")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    if (parsed.error) {
+      if (msg) {
+        msg.textContent = parsed.error;
+        msg.className = "msg bad";
+      }
+      return;
+    }
+    try {
+      await api(`/projects/${current.id}/budget/entry`, {
+        method: "PUT",
+        body: JSON.stringify(parsed.body),
+      });
+      await select(current.id);
+    } catch (err) {
+      if (msg) {
+        msg.textContent = err.message;
+        msg.className = "msg bad";
+      }
+    }
+  });
+}
+
+function renderBudget(cost, budget) {
+  setFinSummary("budget", budgetSummary(cost, budget?.entry));
+  renderBudgetEntry(budget);
   const freeze = {
     frozen: Boolean(budget?.baseline_frozen),
     gateNumber: budget?.frozen_by_gate,
   };
   const editable = can("edit_budget_before_freeze");
-  el("budget-add").hidden = !editable || freeze.frozen;
+  const add = el("budget-add");
+  if (add) add.hidden = !editable || freeze.frozen;
+  if (cost.length === 0) {
+    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
+    el("btag").textContent = budget?.entry?.entered ? "No cost-code lines" : "No budget";
+    el("btag").className = "tag";
+    return;
+  }
 
   const maxScale = Math.max(
     ...cost.map((r) =>
@@ -1047,6 +1142,7 @@ function drawMatchLine(dr) {
 }
 
 function renderDraws(drawData) {
+  setFinSummary("draws", drawSummary(drawData));
   const canRecord = can("record_external_invoice");
   const refresh = el("ar-refresh");
   if (refresh) {
@@ -1589,6 +1685,7 @@ async function addBudgetLineDrawer() {
 // --------------------------------------------------------- purchase orders
 
 function renderPurchaseOrders(pos) {
+  setFinSummary("pos", purchaseOrderSummary(pos));
   el("potag").textContent = pos.length ? `${pos.length} raised` : "none";
   el("po-new").hidden = !can("issue_purchase_order");
 
@@ -2105,6 +2202,13 @@ async function newProjectDrawer() {
 el("project-new").textContent = "Add from ServiceTitan";
 el("project-new").addEventListener("click", newProjectDrawer);
 el("budget-add").addEventListener("click", addBudgetLineDrawer);
+document.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("#enter-budget");
+  if (!button) return;
+  const toggle = document.querySelector('[aria-controls="fin-body-budget"]');
+  setSectionExpanded(toggle, true);
+  el("budget-contract")?.focus();
+});
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
 el("log-new").addEventListener("click", dailyLogDrawer);
@@ -2125,6 +2229,7 @@ function soldEstimateNote(data) {
 }
 
 function renderChangeOrders(data) {
+  setFinSummary("cos", changeOrderSummary(data));
   const cos = data.change_orders;
   el("cotag").textContent = cos.length
     ? `${cos.filter((c) => c.status === "approved").length} of ${cos.length} approved`
@@ -2338,6 +2443,7 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
 const ST_REFRESH_TIMEOUT_MS = 180_000;
 
 function renderStFinancials(money) {
+  setFinSummary("st", stDetailSummary(money));
   const node = el("st-financials");
   if (!node) return;
   const refresh = el("st-refresh");
@@ -2389,12 +2495,15 @@ function renderStFinancials(money) {
       '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
     return;
   }
+  const materialsMissing = money.materials_expense_read === false;
   const pct = Number(money.marginPercent || 0).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
   const line = (label, value) =>
     `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
+  const missingLine = (label) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m"><span class="fin-dash" title="ServiceTitan did not return this figure. Nothing is estimated.">\u2014</span></div></div></div>`;
   const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
   const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
   const kept = problems.some((line) => /stored hours kept|left as they are|kept their last/i.test(line));
@@ -2406,8 +2515,12 @@ function renderStFinancials(money) {
     ${line("Billed materials", money.billedMaterials)}
     ${line("Billed", money.billed)}
     ${line("Labor burden", money.laborBurden)}
-    ${line("Materials expense", money.materialsExpense)}
-    <div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`;
+    ${materialsMissing ? missingLine("Materials expense") : line("Materials expense", money.materialsExpense)}
+    ${
+      materialsMissing
+        ? missingLine("Margin")
+        : `<div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`
+    }`;
 }
 
 function renderLabor(row) {
@@ -2423,6 +2536,7 @@ function renderLabor(row) {
     st_labor_code: null,
     st_labor_code_error: null,
   };
+  setFinSummary("labor", laborSummary(data));
   if (el("labortag")) {
     el("labortag").textContent = data.hours_source
       ? String(data.hours_source).replaceAll("_", " ")
@@ -2435,49 +2549,27 @@ function renderLabor(row) {
 function renderCloseout(row) {
   const c = row || {};
   const may = can("manage_project_controls");
-  const disabled = may ? "" : "disabled";
-  el("closetag").textContent = c.warranty_start_on
-    ? `warranty ${c.warranty_start_on}`
-    : "open";
-  el("closeout").innerHTML = `
-    <p class="note">Punch, photos, the final draw invoice, the warranty date, and the review request live on this card. Nothing here emails the customer or writes to ServiceTitan. Photos stay in the photos folder. Gate 4 is still ticked by a person.</p>
-    <label><input id="cl-punch" type="checkbox" ${c.punch_done_at ? "checked" : ""} ${disabled}> Punch list complete</label>
-    ${field("Punch note", `<input id="cl-punch-note" value="${esc(c.punch_note || "")}" ${disabled}>`)}
-    <label><input id="cl-photos" type="checkbox" ${c.photos_done_at ? "checked" : ""} ${disabled}> Final photos filed</label>
-    ${field("Photo note", `<input id="cl-photos-note" value="${esc(c.photos_note || "")}" ${disabled}>`)}
-    ${field(
-      "Final draw invoice number",
-      `<input id="cl-invoice" value="${esc(c.final_draw_invoice_number || "")}" maxlength="80" ${disabled}>`,
-    )}
-    ${field(
-      "Warranty start",
-      `<input id="cl-warranty" type="date" value="${esc(c.warranty_start_on || "")}" ${disabled}>`,
-    )}
-    ${field(
-      "Review request",
-      `<textarea id="cl-review" maxlength="2000" ${disabled}>${esc(c.review_request_note || "")}</textarea>`,
-    )}
-    <p class="note">The review request is a note on this project. Nobody is emailed.</p>
-    ${
-      may
-        ? `<div class="actions"><button class="btn sm primary" id="cl-save" type="button">Save closeout</button></div>`
-        : `<p class="note">Owner, manager, or the project coordinator records closeout.</p>`
-    }`;
+  const done = closeoutDoneLabel(closeoutDoneCount(c));
+  el("closetag").textContent = done;
+  setFinSummary("closeout", done);
+  el("closeout").innerHTML = closeoutCardHtml(c, { esc, canEdit: may });
   el("cl-save")?.addEventListener("click", async (event) => {
     const button = event.target;
     button.disabled = true;
     try {
       await api(`/projects/${current.id}/closeout`, {
         method: "PUT",
-        body: JSON.stringify({
-          punch_done: el("cl-punch").checked,
-          punch_note: el("cl-punch-note").value,
-          photos_done: el("cl-photos").checked,
-          photos_note: el("cl-photos-note").value,
-          final_draw_invoice_number: el("cl-invoice").value.trim() || null,
-          warranty_start_on: el("cl-warranty").value || null,
-          review_request_note: el("cl-review").value,
-        }),
+        body: JSON.stringify(
+          closeoutSavePayload({
+            punch_done: el("cl-punch").checked,
+            punch_note: el("cl-punch-note").value,
+            photos_done: el("cl-photos").checked,
+            photos_note: el("cl-photos-note").value,
+            final_draw_invoice_number: el("cl-invoice").value,
+            warranty_start_on: el("cl-warranty").value,
+            review_request_note: el("cl-review").value,
+          }),
+        ),
       });
       await select(current.id);
     } catch (err) {

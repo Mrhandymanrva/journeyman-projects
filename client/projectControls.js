@@ -1,3 +1,4 @@
+import { collapsedCard, reservesSummary } from "./financialsSections.js";
 import { goalKeyResultHelpHtml } from "./goalHelp.js";
 import { projectTemplates, templateContent } from "./projectTemplates.js";
 const day = () =>
@@ -395,14 +396,15 @@ export function createProjectControls({
       drawn = rows
         .filter((r) => r.active)
         .reduce((s, r) => s + r.data.drawn, 0);
-    return (
-      header(
-        "Reserves & financial buffers",
-        "Planning allowances tracked separately from budget, commitments and actual costs. Drawing a reserve does not post a bill or change ST/QB.",
-        "reserve",
-      ) +
-      `<div class="control-metrics"><div><small>Allocated</small><strong>${money(allocated)}</strong></div><div><small>Drawn / designated</small><strong>${money(drawn)}</strong></div><div><small>Remaining</small><strong>${money(allocated - drawn)}</strong></div></div><div class="control-table"><table><thead><tr><th>Reserve</th><th>Category / risk</th><th>Allocated</th><th>Drawn</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.data.title)}${r.active ? "" : " (archived)"}</td><td>${esc(label(r.data.category))}<small>${r.data.risk_id ? esc(name(r.data.risk_id)) : ""}</small></td><td>${money(r.data.allocated)}</td><td>${money(r.data.drawn)}</td><td>${money(r.data.allocated - r.data.drawn)}</td><td>${edits(r)}</td></tr>`).join("") || '<tr><td colspan="6">No reserve allocations recorded.</td></tr>'}</tbody></table></div>`
-    );
+    return collapsedCard({
+      id: "reserves",
+      title: "Reserves & financial buffers",
+      summary: reservesSummary(rows),
+      actions: writable("reserve") ? btn("Add reserve", "new", "reserve") : "",
+      body:
+        `<p>Planning allowances tracked separately from budget, commitments and actual costs. Drawing a reserve does not post a bill or change ST/QB.</p>` +
+        `<div class="control-metrics"><div><small>Allocated</small><strong>${money(allocated)}</strong></div><div><small>Drawn / designated</small><strong>${money(drawn)}</strong></div><div><small>Remaining</small><strong>${money(allocated - drawn)}</strong></div></div><div class="control-table"><table><thead><tr><th>Reserve</th><th>Category / risk</th><th>Allocated</th><th>Drawn</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.data.title)}${r.active ? "" : " (archived)"}</td><td>${esc(label(r.data.category))}<small>${r.data.risk_id ? esc(name(r.data.risk_id)) : ""}</small></td><td>${money(r.data.allocated)}</td><td>${money(r.data.drawn)}</td><td>${money(r.data.allocated - r.data.drawn)}</td><td>${edits(r)}</td></tr>`).join("") || '<tr><td colspan="6">No reserve allocations recorded.</td></tr>'}</tbody></table></div>`,
+    });
   }
   async function reload() {
     await mount(
