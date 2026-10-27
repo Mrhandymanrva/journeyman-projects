@@ -292,25 +292,31 @@ function presentLines(value: unknown): ReconciliationLine[] {
   return asArray(value).flatMap((row) => {
     const record = asRecord(row);
     if (!record || typeof record.key !== "string") return [];
-    const status: "estimated" | "missing" | undefined =
-      record.status === "estimated" || record.status === "missing" ? record.status : undefined;
-    const extra =
-      record.key === "laborBurden"
-        ? {
-            ...(status ? { status } : {}),
-            ...(record.commission == null ? {} : { commission: Number(record.commission) }),
-            ...(record.burden == null ? {} : { burden: Number(record.burden) }),
-            ...(record.billed_labor == null ? {} : { billed_labor: Number(record.billed_labor) }),
-          }
-        : {};
-    return [{
+    const status: "posted" | "estimated" | "missing" | undefined =
+      record.status === "posted" || record.status === "estimated" || record.status === "missing"
+        ? record.status
+        : undefined;
+    const commissionSource =
+      record.commission_source === "posted_invoice_bonus" || record.commission_source === "billed_labor_25pct"
+        ? record.commission_source
+        : undefined;
+    const line: ReconciliationLine = {
       key: record.key as ReconciliationLine["key"],
       label: typeof record.label === "string" ? record.label : record.key,
       jp: Number(record.jp ?? 0),
       st: Number(record.st ?? 0),
       delta: Number(record.delta ?? 0),
-      ...extra,
-    }];
+    };
+    if (record.key !== "laborBurden") return [line];
+    if (status) line.status = status;
+    if (record.commission != null) line.commission = Number(record.commission);
+    if (commissionSource) line.commission_source = commissionSource;
+    if (typeof record.commission_label === "string") line.commission_label = record.commission_label;
+    if ("burden" in record) line.burden = record.burden == null ? null : Number(record.burden);
+    if (typeof record.burden_label === "string") line.burden_label = record.burden_label;
+    if (typeof record.total_label === "string") line.total_label = record.total_label;
+    if (record.billed_labor != null) line.billed_labor = Number(record.billed_labor);
+    return [line];
   });
 }
 

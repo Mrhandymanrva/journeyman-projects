@@ -8,25 +8,27 @@ import { isBeforeSourceFloor } from "./sourceFloor.js";
 export const STRETCH_CAP_HOURS = 14;
 
 /**
- * Commission used when a project has no matching payroll gross-pay rows.
+ * Commission used when payroll has no posted InvoiceRelatedBonus on the project's jobs.
  * Mason: 25% of billed labor. Not a setting.
  */
 export const BILLED_LABOR_COMMISSION_FRACTION = 0.25;
 
 /**
+ * Informational only. Commission no longer depends on this window.
  * A project is recent when it has no non-canceled job created more than this
- * many days before the refresh. Recent projects with no payroll rows are
- * flagged and are not estimated. Dalton's first job is 2024-12-19, so Dalton
- * is older even though its last job completed on 2026-09-11. A last-completion
- * rule of 60 days would skip Dalton. Segreto's jobs are October 2026, inside
- * this window, so Segreto is recent. Jobs with no created date do not make a
- * project older.
+ * many days before the read. Dalton's first job is 2024-12-19, so Dalton is
+ * older. Segreto's jobs are October 2026, so Segreto is recent.
  */
 export const RECENT_PROJECT_DAYS = 60;
 
-export const COMMISSION_LINE_LABEL = "Commission (25% of billed labor)";
-export const BURDEN_LINE_LABEL = "Labor burden";
-export const NO_PAYROLL_LABOR_LABEL = "Labor at 25% of billed labor (no payroll data)";
+export const POSTED_COMMISSION_LABEL = "Commission (posted in ServiceTitan payroll)";
+export const ESTIMATED_COMMISSION_LABEL = "Commission (estimated at 25% of billed labor)";
+export const BURDEN_UNAVAILABLE_LABEL = "not available from ServiceTitan";
+export const TOTAL_EXCLUDES_BURDEN_LABEL = "Total (excluding burden)";
+export const POSTED_LABOR_LABEL = "Labor from posted ServiceTitan commission (burden not available)";
+export const ESTIMATED_LABOR_LABEL = "Labor at 25% of billed labor (no posted commission)";
+
+/** @deprecated Age no longer chooses commission. Kept so a stored warning can still be shown. */
 export const RECENT_PAYROLL_MISSING_WARNING =
   "This project's jobs were created within the last 60 days and ServiceTitan payroll returned no paid timesheet hours for them. Labor was not estimated at 25% of billed labor.";
 
@@ -39,23 +41,32 @@ export const RECENT_PAYROLL_MISSING_WARNING =
 export const PROJECT_LABOR_EXPENSE_UNAVAILABLE =
   "No read-only GET returns Project Financials Expense > Labor. GET reporting/v2/tenant/{tenant}/report-categories and GET reporting/v2/tenant/{tenant}/report-category/{category}/reports only list custom reports. Report rows are POST reporting/v2/tenant/{tenant}/report-category/{category}/reports/{id}/data, which this service does not call. Job and project payloads do not include labor expense.";
 
-/** Burden when payroll gross pay has no paid hours. Arrived to done, 14 hour cap, no drive time. */
+/** Job timesheets are a burden candidate only. They are not the live burden line. */
 export const TIMESHEET_BURDEN_ENDPOINT = "GET payroll/v2/tenant/{tenant}/jobs/timesheets";
 
-export type LaborCostSource = "payroll" | "billed_labor_25pct" | "none_recent_payroll_missing";
+export const BURDEN_MATCH_DOLLARS = 1;
+
+/** posted_commission: InvoiceRelatedBonus on the project's jobs. billed_labor_25pct: no such rows. */
+export type LaborCostSource = "posted_commission" | "billed_labor_25pct";
+/** Stored values from the previous refresh. Not written anymore. */
+export type LegacyLaborCostSource = "payroll" | "none_recent_payroll_missing";
 export type ProjectPayrollAge = "older" | "recent";
+export type CommissionSource = "posted_invoice_bonus" | "billed_labor_25pct";
 
 export interface LaborEstimate {
   commission: number;
-  burden: number;
+  commission_source: CommissionSource;
+  /** Reconciliation billedLabor when commission is the 25% estimate. Null when posted. */
+  billed_labor: number | null;
+  /** InvoiceRelatedBonus rows included in a posted commission. Zero on the estimate. */
+  posted_rows: number;
+  /** No approved burden source. Null, not zero. Left out of total. */
+  burden: null;
   total: number;
-  /** Reconciliation billedLabor. Commission is 25% of this figure. */
-  billed_labor: number;
-  burden_hours: number;
-  burden_source: "payroll_job_timesheets_arrived_done";
-  label: typeof NO_PAYROLL_LABOR_LABEL;
-  commission_label: typeof COMMISSION_LINE_LABEL;
-  burden_label: typeof BURDEN_LINE_LABEL;
+  label: string;
+  commission_label: typeof POSTED_COMMISSION_LABEL | typeof ESTIMATED_COMMISSION_LABEL;
+  burden_label: typeof BURDEN_UNAVAILABLE_LABEL;
+  total_label: typeof TOTAL_EXCLUDES_BURDEN_LABEL;
 }
 
 export type HoursPayrollSource = "gross-pay" | "job-timesheet" | "mixed";
@@ -206,19 +217,45 @@ export function projectPayrollAge(
   return nowMs - earliest > RECENT_PROJECT_DAYS * 86_400_000 ? "older" : "recent";
 }
 
+export function isInvoiceRelatedBonus(item: { type?: string | null }): boolean {
+  const type = (item.type ?? "").toLowerCase().replace(/[\s_-]/g, "");
+  return type === "invoicerelatedbonus";
+}
+
 /**
- * Payroll when matching paid-hour rows exist.
- * Otherwise the 25% estimate only for an older project.
- * A failed payroll read returns null so the stored source is left alone.
+ * Posted commission: InvoiceRelatedBonus on the project's jobs.
+ * Paid time off is excluded. Rows before 2022-08-02 are excluded.
+ * Dollars are amount plus amountAdjustment.
+ */
+export function postedInvoiceRelatedBonus(
+  jobIds: readonly string[],
+  items: readonly GrossPayItem[],
+): { rows: number; amount: number } {
+  const wanted = new Set(jobIds);
+  let rows = 0;
+  let amount = 0;
+  for (const item of items) {
+    if (grossPayItemTooOld(item)) continue;
+    if (!item.jobId || !wanted.has(item.jobId)) continue;
+    if (!isInvoiceRelatedBonus(item)) continue;
+    if (isPaidTimeOff(item)) continue;
+    rows += 1;
+    amount += grossPayRowDollars(item);
+  }
+  return { rows, amount: roundMoney(amount) };
+}
+
+/**
+ * Posted InvoiceRelatedBonus when those rows exist.
+ * Otherwise 25% of reconciled billed labor.
+ * Project age does not choose this. A failed payroll read returns null so the stored source is left alone.
  */
 export function chooseLaborCostSource(input: {
   payrollReadSucceeded: boolean;
-  matchingPaidHourRows: number;
-  age: ProjectPayrollAge;
+  postedCommissionRows: number;
 }): LaborCostSource | null {
   if (!input.payrollReadSucceeded) return null;
-  if (input.matchingPaidHourRows > 0) return "payroll";
-  if (input.age === "recent") return "none_recent_payroll_missing";
+  if (input.postedCommissionRows > 0) return "posted_commission";
   return "billed_labor_25pct";
 }
 
@@ -227,28 +264,42 @@ export function billedLaborCommission(billedLabor: number): number {
   return roundMoney(billedLabor * BILLED_LABOR_COMMISSION_FRACTION);
 }
 
+/** Commission taken from posted InvoiceRelatedBonus. Burden is not included. */
+export function laborCostFromPosted(input: { amount: number; rows: number }): LaborEstimate {
+  const commission = roundMoney(input.amount);
+  return {
+    commission,
+    commission_source: "posted_invoice_bonus",
+    billed_labor: null,
+    posted_rows: input.rows,
+    burden: null,
+    total: commission,
+    label: POSTED_LABOR_LABEL,
+    commission_label: POSTED_COMMISSION_LABEL,
+    burden_label: BURDEN_UNAVAILABLE_LABEL,
+    total_label: TOTAL_EXCLUDES_BURDEN_LABEL,
+  };
+}
+
 /**
  * Commission from the reconciliation's billedLabor.
  * Pass financialsFromReads().billedLabor. Do not sum invoice lines here.
+ * Burden is not priced here. Job-timesheet hours are not burden.
  */
-export function laborEstimateFromBilled(input: {
-  billedLabor: number;
-  burden: number;
-  burdenHours: number;
-}): LaborEstimate {
+export function laborEstimateFromBilled(input: { billedLabor: number }): LaborEstimate {
   const billedLabor = roundMoney(input.billedLabor);
   const commission = billedLaborCommission(billedLabor);
-  const burden = roundMoney(input.burden);
   return {
     commission,
-    burden,
-    total: roundMoney(commission + burden),
+    commission_source: "billed_labor_25pct",
     billed_labor: billedLabor,
-    burden_hours: roundMoney(input.burdenHours),
-    burden_source: "payroll_job_timesheets_arrived_done",
-    label: NO_PAYROLL_LABOR_LABEL,
-    commission_label: COMMISSION_LINE_LABEL,
-    burden_label: BURDEN_LINE_LABEL,
+    posted_rows: 0,
+    burden: null,
+    total: commission,
+    label: ESTIMATED_LABOR_LABEL,
+    commission_label: ESTIMATED_COMMISSION_LABEL,
+    burden_label: BURDEN_UNAVAILABLE_LABEL,
+    total_label: TOTAL_EXCLUDES_BURDEN_LABEL,
   };
 }
 
@@ -375,11 +426,11 @@ export function sumTiedAdjustments(
 }
 
 /**
- * Which ServiceTitan labor figure to store.
+ * Which ServiceTitan labor figure to store on the breakdown.
  * A successful read with rows or hours on this project replaces the stored figure.
- * A failed read, or an empty read of a project that was already stamped, keeps the prior figure.
- * A project that was never stamped does not keep a prior 0.
- * `laborBurden` null means leave the hours × burden rate already on the computed side.
+ * A failed read, or an empty read of a project that was already stamped, keeps a real prior figure.
+ * A prior of 0 is not carried. A project that was never stamped does not keep a prior 0.
+ * The displayed burden line is separate and stays null until a burden source is approved.
  */
 export function chooseStLaborBurden(input: {
   breakdown: StLaborBreakdown | null;
@@ -396,8 +447,211 @@ export function chooseStLaborBurden(input: {
   if (input.breakdown && (signal || !input.previouslyStamped)) {
     return { laborBurden: input.breakdown.total, carriedPrior: false, breakdown: input.breakdown };
   }
-  if (input.previouslyStamped && input.priorBurden != null) {
+  if (input.previouslyStamped && input.priorBurden != null && input.priorBurden !== 0) {
     return { laborBurden: input.priorBurden, carriedPrior: true, breakdown: null };
   }
   return { laborBurden: null, carriedPrior: false, breakdown: null };
+}
+
+export interface TechHourSlice {
+  technicianId: string | null;
+  hours: number;
+}
+
+/** Raw GET rows for the burden search. The diagnostic drops ids before it responds. */
+export interface BurdenCandidateRead {
+  technician_shifts: {
+    available: boolean;
+    endpoint: string;
+    shifts: Array<{ technicianId: string | null; start: string | null; end: string | null; active: boolean | null }>;
+    note: string | null;
+  };
+  appointments: {
+    available: boolean;
+    endpoint: string;
+    appointments: Array<{
+      id: string;
+      jobId: string;
+      start: string;
+      end: string;
+      arrivalWindowStart: string | null;
+      arrivalWindowEnd: string | null;
+      status: string | null;
+    }>;
+    note: string | null;
+  };
+  assignments: {
+    available: boolean;
+    endpoint: string;
+    assignments: Array<{
+      appointmentId: string;
+      jobId: string;
+      technicianId: string | null;
+      active: boolean | null;
+      status: string | null;
+    }>;
+    note: string | null;
+  };
+  payroll_probes: Array<{
+    id: "payroll_timesheet_codes" | "payroll_non_job_timesheets" | "payroll_activity_codes";
+    endpoint: string;
+    available: boolean;
+    hours_applicable: boolean;
+    slices: TechHourSlice[];
+    note: string;
+  }>;
+}
+
+/** Hours times each technician's burden rate. Missing rates are counted and not treated as zero dollars per hour. */
+export function burdenDollarsFromHours(
+  slices: readonly TechHourSlice[],
+  rateByTechnician: ReadonlyMap<string, number | null>,
+): { hours: number; amount: number; techsMissingRate: number } {
+  const hoursByTech = new Map<string, number>();
+  for (const slice of slices) {
+    if (!(slice.hours > 0)) continue;
+    const id = slice.technicianId?.trim() || "";
+    hoursByTech.set(id, roundMoney((hoursByTech.get(id) ?? 0) + slice.hours));
+  }
+  let hours = 0;
+  let amount = 0;
+  let techsMissingRate = 0;
+  for (const [id, techHours] of hoursByTech) {
+    hours = roundMoney(hours + techHours);
+    const rate = id ? rateByTechnician.get(id) : null;
+    if (rate == null || !(rate > 0)) {
+      techsMissingRate += 1;
+      continue;
+    }
+    amount = roundMoney(amount + roundMoney(techHours * rate));
+  }
+  return { hours, amount, techsMissingRate };
+}
+
+/**
+ * What a burden candidate is compared with.
+ * When posted commission is a positive amount below known ServiceTitan labor, the residual is the target
+ * (Dalton: 21,883.04 − 16,788.54 = 5,094.50).
+ * When posted commission is missing or is not below that labor figure, the target is the labor figure itself.
+ * Segreto's 2,440.43 is burden only: its posted commission is larger, so subtracting it would hide the burden.
+ */
+export function burdenComparisonTarget(input: {
+  knownLabor: number | null;
+  postedCommission: number;
+}): {
+  basis: "st_labor_minus_posted_commission" | "st_labor_burden_only" | "none";
+  amount: number | null;
+  note: string;
+} {
+  if (input.knownLabor == null) {
+    return {
+      basis: "none",
+      amount: null,
+      note: "ServiceTitan labor expense is not known for this project.",
+    };
+  }
+  if (input.postedCommission > 0 && input.postedCommission < input.knownLabor) {
+    return {
+      basis: "st_labor_minus_posted_commission",
+      amount: roundMoney(input.knownLabor - input.postedCommission),
+      note: "Posted commission is below ServiceTitan labor, so candidates are compared with the residual.",
+    };
+  }
+  return {
+    basis: "st_labor_burden_only",
+    amount: roundMoney(input.knownLabor),
+    note: "Posted commission is missing or is not below ServiceTitan labor, so candidates are compared with that labor figure as burden only.",
+  };
+}
+
+/** Calendar dates (UTC) for shift filtering. Canceled jobs and dates before 2022-08-02 are omitted. */
+export function projectJobDates(
+  jobs: readonly { id?: string; jobStatus?: string | null; createdOn?: string | null; completedOn?: string | null }[],
+  extraStamps: readonly (string | null | undefined)[],
+): string[] {
+  const dates = new Set<string>();
+  const add = (stamp: string | null | undefined) => {
+    if (!stamp || isBeforeSourceFloor(stamp)) return;
+    const day = stamp.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(day)) dates.add(day);
+  };
+  for (const job of jobs) {
+    if (isCanceledJobStatus(job.jobStatus)) continue;
+    add(job.createdOn);
+    add(job.completedOn);
+  }
+  for (const stamp of extraStamps) add(stamp);
+  return [...dates].sort();
+}
+
+export function shiftHoursOnJobDates(input: {
+  shifts: readonly {
+    technicianId: string | null;
+    start: string | null;
+    end: string | null;
+    active?: boolean | null;
+  }[];
+  technicianIds: ReadonlySet<string>;
+  jobDates: ReadonlySet<string>;
+}): TechHourSlice[] {
+  const slices: TechHourSlice[] = [];
+  for (const shift of input.shifts) {
+    if (shift.active === false) continue;
+    const id = shift.technicianId?.trim() || "";
+    if (!id || !input.technicianIds.has(id)) continue;
+    if (!shift.start || isBeforeSourceFloor(shift.start)) continue;
+    const day = shift.start.slice(0, 10);
+    if (!input.jobDates.has(day)) continue;
+    const hours = cappedStretchHours(shift.start, shift.end);
+    if (hours == null) continue;
+    slices.push({ technicianId: id, hours });
+  }
+  return slices;
+}
+
+export function appointmentHourSlices(input: {
+  assignments: readonly {
+    appointmentId: string;
+    jobId: string;
+    technicianId: string | null;
+    active?: boolean | null;
+    status?: string | null;
+  }[];
+  appointments: readonly {
+    id: string;
+    jobId: string;
+    start: string;
+    end: string;
+    arrivalWindowStart?: string | null;
+    arrivalWindowEnd?: string | null;
+    status?: string | null;
+  }[];
+  jobIds: ReadonlySet<string>;
+}): { scheduled: TechHourSlice[]; arrivalWindow: TechHourSlice[]; appointmentOnly: TechHourSlice[] } {
+  const byId = new Map(input.appointments.map((row) => [row.id, row]));
+  const scheduled: TechHourSlice[] = [];
+  const arrivalWindow: TechHourSlice[] = [];
+  for (const assignment of input.assignments) {
+    if (assignment.active === false) continue;
+    if (/cancel/i.test(assignment.status ?? "")) continue;
+    if (!input.jobIds.has(assignment.jobId)) continue;
+    const appointment = byId.get(assignment.appointmentId);
+    if (!appointment || !input.jobIds.has(appointment.jobId)) continue;
+    if (/cancel/i.test(appointment.status ?? "")) continue;
+    if (isBeforeSourceFloor(appointment.start)) continue;
+    const tech = assignment.technicianId?.trim() || null;
+    const scheduledHours = cappedStretchHours(appointment.start, appointment.end);
+    if (scheduledHours != null) scheduled.push({ technicianId: tech, hours: scheduledHours });
+    const windowHours = cappedStretchHours(appointment.arrivalWindowStart, appointment.arrivalWindowEnd);
+    if (windowHours != null) arrivalWindow.push({ technicianId: tech, hours: windowHours });
+  }
+  const appointmentOnly: TechHourSlice[] = [];
+  for (const appointment of input.appointments) {
+    if (!input.jobIds.has(appointment.jobId)) continue;
+    if (/cancel/i.test(appointment.status ?? "")) continue;
+    if (isBeforeSourceFloor(appointment.start)) continue;
+    const hours = cappedStretchHours(appointment.start, appointment.end);
+    if (hours != null) appointmentOnly.push({ technicianId: null, hours });
+  }
+  return { scheduled, arrivalWindow, appointmentOnly };
 }

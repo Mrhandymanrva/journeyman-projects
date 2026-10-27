@@ -93,7 +93,7 @@ export interface ProjectMoney {
   marginPercent: number;
 }
 
-export type ReconciliationLaborStatus = "estimated" | "missing";
+export type ReconciliationLaborStatus = "posted" | "estimated" | "missing";
 
 export interface ReconciliationLine {
   key: keyof ProjectMoney;
@@ -102,14 +102,20 @@ export interface ReconciliationLine {
   st: number;
   delta: number;
   /**
-   * Set on the labor line. `estimated` is the 25% commission plus timesheet
-   * burden, shown next to ServiceTitan's labor expense as a known difference.
-   * `missing` means a recent project had no payroll rows and was not estimated.
+   * Set on the labor line.
+   * `posted` is InvoiceRelatedBonus from ServiceTitan payroll.
+   * `estimated` is 25% of reconciled billed labor because no posted commission rows exist.
+   * `missing` is a stored value from the retired 60-day rule and is not written anymore.
+   * Burden on this line is null until a burden source is approved. It is not a carried 0.
    */
   status?: ReconciliationLaborStatus;
   commission?: number;
-  burden?: number;
-  /** The reconciliation billedLabor this commission was taken from. */
+  commission_source?: "posted_invoice_bonus" | "billed_labor_25pct";
+  commission_label?: string;
+  burden?: number | null;
+  burden_label?: string;
+  total_label?: string;
+  /** The reconciliation billedLabor this commission was taken from. Set on the 25% path. */
   billed_labor?: number;
 }
 
@@ -243,12 +249,11 @@ export function financialsFromReads(input: {
   // Actual billed is the invoice total. Subcontractor revenue and miscellaneous
   // income are not labor or material labels, and they are still billed.
   const billed = roundMoney(billedLabor + billedMaterials + billedOther);
-  // Journeyman labor burden is worked hours times the technician burden rate
-  // when payroll gross pay has paid hours. An older project with no matching
-  // payroll rows stores 25% of billed labor plus arrived-to-done burden instead.
-  // ServiceTitan Project Financials > Expense > Labor is not on the project
-  // payload. The refresh stores a separate breakdown: burden, plus non-PTO
-  // gross pay on the project's jobs, plus payroll adjustments.
+  // Hours × burden rate is still computed here for payroll rows that carry paid
+  // hours. It is not the labor-card burden. Posted commission, or 25% of billed
+  // labor when no InvoiceRelatedBonus rows exist, is stored on the labor line.
+  // Job-timesheet hours are not burden. ServiceTitan Project Financials >
+  // Expense > Labor is not on the project payload.
   const laborBurden = roundMoney(
     input.timesheets.reduce((sum, row) => {
       if (row.burdenRate == null || !(row.burdenRate > 0) || !(row.hours > 0)) return sum;

@@ -10,7 +10,7 @@ import {
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import type { EstimateRead, InvoiceHeaderRead } from "../domain/stFinancialSummary.js";
 import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
-import type { PayrollAdjustmentRow } from "../domain/stLabor.js";
+import type { BurdenCandidateRead, PayrollAdjustmentRow } from "../domain/stLabor.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 import {
   scopeNamesFromAuthBody,
@@ -1904,6 +1904,297 @@ export class ServiceTitanReadAdapter {
       if (page === 40) capped = true;
     }
     return { forbidden: false, unavailable: false, capped, items };
+  }
+
+  /**
+   * GET-only burden-hour candidates. Aggregates are computed by the diagnostic.
+   * Names, titles, notes, and memos are dropped here. Nothing is written.
+   * A 403 or 404 marks that source unavailable and does not fail the others.
+   */
+  async readBurdenCandidates(input: {
+    jobIds: readonly string[];
+    technicianIds: readonly string[];
+    startsOnOrAfter: string;
+    endsOnOrBefore: string;
+  }): Promise<BurdenCandidateRead> {
+    const jobIds = [...new Set(input.jobIds)].filter((id) => /^\d+$/.test(id));
+    const technicianIds = [...new Set(input.technicianIds)].filter((id) => /^\d+$/.test(id));
+    const [shifts, schedule, probes] = await Promise.all([
+      this.readTechnicianShiftsForBurden(technicianIds, input.startsOnOrAfter, input.endsOnOrBefore),
+      this.readScheduleForBurden(jobIds),
+      this.readPayrollHourProbes(input.startsOnOrAfter),
+    ]);
+    return {
+      technician_shifts: shifts,
+      appointments: schedule.appointments,
+      assignments: schedule.assignments,
+      payroll_probes: probes,
+    };
+  }
+
+  private async readTechnicianShiftsForBurden(
+    technicianIds: readonly string[],
+    startsOnOrAfter: string,
+    endsOnOrBefore: string,
+  ): Promise<BurdenCandidateRead["technician_shifts"]> {
+    const endpoint = "GET dispatch/v2/tenant/{tenant}/technician-shifts";
+    if (technicianIds.length === 0) {
+      return { available: true, endpoint, shifts: [], note: "No project technicians to query." };
+    }
+    const shifts: BurdenCandidateRead["technician_shifts"]["shifts"] = [];
+    let denied = false;
+    const rowSchema = z.object({
+      technicianId: sourceId.nullish(),
+      start: z.string().nullish(),
+      end: z.string().nullish(),
+      active: z.boolean().nullish(),
+    }).strip();
+    for (let offset = 0; offset < technicianIds.length; offset += 4) {
+      const batch = technicianIds.slice(offset, offset + 4);
+      const reads = await Promise.all(batch.map(async (technicianId) => {
+        const params = new URLSearchParams({
+          technicianId,
+          startsOnOrAfter,
+          endsOnOrBefore,
+          active: "True",
+          page: "1",
+          pageSize: "200",
+        });
+        return this.getRaw("dispatch", "technician-shifts", params);
+      }));
+      for (const read of reads) {
+        if (read.status === 403) {
+          denied = true;
+          continue;
+        }
+        if (read.status < 200 || read.status >= 300) continue;
+        const parsed = z.object({ data: z.array(z.unknown()).optional() }).safeParse(read.body);
+        if (!parsed.success) continue;
+        for (const raw of parsed.data.data ?? []) {
+          const row = rowSchema.safeParse(raw);
+          if (!row.success) continue;
+          shifts.push({
+            technicianId: row.data.technicianId ?? null,
+            start: row.data.start ?? null,
+            end: row.data.end ?? null,
+            active: row.data.active ?? null,
+          });
+        }
+      }
+    }
+    if (denied && shifts.length === 0) {
+      return { available: false, endpoint, shifts: [], note: "Technician shifts were denied (HTTP 403)." };
+    }
+    return {
+      available: true,
+      endpoint,
+      shifts,
+      note: denied ? "Some technician shift reads were denied (HTTP 403)." : null,
+    };
+  }
+
+  private async readScheduleForBurden(jobIds: readonly string[]): Promise<{
+    appointments: BurdenCandidateRead["appointments"];
+    assignments: BurdenCandidateRead["assignments"];
+  }> {
+    const appointmentEndpoint = "GET jpm/v2/tenant/{tenant}/appointments";
+    const assignmentEndpoint = "GET dispatch/v2/tenant/{tenant}/appointment-assignments";
+    const appointments: BurdenCandidateRead["appointments"]["appointments"] = [];
+    const assignments: BurdenCandidateRead["assignments"]["assignments"] = [];
+    if (jobIds.length === 0) {
+      return {
+        appointments: { available: true, endpoint: appointmentEndpoint, appointments, note: "No jobs to query." },
+        assignments: { available: true, endpoint: assignmentEndpoint, assignments, note: "No jobs to query." },
+      };
+    }
+    let appointmentDenied = false;
+    let assignmentDenied = false;
+    const appointmentSchema = z.object({
+      id: sourceId,
+      jobId: sourceId,
+      start: z.string(),
+      end: z.string(),
+      arrivalWindowStart: z.string().nullish(),
+      arrivalWindowEnd: z.string().nullish(),
+      status: z.string().nullish(),
+    }).strip();
+    const assignmentSchema = z.object({
+      appointmentId: sourceId,
+      jobId: sourceId,
+      technicianId: sourceId.nullish(),
+      active: z.boolean().nullish(),
+      status: z.string().nullish(),
+    }).strip();
+    for (let offset = 0; offset < jobIds.length; offset += 4) {
+      const batch = jobIds.slice(offset, offset + 4);
+      const reads = await Promise.all(batch.map(async (jobId) => {
+        const params = new URLSearchParams({ jobId, page: "1", pageSize: "200", active: "Any" });
+        const [appointmentsRead, assignmentsRead] = await Promise.all([
+          this.getRaw("jpm", "appointments", params),
+          this.getRaw("dispatch", "appointment-assignments", params),
+        ]);
+        return { appointmentsRead, assignmentsRead };
+      }));
+      for (const read of reads) {
+        if (read.appointmentsRead.status === 403) appointmentDenied = true;
+        else if (read.appointmentsRead.status >= 200 && read.appointmentsRead.status < 300) {
+          const parsed = z.object({ data: z.array(z.unknown()).optional() }).safeParse(read.appointmentsRead.body);
+          for (const raw of parsed.success ? parsed.data.data ?? [] : []) {
+            const row = appointmentSchema.safeParse(raw);
+            if (!row.success) continue;
+            appointments.push({
+              id: row.data.id,
+              jobId: row.data.jobId,
+              start: row.data.start,
+              end: row.data.end,
+              arrivalWindowStart: row.data.arrivalWindowStart ?? null,
+              arrivalWindowEnd: row.data.arrivalWindowEnd ?? null,
+              status: row.data.status ?? null,
+            });
+          }
+        }
+        if (read.assignmentsRead.status === 403) assignmentDenied = true;
+        else if (read.assignmentsRead.status >= 200 && read.assignmentsRead.status < 300) {
+          const parsed = z.object({ data: z.array(z.unknown()).optional() }).safeParse(read.assignmentsRead.body);
+          for (const raw of parsed.success ? parsed.data.data ?? [] : []) {
+            const row = assignmentSchema.safeParse(raw);
+            if (!row.success) continue;
+            assignments.push({
+              appointmentId: row.data.appointmentId,
+              jobId: row.data.jobId,
+              technicianId: row.data.technicianId ?? null,
+              active: row.data.active ?? null,
+              status: row.data.status ?? null,
+            });
+          }
+        }
+      }
+    }
+    return {
+      appointments: {
+        available: !(appointmentDenied && appointments.length === 0),
+        endpoint: appointmentEndpoint,
+        appointments,
+        note: appointmentDenied ? "Some appointment reads were denied (HTTP 403)." : null,
+      },
+      assignments: {
+        available: !(assignmentDenied && assignments.length === 0),
+        endpoint: assignmentEndpoint,
+        assignments,
+        note: assignmentDenied ? "Some appointment-assignment reads were denied (HTTP 403)." : null,
+      },
+    };
+  }
+
+  private async readPayrollHourProbes(startsOnOrAfter: string): Promise<BurdenCandidateRead["payroll_probes"]> {
+    const specs: Array<{
+      id: BurdenCandidateRead["payroll_probes"][number]["id"];
+      resource: string;
+      hoursApplicable: boolean;
+      query?: URLSearchParams;
+    }> = [
+      { id: "payroll_timesheet_codes", resource: "timesheet-codes", hoursApplicable: false },
+      {
+        id: "payroll_non_job_timesheets",
+        resource: "non-job-timesheets",
+        hoursApplicable: true,
+        query: new URLSearchParams({ employeeType: "Technician", createdOnOrAfter: startsOnOrAfter, page: "1", pageSize: "200" }),
+      },
+      { id: "payroll_activity_codes", resource: "activity-codes", hoursApplicable: false },
+    ];
+    const hourSchema = z.object({
+      employeeId: sourceId.nullish(),
+      startedOn: z.string().nullish(),
+      endedOn: z.string().nullish(),
+      paidDurationHours: z.coerce.number().finite().nullish(),
+    }).strip();
+    const probes: BurdenCandidateRead["payroll_probes"] = [];
+    for (const spec of specs) {
+      const endpoint = `GET payroll/v2/tenant/{tenant}/${spec.resource}`;
+      const params = spec.query ?? new URLSearchParams({ page: "1", pageSize: "200" });
+      let read: { status: number; body: unknown };
+      try {
+        read = await this.getRaw("payroll", spec.resource, params);
+      } catch (err) {
+        probes.push({
+          id: spec.id,
+          endpoint,
+          available: false,
+          hours_applicable: spec.hoursApplicable,
+          slices: [],
+          note: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      if (read.status === 404 || read.status === 400) {
+        probes.push({
+          id: spec.id,
+          endpoint,
+          available: false,
+          hours_applicable: spec.hoursApplicable,
+          slices: [],
+          note: `${endpoint} returned HTTP ${read.status}.`,
+        });
+        continue;
+      }
+      if (read.status === 403) {
+        probes.push({
+          id: spec.id,
+          endpoint,
+          available: false,
+          hours_applicable: spec.hoursApplicable,
+          slices: [],
+          note: `${endpoint} was denied (HTTP 403).`,
+        });
+        continue;
+      }
+      if (read.status < 200 || read.status >= 300) {
+        probes.push({
+          id: spec.id,
+          endpoint,
+          available: false,
+          hours_applicable: spec.hoursApplicable,
+          slices: [],
+          note: `${endpoint} returned HTTP ${read.status}.`,
+        });
+        continue;
+      }
+      const parsed = z.object({ data: z.array(z.unknown()).optional() }).safeParse(read.body);
+      const rows = parsed.success ? parsed.data.data ?? [] : [];
+      const slices: BurdenCandidateRead["payroll_probes"][number]["slices"] = [];
+      if (spec.hoursApplicable) {
+        for (const raw of rows) {
+          const row = hourSchema.safeParse(raw);
+          if (!row.success) continue;
+          const paid = row.data.paidDurationHours;
+          const fromStamps = row.data.startedOn && row.data.endedOn
+            ? (Date.parse(row.data.endedOn) - Date.parse(row.data.startedOn)) / 3_600_000
+            : null;
+          const hours = typeof paid === "number" && paid > 0 && paid < 1000
+            ? Math.min(paid, 14)
+            : fromStamps != null && fromStamps > 0
+              ? Math.min(fromStamps, 14)
+              : null;
+          if (hours == null) continue;
+          if (row.data.startedOn && isBeforeSourceFloor(row.data.startedOn)) continue;
+          slices.push({
+            technicianId: row.data.employeeId ?? null,
+            hours: Math.round(hours * 100) / 100,
+          });
+        }
+      }
+      probes.push({
+        id: spec.id,
+        endpoint,
+        available: true,
+        hours_applicable: spec.hoursApplicable,
+        slices,
+        note: spec.hoursApplicable
+          ? "Non-job timesheets can hold hours that are not on a job. Not used as the labor burden."
+          : "This payroll list names codes. It does not carry job hours, so no burden dollars are computed.",
+      });
+    }
+    return probes;
   }
 
   /**
