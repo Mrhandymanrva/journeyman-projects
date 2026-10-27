@@ -623,6 +623,24 @@ async function stampOvernightDue(db: Database, tenantId: string, dueAt: Date): P
 }
 
 /**
+ * Boot hook for src/server.ts. The 2 AM run stays off unless
+ * JP_OVERNIGHT_REFRESH is exactly "on", so a deploy pauses it without a
+ * Railway setting change. The manual Refresh route does not come through here.
+ */
+export function startLaborRefreshSchedulerIfEnabled(
+  db: Database,
+  sources: SourceConnections,
+  env: NodeJS.ProcessEnv = process.env,
+  options: LaborSchedulerOptions = {},
+): { cancel: () => void } | undefined {
+  if (env.JP_OVERNIGHT_REFRESH !== "on") {
+    console.log("Overnight ServiceTitan refresh paused (set JP_OVERNIGHT_REFRESH=on to enable).");
+    return undefined;
+  }
+  return startLaborRefreshScheduler(db, sources, options);
+}
+
+/**
  * One run a day at 2:00 AM America/New_York. A restart runs a missed night
  * instead of waiting until the next day. The timer is saved as a due instant
  * before the wait, so a new process can see the night that did not finish.

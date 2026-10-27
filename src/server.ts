@@ -1,6 +1,6 @@
 import {accountingGateway,startAccountingWorker} from "./adapters/quickbooks.js";
 import { startHealthSnapshotScheduler } from "./workers/healthSnapshot.js";
-import { startLaborRefreshScheduler } from "./workers/laborRefresh.js";
+import { startLaborRefreshSchedulerIfEnabled } from "./workers/laborRefresh.js";
 import { readSourceConnections } from "./adapters/sourceConnections.js";
 import { portfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import { createApp } from "./app.js";
@@ -96,8 +96,9 @@ startAccountingWorker(database,accounting);
 const portfolio = portfolioFeedConfig();
 const sources = readSourceConnections();
 startHealthSnapshotScheduler(database, portfolio?.tenantId);
+// Off unless JP_OVERNIGHT_REFRESH=on. Merging pauses the 2 AM run; manual Refresh is unchanged.
 try {
-  startLaborRefreshScheduler(database, sources);
+  startLaborRefreshSchedulerIfEnabled(database, sources, process.env);
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err);
   console.error(`Labor refresh did not start. ${message}`);
