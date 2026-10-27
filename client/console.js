@@ -2317,10 +2317,52 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   );
 }
 
+const ST_REFRESH_TIMEOUT_MS = 180_000;
+
 function renderStFinancials(money) {
   const node = el("st-financials");
   if (!node) return;
-  if (!money) {
+  const refresh = el("st-refresh");
+  if (refresh) {
+    refresh.hidden = !can("refresh_labor");
+    refresh.disabled = false;
+    refresh.textContent = "Refresh from ServiceTitan";
+    // onclick, not addEventListener: a re-render must not stack handlers.
+    refresh.onclick = async () => {
+      if (refresh.disabled) return;
+      const projectId = current.id;
+      const status = el("st-refresh-status");
+      refresh.disabled = true;
+      refresh.textContent = "Reading ServiceTitan…";
+      if (status) status.textContent = "";
+      // The refresh reads every job on the project. Never leave the button
+      // greyed out: give up after three minutes and say so.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ST_REFRESH_TIMEOUT_MS);
+      let failure = null;
+      try {
+        await api(`/projects/${projectId}/labor/refresh`, {
+          method: "POST",
+          signal: controller.signal,
+        });
+      } catch (err) {
+        failure =
+          err?.name === "AbortError"
+            ? "ServiceTitan did not answer within 3 minutes. The previous numbers are unchanged. Try again in a few minutes."
+            : err?.message || String(err);
+      } finally {
+        clearTimeout(timer);
+        refresh.disabled = false;
+        refresh.textContent = "Refresh from ServiceTitan";
+      }
+      if (failure) {
+        if (status) status.textContent = `Refresh failed: ${failure}`;
+        return;
+      }
+      if (current?.id === projectId) await select(projectId);
+    };
+  }
+  if (!money || !money.observed_at) {
     node.innerHTML =
       '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
     return;
@@ -2331,7 +2373,12 @@ function renderStFinancials(money) {
   });
   const line = (label, value) =>
     `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
-  node.innerHTML = `<p class="note">Billed labor and billed materials come from ServiceTitan invoice items. Labor burden is payroll timesheet hours times each technician's burden rate. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
+  const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
+  const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
+  const readError = problems.length
+    ? `<details class="note warn"><summary>${problems.length} ServiceTitan read${problems.length === 1 ? "" : "s"} failed on that refresh. Those lines kept their last stored values.</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></details>`
+    : "";
+  node.innerHTML = `${readAt}${readError}<p class="note">Billed labor and billed materials come from ServiceTitan invoice items. Labor burden is payroll timesheet hours times each technician's burden rate. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
     ${line("Billed labor", money.billedLabor)}
     ${line("Billed materials", money.billedMaterials)}
     ${line("Billed", money.billed)}
@@ -2353,8 +2400,6 @@ function renderLabor(row) {
     st_labor_code: null,
     st_labor_code_error: null,
   };
-  const refresh = el("labor-refresh");
-  if (refresh) refresh.hidden = !can("refresh_labor");
   if (el("labortag")) {
     el("labortag").textContent = data.hours_source
       ? String(data.hours_source).replaceAll("_", " ")
@@ -2362,16 +2407,6 @@ function renderLabor(row) {
   }
   if (!el("labor")) return;
   el("labor").innerHTML = laborCardHtml(data, { esc, stamp });
-  refresh?.addEventListener("click", async () => {
-    refresh.disabled = true;
-    try {
-      await api(`/projects/${current.id}/labor/refresh`, { method: "POST" });
-      await select(current.id);
-    } catch (err) {
-      refresh.disabled = false;
-      window.alert(err.message);
-    }
-  });
 }
 
 function renderCloseout(row) {

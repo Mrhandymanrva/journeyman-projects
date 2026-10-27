@@ -223,7 +223,10 @@ export function staffExternalRoute<P, R>(
       let result: R;
       try {
         result = await read(prepared);
-      } catch {
+      } catch (err) {
+        console.error(
+          `[source-refresh] ${req.method} ${req.originalUrl} failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
+        );
         throw new ApiError(
           "source_unavailable",
           "Source refresh failed. The previous snapshot is unchanged.",

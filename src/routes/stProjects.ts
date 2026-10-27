@@ -20,7 +20,8 @@ import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { createProject } from "./projects.js";
 import {
   applyTechnicianDirectory,
-  readLaborJobs,
+  PAID_LABOR_LOOKBACK_DAYS,
+  readPaidLabor,
   readTechnicianDirectory,
   storeJobLabor,
   withResolvedTechnicianNames,
@@ -614,10 +615,20 @@ async function readLinkedLabor(
   jobIds: string[],
 ): Promise<LaborJobResult[] | null> {
   if (!client?.readJobTimesheets) return null;
-  return readLaborJobs(jobIds, {
-    readJobTimesheets: (jobId) => client.readJobTimesheets!(jobId),
-    readJob: (jobId) => client.readJob(jobId),
-  });
+  const paid = await readPaidLabor(
+    jobIds,
+    {
+      readGrossPayItems: client.readGrossPayItems
+        ? (query) => client.readGrossPayItems!(query)
+        : undefined,
+      readJobTimesheets: (jobId) => client.readJobTimesheets!(jobId),
+      readJob: (jobId) => client.readJob(jobId),
+    },
+    {
+      dateOnOrAfter: new Date(Date.now() - PAID_LABOR_LOOKBACK_DAYS * 86_400_000).toISOString(),
+    },
+  );
+  return paid.results;
 }
 
 async function storeReadLabor(

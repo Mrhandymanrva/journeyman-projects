@@ -107,11 +107,20 @@ export interface StoredInvoiceLine {
 
 export async function replaceInvoiceLines(
   db: SqlClient,
-  input: { tenantId: string; projectId: string; lines: readonly StoredInvoiceLine[]; observedAt: Date },
+  input: {
+    tenantId: string;
+    projectId: string;
+    lines: readonly StoredInvoiceLine[];
+    observedAt: Date;
+    /** Jobs whose read failed. Their stored lines stay as they were. */
+    keepJobIds?: readonly string[];
+  },
 ): Promise<void> {
   await db.query(
-    `DELETE FROM projects.st_invoice_lines WHERE tenant_id = $1 AND project_id = $2`,
-    [input.tenantId, input.projectId],
+    `DELETE FROM projects.st_invoice_lines
+      WHERE tenant_id = $1 AND project_id = $2
+        AND NOT (external_job_id = ANY($3::text[]))`,
+    [input.tenantId, input.projectId, [...(input.keepJobIds ?? [])]],
   );
   for (const line of input.lines) {
     await db.query(

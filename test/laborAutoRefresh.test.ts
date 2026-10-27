@@ -215,9 +215,19 @@ describe("hourly labor refresh", () => {
       });
       expect(lockSpy).toHaveBeenCalledWith(LABOR_REFRESH_LOCK_KEY);
       expect(report.skipped).toBeNull();
-      expect(report.refreshed).toEqual([ids.get("A-100"), ids.get("A-300")]);
-      expect(report.failed.map((failure) => failure.projectNumber)).toEqual(["A-200"]);
-      expect(report.failed[0]?.message).toContain("HTTP 500");
+      // A failed timesheet read no longer aborts the project. Its hours are
+      // kept, its labor stamp does not move, and the run lists it with the error.
+      expect(report.refreshed).toEqual([ids.get("A-100"), ids.get("A-200"), ids.get("A-300")]);
+      expect(report.failed).toEqual([]);
+      const run = await h.db.withTenant(tenant.id, (db) =>
+        db.query<{ run: { ok: string[]; failed: Array<{ project_number: string; error: string }> } }>(
+          `SELECT labor_refresh_run AS run FROM projects.tenant_settings WHERE tenant_id = $1`,
+          [tenant.id],
+        ),
+      );
+      expect(run.rows[0]?.run.ok).toEqual([ids.get("A-100"), ids.get("A-300")]);
+      expect(run.rows[0]?.run.failed.map((item) => item.project_number)).toEqual(["A-200"]);
+      expect(run.rows[0]?.run.failed[0]?.error).toContain("HTTP 500");
       expect(jobsSeen).toEqual(["100", "200", "300"]);
       expect(methods.every((method) => method === "GET")).toBe(true);
       expect(sleeps).toEqual([25, 25]);
@@ -532,6 +542,27 @@ describe("scheduler uses the manual refresh env", () => {
         url.includes("/purchase-orders")
       ) {
         return Response.json({ data: [], hasMore: false });
+      }
+      if (url.includes("/payroll/v2/tenant/99887766/gross-pay-items")) {
+        // Documented GrossPayItemResponse: paid time per technician per job.
+        return Response.json({
+          page: 1,
+          pageSize: 500,
+          hasMore: false,
+          totalCount: null,
+          data: ["100", "200", "300", "400", "500"].map((jobId, index) => ({
+            id: index + 1,
+            employeeId: 6,
+            employeeType: "Technician",
+            date: "2026-10-25T00:00:00Z",
+            activity: "Working",
+            amount: 80,
+            grossPayItemType: "TimesheetTime",
+            paidDurationHours: 2,
+            paidTimeType: "Regular",
+            jobId: Number(jobId),
+          })),
+        });
       }
       if (url.includes("/timesheets")) {
         const jobId = url.match(/jobs\/(\d+)\/timesheets/)?.[1] ?? "0";

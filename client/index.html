@@ -82,7 +82,9 @@
         <div class="card">
           <div class="card-h">
             <span class="lbl">ServiceTitan project financials</span>
+            <button class="btn sm" id="st-refresh" type="button" hidden>Refresh from ServiceTitan</button>
           </div>
+          <p class="note warn" id="st-refresh-status" role="status" aria-live="polite"></p>
           <div class="card-b" id="st-financials"></div>
         </div>
 
@@ -129,7 +131,6 @@
         <div class="card">
           <div class="card-h">
             <span class="lbl">Labor</span><span class="tag" id="labortag"></span>
-            <button class="btn sm" id="labor-refresh" type="button">Refresh</button>
           </div>
           <div class="card-b" id="labor"></div>
         </div>
