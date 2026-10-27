@@ -17,7 +17,7 @@ const serviceTitan = {
       timesheets: [],
     }),
   },
-} as NonNullable<SourceConnections["serviceTitan"]>;
+} as unknown as NonNullable<SourceConnections["serviceTitan"]>;
 
 describe("overnight ServiceTitan refresh boot", () => {
   it("does not start the scheduler unless JP_OVERNIGHT_REFRESH is on", async () => {
