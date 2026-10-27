@@ -713,9 +713,9 @@ describe("job invoice lines", () => {
         ],
       },
     ]);
-    const lines = await client.readJobInvoiceLines("500");
+    const { lines } = await client.readJobInvoiceLines("500");
     expect(lines).toEqual([
-      expect.objectContaining({ invoiceId: "10", sku: "MHM 250.Labor", kind: "labor", total: 80 }),
+      expect.objectContaining({ invoiceId: "10", sku: "MHM 250.Labor", kind: "other", total: 80 }),
       expect.objectContaining({ invoiceId: "12", sku: "MH.VS.700.002", kind: "material", total: 12.5 }),
     ]);
     const urls = fetcher.mock.calls.map((call) => String(call[0]));
@@ -741,7 +741,8 @@ describe("job invoice lines", () => {
       expect(page.data[0]?.total).toBe("0.00");
       expect(page.data[0]?.job.type).toBe("Estimate");
       const { client, fetcher } = setup([page]);
-      await expect(client.readJobInvoiceLines(jobId)).resolves.toEqual([]);
+      const read = await client.readJobInvoiceLines(jobId);
+      expect(read.lines).toEqual([]);
       const urls = fetcher.mock.calls.map((call) => String(call[0]));
       expect(urls.some((url) => /\/invoices\/\d+/.test(url))).toBe(false);
       expect(
@@ -776,7 +777,7 @@ describe("job invoice lines", () => {
         ],
       },
     ]);
-    const lines = await client.readJobInvoiceLines("321578684");
+    const { lines } = await client.readJobInvoiceLines("321578684");
     expect(lines).toEqual([
       expect.objectContaining({ invoiceId: "21", sku: "MHM.25PLFE", kind: "labor", total: 100 }),
     ]);
@@ -810,7 +811,18 @@ describe("payroll gross pay items", () => {
       paidDurationHours: 3.25,
       paidTimeType: "Regular",
       jobId: "100",
+      projectId: "1",
+      invoiceId: null,
+      payrollId: "5001",
+      startedOn: "2026-10-20T12:00:00Z",
+      endedOn: "2026-10-20T16:00:00Z",
+      sourceEntityId: "9001",
+      activityCode: "REG",
+      employeeType: "Technician",
+      jobNumber: "100",
     });
+    expect(read.skipped).toBe(0);
+    expect(read.omitted).toBe(0);
     expect(read.items[3]).toMatchObject({ type: "InvoiceRelatedBonus", paidDurationHours: null });
     const urls = fetcher.mock.calls.slice(1).map((call) => new URL(String(call[0])));
     expect(urls.map((url) => url.pathname)).toEqual([
@@ -828,11 +840,238 @@ describe("payroll gross pay items", () => {
     await expect(denied.client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00Z" })).resolves.toEqual({
       forbidden: true,
       items: [],
+      skipped: 0,
+      omitted: 0,
+      capped: false,
     });
-    const broken = setup([{ data: [{ id: 1, paidDurationHours: "x" }], hasMore: false }]);
+    const broken = setup([{ data: "nope", hasMore: false }]);
     await expect(broken.client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00Z" })).rejects.toThrow(
-      /Unexpected gross pay items \(data\.0\.paidDurationHours: /,
+      /Unexpected gross pay items \(data: /,
     );
+  });
+
+  it("keeps a page when id is null or a string and skips only the unusable row", async () => {
+    const usable = {
+      employeeId: 6,
+      date: "2026-10-20T00:00:00Z",
+      activity: "Working",
+      amount: 40,
+      grossPayItemType: "TimesheetTime",
+      paidDurationHours: 2,
+      paidTimeType: "Regular",
+      jobId: 100,
+      projectId: 1,
+      startedOn: "2026-10-20T12:00:00Z",
+      endedOn: "2026-10-20T14:00:00Z",
+    };
+    const { client } = setup([
+      {
+        data: [
+          { ...usable, id: null },
+          { ...usable, id: null, amount: 80 },
+          { ...usable, id: "gpi-string", startedOn: "2026-10-21T12:00:00Z", paidDurationHours: 1, amount: 20 },
+          { employeeId: 6, amount: 10 },
+          { ...usable, id: 9, date: "2022-08-01T00:00:00Z", startedOn: "2022-08-01T12:00:00Z" },
+          { id: 10, employeeId: 6, jobId: 100, paidDurationHours: 3 },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const read = await client.readGrossPayItems({ dateOnOrAfter: "2022-08-02T00:00:00.000Z" });
+    expect(read.forbidden).toBe(false);
+    expect(read.omitted).toBe(1);
+    expect(read.skipped).toBe(1);
+    expect(read.items.map((item) => [item.id, item.paidDurationHours])).toEqual([
+      ["gpi-string", 1],
+      ["10", 3],
+      [null, 2],
+    ]);
+  });
+
+  it("reads a fixture whose gross pay id is null", async () => {
+    const page = JSON.parse(readFileSync("test/fixtures/st-payroll/gross-pay-item-id-null.json", "utf8")) as {
+      data: unknown[];
+      hasMore: boolean;
+    };
+    expect(page.data[0]).toMatchObject({ id: null });
+    const { client } = setup([page]);
+    const read = await client.readGrossPayItems({ dateOnOrAfter: "2026-10-01T00:00:00.000Z" });
+    expect(read.forbidden).toBe(false);
+    expect(read.skipped).toBe(0);
+    expect(read.items).toEqual([
+      expect.objectContaining({
+        id: null,
+        technicianId: "6",
+        jobId: "100",
+        projectId: "290588725",
+        paidDurationHours: 2,
+        amount: 40,
+        type: "TimesheetTime",
+      }),
+    ]);
+  });
+});
+
+describe("gross pay and job walks that must not abort an add", () => {
+  it("retries a timed-out GET and then reads the project", async () => {
+    const project = {
+      id: 20,
+      number: "P20",
+      customerId: 30,
+      locationId: 40,
+      jobIds: [50],
+      modifiedOn: "2026-10-01T00:00:00Z",
+    };
+    const fetcher = vi.fn<typeof fetch>();
+    fetcher.mockResolvedValueOnce(json({ access_token: "test-token", expires_in: 900 }));
+    fetcher.mockRejectedValueOnce(new Error("The operation was aborted"));
+    fetcher.mockRejectedValueOnce(new Error("socket hang up"));
+    fetcher.mockResolvedValueOnce(json(project));
+    const client = new ServiceTitanReadAdapter(config, fetcher, async () => {});
+    expect((await client.readProject("20")).project.id).toBe("20");
+    expect(fetcher.mock.calls.filter((call) => call[1]?.method === "GET")).toHaveLength(3);
+  });
+
+  it("reads 83 jobs when one job GET fails and does not wrap them in one timeout", async () => {
+    const ids = Array.from({ length: 83 }, (_, index) => 1000 + index);
+    const project = {
+      id: 290588725,
+      number: "DALTON",
+      name: "Dalton",
+      customerId: 2,
+      locationId: 3,
+      jobIds: ids,
+      modifiedOn: "2026-10-01T00:00:00Z",
+    };
+    const customer = { id: 2, name: "Customer" };
+    const location = {
+      id: 3,
+      customerId: 2,
+      name: "8 Center Street",
+      address: { street: "8 Center Street", city: "Newport News", state: "VA", zip: "23601" },
+    };
+    const pages: unknown[] = [project, customer, location];
+    for (const id of ids) {
+      if (id === 1010) {
+        pages.push(new Response("no", { status: 500 }));
+        continue;
+      }
+      pages.push({
+        id,
+        jobNumber: String(id),
+        projectId: 290588725,
+        customerId: 2,
+        locationId: 3,
+        jobStatus: "Scheduled",
+        modifiedOn: "2026-10-01T00:00:00Z",
+        createdOn: "2026-09-01T00:00:00Z",
+      });
+    }
+    pages.push(project);
+    const { client, fetcher } = setup(pages);
+    const result = await client.readProjectDetails("290588725");
+    expect(result.jobs).toHaveLength(83);
+    expect(result.jobs.find((job) => job.id === "1010")?.jobStatus).toBe("Unknown");
+    expect(result.warnings.some((warning) => warning.includes("1010") && warning.includes("HTTP 500"))).toBe(true);
+    expect(result.jobs.filter((job) => job.jobStatus === "Scheduled")).toHaveLength(82);
+    const signals = fetcher.mock.calls
+      .map((call) => call[1]?.signal)
+      .filter((signal): signal is AbortSignal => signal instanceof AbortSignal);
+    expect(signals.length).toBeGreaterThan(80);
+    expect(new Set(signals).size).toBe(signals.length);
+  });
+
+  it("keeps the other invoice lines when an items array contains null", async () => {
+    const { client } = setup([
+      {
+        data: [
+          {
+            id: 21,
+            job: { id: 700 },
+            total: "100.00",
+            items: [
+              null,
+              {
+                id: 5,
+                type: "Service",
+                skuName: "MHM.25PLFE",
+                total: "100.00",
+                generalLedgerAccount: { name: "Labor Revenue:Labor Revenue" },
+              },
+            ],
+          },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const { lines } = await client.readJobInvoiceLines("700");
+    expect(lines).toEqual([
+      expect.objectContaining({ invoiceId: "21", sku: "MHM.25PLFE", kind: "labor", total: 100 }),
+    ]);
+  });
+});
+
+describe("project-scoped accounting reads", () => {
+  it("asks for invoices by jobId, payments by at most 50 invoice ids, and estimates by projectId", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = String(input);
+      if (url.includes("/connect/token")) return json({ access_token: "test-token", expires_in: 900 });
+      const parsed = new URL(url);
+      if (parsed.pathname.endsWith("/invoices")) {
+        expect(parsed.searchParams.get("projectId")).toBeNull();
+        const jobId = parsed.searchParams.get("jobId");
+        expect(jobId).toMatch(/^\d+$/);
+        return json({
+          data: [
+            {
+              id: Number(jobId),
+              referenceNumber: "INV-" + jobId,
+              total: "10.00",
+              balance: "0",
+              invoiceDate: "2026-10-20",
+              job: { id: Number(jobId) },
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      if (parsed.pathname.endsWith("/payments")) {
+        const ids = (parsed.searchParams.get("appliedToInvoiceIds") ?? "").split(",").filter(Boolean);
+        expect(ids.length).toBeGreaterThan(0);
+        expect(ids.length).toBeLessThanOrEqual(50);
+        return json({ data: [], hasMore: false });
+      }
+      if (parsed.pathname.endsWith("/estimates")) {
+        expect(parsed.searchParams.get("projectId")).toBe("290588725");
+        return json({ data: [], hasMore: false });
+      }
+      throw new Error("unexpected " + url);
+    });
+    const client = new ServiceTitanReadAdapter(config, fetcher, async () => {});
+    const invoices = await client.readInvoicesForJobs(["8301", "8302"], null);
+    expect(invoices.forbidden).toBe(false);
+    expect(invoices.incomplete).toBe(false);
+    expect(invoices.invoices.map((row) => row.externalInvoiceId).sort()).toEqual(["8301", "8302"]);
+    const invoiceIds = Array.from({ length: 51 }, (_, index) => String(9000 + index));
+    const payments = await client.readPaymentsAppliedTo(invoiceIds, null);
+    expect(payments.forbidden).toBe(false);
+    expect(payments.payments).toEqual([]);
+    const estimates = await client.readEstimatesForProject("290588725", null);
+    expect(estimates.forbidden).toBe(false);
+    const urls = fetcher.mock.calls.map((call) => String(call[0]));
+    expect(urls.filter((url) => url.includes("/invoices?"))).toHaveLength(2);
+    expect(urls.filter((url) => url.includes("/invoices?"))).toEqual([
+      expect.stringContaining("jobId=8301"),
+      expect.stringContaining("jobId=8302"),
+    ]);
+    expect(urls.some((url) => url.includes("/invoices?") && !url.includes("jobId="))).toBe(false);
+    expect(urls.some((url) => url.includes("projectId=") && url.includes("/invoices?"))).toBe(false);
+    const paymentUrls = urls.filter((url) => url.includes("/payments?"));
+    expect(paymentUrls).toHaveLength(2);
+    expect(new URL(paymentUrls[0]!).searchParams.get("appliedToInvoiceIds")!.split(",")).toHaveLength(50);
+    expect(new URL(paymentUrls[1]!).searchParams.get("appliedToInvoiceIds")!.split(",")).toHaveLength(1);
+    expect(urls.some((url) => url.includes("/estimates?") && url.includes("projectId=290588725"))).toBe(true);
+    expect(fetcher.mock.calls.every((call) => call[1]?.method === "GET" || call[1]?.method === "POST")).toBe(true);
   });
 });
 
