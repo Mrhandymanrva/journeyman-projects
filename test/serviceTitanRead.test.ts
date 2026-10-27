@@ -991,6 +991,135 @@ describe("payroll job timesheets and adjustments", () => {
     expect(call?.[1]?.method).toBe("GET");
     expect(String(call?.[0])).toContain("postedOnOrAfter=2026-01-01T00%3A00%3A00.000Z");
   });
+
+  it("reads payroll period status with GET and drops the employee", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: {
+          id: 11,
+          status: "Approved",
+          startedOn: "2026-09-01T00:00:00Z",
+          endedOn: "2026-09-30T00:00:00Z",
+          approvedOn: "2026-10-05T00:00:00Z",
+          employeeId: 6,
+          employeeName: "Quinlan Placeholder",
+        },
+      },
+    ]);
+    const read = await client.readPayrollPeriods(["11", "11", "not-a-number"]);
+    expect(read).toEqual({
+      available: true,
+      periods: [
+        {
+          id: "11",
+          status: "Approved",
+          startedOn: "2026-09-01T00:00:00Z",
+          endedOn: "2026-09-30T00:00:00Z",
+          approvedOn: "2026-10-05T00:00:00Z",
+        },
+      ],
+      note: null,
+    });
+    expect(JSON.stringify(read)).not.toContain("Quinlan");
+    expect(read.periods[0]).not.toHaveProperty("employeeId");
+    const call = fetcher.mock.calls.find((entry) => String(entry[0]).includes("/payrolls/"));
+    expect(call?.[1]?.method).toBe("GET");
+    expect(new URL(String(call?.[0])).pathname).toBe("/payroll/v2/tenant/10/payrolls/11");
+  });
+
+  it("marks payroll periods unavailable when every read is denied or missing", async () => {
+    const denied = setup([new Response("no", { status: 403 })]);
+    expect(await denied.client.readPayrollPeriods(["11"])).toMatchObject({ available: false, periods: [] });
+    const missing = setup([new Response("no", { status: 404 })]);
+    expect((await missing.client.readPayrollPeriods(["11"])).available).toBe(false);
+    const none = setup([]);
+    expect(await none.client.readPayrollPeriods([])).toMatchObject({ available: true, periods: [] });
+  });
+
+  it("reads job history with GET, drops memos and dispatch, and keeps pause from the memo", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: [
+          {
+            jobId: 100,
+            appointmentId: 7,
+            technicianId: 6,
+            technicianName: "Quinlan Placeholder",
+            eventType: "Dispatched",
+            date: "2026-10-20T07:00:00Z",
+            memo: "MEMO-SECRET-44",
+          },
+          {
+            jobId: 100,
+            appointmentId: 7,
+            employeeId: 6,
+            eventType: "StatusChanged",
+            status: "Arrived",
+            date: "2026-10-20T08:00:00Z",
+            memo: "MEMO-SECRET-44",
+          },
+          {
+            jobId: 100,
+            appointmentId: 7,
+            technicianId: 6,
+            eventType: "Note",
+            date: "2026-10-20T10:00:00Z",
+            memo: "Paused for parts",
+          },
+          {
+            jobId: 100,
+            appointmentId: 7,
+            technicianId: 6,
+            newStatus: "Done",
+            createdOn: "2026-10-20T15:00:00Z",
+          },
+        ],
+      },
+    ]);
+    const read = await client.readJobActivity(["100", "100", "abc"]);
+    expect(read.available).toBe(true);
+    expect(read.events).toEqual([
+      {
+        jobId: "100",
+        appointmentId: "7",
+        technicianId: "6",
+        at: "2026-10-20T08:00:00Z",
+        kind: "arrived",
+      },
+      {
+        jobId: "100",
+        appointmentId: "7",
+        technicianId: "6",
+        at: "2026-10-20T10:00:00Z",
+        kind: "paused",
+      },
+      {
+        jobId: "100",
+        appointmentId: "7",
+        technicianId: "6",
+        at: "2026-10-20T15:00:00Z",
+        kind: "done",
+      },
+    ]);
+    const raw = JSON.stringify(read);
+    expect(raw).not.toContain("MEMO");
+    expect(raw).not.toContain("Quinlan");
+    expect(raw).not.toContain("Dispatched");
+    expect(read.events.every((event) => !("memo" in event))).toBe(true);
+    const call = fetcher.mock.calls.find((entry) => String(entry[0]).includes("/history"));
+    expect(call?.[1]?.method).toBe("GET");
+    expect(new URL(String(call?.[0])).pathname).toBe("/jpm/v2/tenant/10/jobs/100/history");
+  });
+
+  it("marks job history unavailable when the history document is missing", async () => {
+    const missing = setup([new Response("no", { status: 404 })]);
+    expect(await missing.client.readJobActivity(["100"])).toMatchObject({
+      available: false,
+      events: [],
+    });
+    const wrapped = setup([{ history: [] }]);
+    expect((await wrapped.client.readJobActivity(["100"])).available).toBe(true);
+  });
 });
 
 describe("gross pay and job walks that must not abort an add", () => {

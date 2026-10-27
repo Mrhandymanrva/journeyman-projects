@@ -11,6 +11,8 @@ import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinanci
 import type { EstimateRead, InvoiceHeaderRead } from "../domain/stFinancialSummary.js";
 import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
 import type { BurdenCandidateRead, PayrollAdjustmentRow } from "../domain/stLabor.js";
+import { classifyActivityEvent } from "../domain/stLaborDiagnosticDetail.js";
+import type { ActivityEvent, PayrollPeriodFact } from "../domain/stLaborDiagnosticDetail.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 import {
   scopeNamesFromAuthBody,
@@ -1904,6 +1906,164 @@ export class ServiceTitanReadAdapter {
       if (page === 40) capped = true;
     }
     return { forbidden: false, unavailable: false, capped, items };
+  }
+
+  /**
+   * GET payroll/v2/tenant/{tenant}/payrolls/{id} for commission payroll ids.
+   * Employee ids are dropped. A 404 leaves that period without a status.
+   */
+  async readPayrollPeriods(ids: readonly string[]): Promise<{
+    available: boolean;
+    periods: PayrollPeriodFact[];
+    note: string | null;
+  }> {
+    const wanted = [...new Set(ids.map((id) => String(id)))].filter((id) => /^\d+$/.test(id)).slice(0, 40);
+    if (wanted.length === 0) {
+      return { available: true, periods: [], note: "No payroll ids on the project's commission rows." };
+    }
+    const periodSchema = z.object({
+      id: sourceId.nullish(),
+      status: z.string().nullish(),
+      payrollStatus: z.string().nullish(),
+      startedOn: z.string().nullish(),
+      endedOn: z.string().nullish(),
+      from: z.string().nullish(),
+      to: z.string().nullish(),
+      approvedOn: z.string().nullish(),
+      paidOn: z.string().nullish(),
+    }).strip();
+    const periods: PayrollPeriodFact[] = [];
+    let denied = false;
+    let missing = 0;
+    for (let offset = 0; offset < wanted.length; offset += 4) {
+      const batch = wanted.slice(offset, offset + 4);
+      const reads = await Promise.all(batch.map(async (id) => ({ id, read: await this.getRaw("payroll", `payrolls/${id}`) })));
+      for (const { id, read } of reads) {
+        if (read.status === 403) {
+          denied = true;
+          continue;
+        }
+        if (read.status === 404) {
+          missing += 1;
+          continue;
+        }
+        if (read.status < 200 || read.status >= 300) continue;
+        const body = read.body && typeof read.body === "object" && "data" in read.body && read.body.data && typeof read.body.data === "object" && !Array.isArray(read.body.data)
+          ? read.body.data
+          : read.body;
+        const parsed = periodSchema.safeParse(body);
+        if (!parsed.success) continue;
+        periods.push({
+          id: parsed.data.id ?? id,
+          status: parsed.data.status ?? parsed.data.payrollStatus ?? null,
+          startedOn: parsed.data.startedOn ?? parsed.data.from ?? null,
+          endedOn: parsed.data.endedOn ?? parsed.data.to ?? null,
+          approvedOn: parsed.data.approvedOn ?? parsed.data.paidOn ?? null,
+        });
+      }
+    }
+    if (periods.length === 0) {
+      return {
+        available: false,
+        periods: [],
+        note: denied
+          ? "Payroll period reads were denied (HTTP 403)."
+          : `Payroll period reads returned no records (${missing} not found).`,
+      };
+    }
+    const capped = ids.length > 40 ? " Only the first 40 payroll ids were read." : "";
+    return {
+      available: true,
+      periods,
+      note: denied ? `Some payroll period reads were denied (HTTP 403).${capped}` : capped.trim() || null,
+    };
+  }
+
+  /**
+   * GET jpm/v2/tenant/{tenant}/jobs/{id}/history.
+   * Memos are used only to tell Working, Arrived, Paused, Resumed, and Done apart, then dropped.
+   * Dispatch is not returned.
+   */
+  async readJobActivity(jobIds: readonly string[]): Promise<{
+    available: boolean;
+    events: ActivityEvent[];
+    note: string | null;
+  }> {
+    const ids = [...new Set(jobIds.map((id) => String(id)))].filter((id) => /^\d+$/.test(id));
+    if (ids.length === 0) return { available: true, events: [], note: "No jobs to query." };
+    const rowSchema = z.object({
+      jobId: sourceId.nullish(),
+      appointmentId: sourceId.nullish(),
+      employeeId: sourceId.nullish(),
+      technicianId: sourceId.nullish(),
+      eventType: z.string().nullish(),
+      type: z.string().nullish(),
+      status: z.string().nullish(),
+      newStatus: z.string().nullish(),
+      date: z.string().nullish(),
+      createdOn: z.string().nullish(),
+      timestamp: z.string().nullish(),
+      memo: z.string().nullish(),
+    }).strip();
+    const events: ActivityEvent[] = [];
+    let denied = false;
+    let missing = 0;
+    for (let offset = 0; offset < ids.length; offset += 4) {
+      const batch = ids.slice(offset, offset + 4);
+      const reads = await Promise.all(batch.map(async (jobId) => ({ jobId, read: await this.getRaw("jpm", `jobs/${jobId}/history`) })));
+      for (const { jobId, read } of reads) {
+        if (read.status === 403) {
+          denied = true;
+          continue;
+        }
+        if (read.status === 404) {
+          missing += 1;
+          continue;
+        }
+        if (read.status < 200 || read.status >= 300) continue;
+        const body = read.body;
+        const list = Array.isArray(body)
+          ? body
+          : body && typeof body === "object" && Array.isArray((body as { data?: unknown }).data)
+            ? (body as { data: unknown[] }).data
+            : body && typeof body === "object" && Array.isArray((body as { history?: unknown }).history)
+              ? (body as { history: unknown[] }).history
+              : [];
+        for (const raw of list) {
+          const parsed = rowSchema.safeParse(raw);
+          if (!parsed.success) continue;
+          const row = parsed.data;
+          const kind = classifyActivityEvent({
+            eventType: row.eventType ?? row.type,
+            status: row.status ?? row.newStatus,
+            memo: row.memo,
+          });
+          const at = row.date ?? row.createdOn ?? row.timestamp;
+          if (!kind || !at) continue;
+          events.push({
+            jobId: row.jobId ?? jobId,
+            appointmentId: row.appointmentId ?? null,
+            technicianId: row.technicianId ?? row.employeeId ?? null,
+            at,
+            kind,
+          });
+        }
+      }
+    }
+    if (events.length === 0 && (denied || missing === ids.length)) {
+      return {
+        available: false,
+        events: [],
+        note: denied
+          ? "Job history was denied (HTTP 403)."
+          : "Job history was not found (HTTP 404).",
+      };
+    }
+    return {
+      available: true,
+      events,
+      note: denied ? "Some job history reads were denied (HTTP 403)." : null,
+    };
   }
 
   /**

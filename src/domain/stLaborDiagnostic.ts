@@ -20,6 +20,7 @@ import {
   countMatchingPaidHourRows,
   grossPayRowDollars,
   isCanceledJobStatus,
+  isInvoiceRelatedBonus,
   isPaidTimeOff,
   postedInvoiceRelatedBonus,
   projectJobDates,
@@ -32,6 +33,17 @@ import {
   type TechHourSlice,
   type WorkedTimesheet,
 } from "./stLabor.js";
+import {
+  activityBurdenReport,
+  commissionBreakdown,
+  projectDateRange,
+  splitProjectAdjustments,
+  type ActivityBurdenReport,
+  type ActivityEvent,
+  type CommissionBreakdown,
+  type PayrollPeriodFact,
+  type TechnicianAdjustmentReport,
+} from "./stLaborDiagnosticDetail.js";
 
 export const ST_LABOR_MATCH_DOLLARS = 1;
 
@@ -39,6 +51,7 @@ export interface StLaborDiagnosticJob {
   id: string;
   jobStatus?: string | null;
   createdOn?: string | null;
+  completedOn?: string | null;
 }
 
 export interface StLaborDiagnosticRead {
@@ -65,6 +78,10 @@ export interface StLaborDiagnosticRead {
   invoicesUnread: boolean;
   /** Absent when the caller did not run the extra GET search. Those candidates are reported as not read. */
   candidates?: BurdenCandidateRead | null;
+  /** Payroll period status for commission rows. Absent when that GET was not run. */
+  payrollPeriods?: { available: boolean; periods: readonly PayrollPeriodFact[]; note: string | null } | null;
+  /** Job-history and appointment status events. Absent when that GET was not run. */
+  activityEvents?: { available: boolean; events: readonly ActivityEvent[]; note: string | null } | null;
 }
 
 export const PROJECT_AGE_RULE =
@@ -183,6 +200,12 @@ export interface StLaborDiagnostic {
     untied: number;
     invoices_unread: boolean;
   };
+  /** Posted InvoiceRelatedBonus grouped by month, payroll, and finalized. Diagnostic only. */
+  commission_breakdown: CommissionBreakdown;
+  /** Arrived or working to done, with paused-to-resumed gaps removed. Diagnostic only. */
+  activity_burden: ActivityBurdenReport;
+  /** Adjustments tied to this project's jobs, and untied adjustments for its technicians. */
+  technician_adjustments: TechnicianAdjustmentReport;
   notes: string[];
 }
 
@@ -350,6 +373,30 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     invoiceIds: input.invoiceIds,
     technicianIds: [],
   });
+  const range = projectDateRange(input.jobs, generatedAt.toISOString());
+  const breakdown = commissionBreakdown({
+    jobIds,
+    items: input.grossPay.forbidden ? [] : input.grossPay.items,
+    periods: input.payrollPeriods?.periods ?? [],
+    payrollStatusAvailable: input.payrollPeriods?.available === true,
+    knownLabor: known,
+  });
+  const activity = activityBurdenReport({
+    available: input.activityEvents?.available === true,
+    events: input.activityEvents?.events ?? [],
+    activeJobIds,
+    rates: input.burdenRateByTechnician,
+    residuals: breakdown.residuals,
+    note: input.activityEvents?.note ?? null,
+  });
+  const technicianAdjustments = splitProjectAdjustments({
+    available: input.adjustments.available,
+    items: input.adjustments.items,
+    jobIds: jobSet,
+    technicianIds: projectTechs,
+    rangeStart: range.start,
+    rangeEnd: range.end,
+  });
 
   return {
     st_project_id: input.stProjectId,
@@ -453,6 +500,9 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
       untied: tied.untied,
       invoices_unread: input.invoicesUnread,
     },
+    commission_breakdown: breakdown,
+    activity_burden: activity,
+    technician_adjustments: technicianAdjustments,
     notes: [
       PROJECT_AGE_RULE,
       "Commission is the sum of InvoiceRelatedBonus on the project's jobs. When none exist, commission is 25% of reconciled billed labor.",
@@ -460,6 +510,7 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
       "Burden candidates are aggregates only. A match within $1 is reported and is not adopted.",
       PROJECT_LABOR_EXPENSE_UNAVAILABLE,
       "Rows dated before 2022-08-02 are omitted. Paid time off is excluded from posted commission.",
+      "commission_breakdown, activity_burden, and technician_adjustments are diagnostic aggregates. They do not change labor, commission, or burden.",
     ],
   };
 }
@@ -733,6 +784,16 @@ export interface StLaborDiagnosticClient {
     startsOnOrAfter: string;
     endsOnOrBefore: string;
   }): Promise<BurdenCandidateRead>;
+  readPayrollPeriods?(ids: readonly string[]): Promise<{
+    available: boolean;
+    periods: PayrollPeriodFact[];
+    note: string | null;
+  }>;
+  readJobActivity?(jobIds: readonly string[]): Promise<{
+    available: boolean;
+    events: ActivityEvent[];
+    note: string | null;
+  }>;
 }
 
 const TIMESHEET_BATCH = 4;
@@ -892,6 +953,48 @@ export async function readStLaborDiagnostic(
       };
     }
   }
+  const projectJobIds = new Set(jobs.map((job) => job.id));
+  const payrollIds = [
+    ...new Set(
+      gross.forbidden
+        ? []
+        : gross.items
+            .filter(
+              (item) =>
+                item.payrollId &&
+                item.jobId &&
+                projectJobIds.has(item.jobId) &&
+                !grossPayItemTooOld(item) &&
+                isInvoiceRelatedBonus(item) &&
+                !isPaidTimeOff(item),
+            )
+            .map((item) => item.payrollId as string),
+    ),
+  ];
+  let payrollPeriods: { available: boolean; periods: PayrollPeriodFact[]; note: string | null } | null = null;
+  if (client.readPayrollPeriods) {
+    try {
+      payrollPeriods = await client.readPayrollPeriods(payrollIds);
+    } catch (err) {
+      payrollPeriods = {
+        available: false,
+        periods: [],
+        note: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+  let activityEvents: { available: boolean; events: ActivityEvent[]; note: string | null } | null = null;
+  if (client.readJobActivity) {
+    try {
+      activityEvents = await client.readJobActivity(activeIds);
+    } catch (err) {
+      activityEvents = {
+        available: false,
+        events: [],
+        note: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
   return buildStLaborDiagnostic(
     {
       stProjectId,
@@ -913,6 +1016,8 @@ export async function readStLaborDiagnostic(
       invoiceIds,
       invoicesUnread,
       candidates,
+      payrollPeriods,
+      activityEvents,
     },
     now,
   );
