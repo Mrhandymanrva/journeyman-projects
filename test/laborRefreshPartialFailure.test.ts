@@ -85,6 +85,26 @@ describe("labor hours come from ServiceTitan payroll paid time only", () => {
     expect(paid.warnings.join("; ")).toMatch(/Stored hours kept/);
   });
 
+  it("keeps stored hours when the gross pay read hits the 200-page cap", async () => {
+    const paid = await readPaidLabor(
+      ["100"],
+      {
+        readGrossPayItems: async () => ({ forbidden: false, items: grossPay, capped: true }),
+        readJobTimesheets: async () => {
+          throw new Error("timesheets must not be read");
+        },
+        readJob: async () => ({ appointments: [], assignments: [] }),
+      },
+      { dateOnOrAfter: "2025-01-01T00:00:00.000Z" },
+    );
+    expect(paid.stamp).toBe(false);
+    expect(paid.payroll).toBe("failed");
+    expect(paid.grossPay).toBeNull();
+    expect(paid.results.map((result) => result.outcome)).toEqual(["keep"]);
+    expect(paid.warnings.join(" ")).toMatch(/200 pages/);
+    expect(paid.warnings.join(" ")).toMatch(/Stored hours kept/);
+  });
+
   it("replaces hours only on jobs that have paid time and moves the stamp", async () => {
     const paid = await readPaidLabor(
       ["100", "200"],
@@ -245,6 +265,41 @@ describe("manual refresh with partial ServiceTitan failures", () => {
       expect(conn.client.windows.at(-1)).toBe("2026-09-16T16:00:00.000Z");
     },
   );
+
+  it("a good payroll read replaces hours and burden that were wiped to 0", async () => {
+    payroll = "paid";
+    conn.client.readTechnicians = async () => [
+      { id: "6", name: "Tech A", active: true, hourlyRate: 30, burdenRate: 10, commissionRate: null, isManagedTech: true },
+      { id: "7", name: "Tech B", active: true, hourlyRate: 30, burdenRate: 20, commissionRate: null, isManagedTech: true },
+    ];
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `UPDATE projects.labor_actuals
+            SET hours = 0, burden_amount = 0, labor_amount = 0, technician_name = NULL
+          WHERE project_id = $1`,
+        [projectId],
+      ),
+    );
+    const at = new Date("2026-10-27T16:32:56Z");
+    const { warnings } = await refreshLinkedProject(h.db, conn, t.id, projectId, at, laborCode, "manual");
+    expect(warnings.some((warning) => /Stored hours kept/.test(warning))).toBe(false);
+    const money = await h.db.withTenant(t.id, (db) => readStoredProjectMoney(db, projectId));
+    expect(money.laborBurden).toBe(87.5);
+    const rec = await h.db.withTenant(t.id, (db) => readStoredReconciliation(db, projectId));
+    expect(rec?.error ?? "").not.toMatch(/Stored hours kept/);
+    expect(rec?.technicians.map((tech) => [tech.technician_id, tech.hours])).toEqual(
+      expect.arrayContaining([
+        ["6", 4.75],
+        ["7", 2],
+      ]),
+    );
+    expect(rec?.lines.find((line) => line.key === "laborBurden")).toMatchObject({
+      jp: 87.5,
+      st: 232.5,
+      delta: -145,
+    });
+    expect(await state()).toMatchObject({ hours: 6.75, source: "manual" });
+  });
 
   it("paid gross pay hours replace stored hours per technician and move the stamp", async () => {
     payroll = "paid";

@@ -33,6 +33,28 @@ export const SEGRETO_FINANCIALS = {
   marginPercent: 68.47,
 } as const;
 
+/**
+ * Acceptance totals from ServiceTitan Project Financials for Dalton
+ * (ST project 290588725). Live invoice lines: labor revenue 67,305.00,
+ * material revenue 25,101.79, and 25,000.00 that is neither
+ * (one 20,000 Sub Contractor Revenue line and two 2,500 Misc Income lines).
+ * Billed is the invoice header total, 117,406.79.
+ * Labor expense 21,883.04 is the published ServiceTitan figure. Paid hours
+ * times the burden rate can equal it. Gross-pay amounts might be that
+ * figure instead. Production payroll is required to tell them apart.
+ */
+export const DALTON_PROJECT_ID = "290588725";
+export const DALTON_FINANCIALS = {
+  billedLabor: 67305,
+  billedMaterials: 25101.79,
+  billed: 117406.79,
+  laborBurden: 21883.04,
+  materialsExpense: 31748.12,
+  expenses: 53631.16,
+  margin: 63775.63,
+  marginPercent: 54.32,
+} as const;
+
 export interface ListedJob {
   id: string;
   jobNumber: string;
@@ -170,7 +192,20 @@ export function financialsFromReads(input: {
   const billedMaterials = roundMoney(
     input.invoiceLines.filter((line) => line.kind === "material").reduce((sum, line) => sum + line.total, 0),
   );
-  const billed = roundMoney(billedLabor + billedMaterials);
+  const billedOther = roundMoney(
+    input.invoiceLines.filter((line) => line.kind === "other").reduce((sum, line) => sum + line.total, 0),
+  );
+  // Actual billed is the invoice total. Subcontractor revenue and miscellaneous
+  // income are not labor or material labels, and they are still billed.
+  const billed = roundMoney(billedLabor + billedMaterials + billedOther);
+  // Journeyman labor burden is paid timesheet hours times the technician
+  // burden rate. ServiceTitan does not return Project Financials > Expense >
+  // Labor on the project payload. Help articles "Calculate technician burden
+  // rates" and "Set up your account for project management" describe that
+  // hours × burdenRate line. Gross pay `amount` is wages. The reconciliation
+  // stores that amount as ServiceTitan's own labor figure so the two columns
+  // are not the same calculation. Whether $21,883.04 on Dalton is the wage
+  // sum or hours × burdenRate can only be confirmed with production payroll.
   const laborBurden = roundMoney(
     input.timesheets.reduce((sum, row) => {
       if (row.burdenRate == null || !(row.burdenRate > 0) || !(row.hours > 0)) return sum;
@@ -228,6 +263,32 @@ export function splitBilledLabor(
 export function commissionDollars(billedShare: number, fraction: number | null): number | null {
   if (fraction == null || !(fraction > 0) || !(billedShare > 0)) return billedShare > 0 && fraction === 0 ? 0 : null;
   return roundMoney(billedShare * fraction);
+}
+
+/** Replace billed with ServiceTitan's invoice header total and recompute margin. */
+export function withBilled(money: ProjectMoney, billed: number): ProjectMoney {
+  const next = roundMoney(billed);
+  const margin = roundMoney(next - money.expenses);
+  return {
+    ...money,
+    billed: next,
+    margin,
+    marginPercent: next > 0 ? Math.round((margin / next) * 10000) / 100 : 0,
+  };
+}
+
+/** Replace labor burden and recompute expenses and margin. */
+export function withLaborBurden(money: ProjectMoney, laborBurden: number): ProjectMoney {
+  const burden = roundMoney(laborBurden);
+  const expenses = roundMoney(burden + money.materialsExpense);
+  const margin = roundMoney(money.billed - expenses);
+  return {
+    ...money,
+    laborBurden: burden,
+    expenses,
+    margin,
+    marginPercent: money.billed > 0 ? Math.round((margin / money.billed) * 10000) / 100 : 0,
+  };
 }
 
 export function reconcileFinancials(jp: ProjectMoney, st: ProjectMoney): ReconciliationLine[] {

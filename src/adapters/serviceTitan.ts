@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { technicianIdKey } from "../domain/commissionLabor.js";
 import { allowlistedGet } from "../domain/commissionProbe.js";
+import {
+  dedupeGrossPayItems,
+  grossPayItemTooOld,
+  grossPayItemUsable,
+  grossPayNaturalKey,
+} from "../domain/grossPay.js";
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
+import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 
 const sourceId = z
@@ -88,15 +95,19 @@ const jobSchema = z.object({
   jobStatus: z.string(),
   summary: z.string().nullish(),
   modifiedOn: z.string(),
+  createdOn: z.string().nullish(),
+});
+const stInstant = z.string().refine((value) => Number.isFinite(Date.parse(value)), {
+  message: "Invalid date",
 });
 const appointmentSchema = z.object({
-  arrivalWindowStart: z.string().datetime({ offset: true }).nullish(),
-  arrivalWindowEnd: z.string().datetime({ offset: true }).nullish(),
+  arrivalWindowStart: z.string().nullish(),
+  arrivalWindowEnd: z.string().nullish(),
   id: sourceId,
   jobId: sourceId,
   appointmentNumber: z.string(),
-  start: z.string().datetime({ offset: true }),
-  end: z.string().datetime({ offset: true }),
+  start: stInstant,
+  end: stInstant,
   status: z.string(),
   active: z.boolean(),
   isConfirmed: z.boolean(),
@@ -130,6 +141,11 @@ const RETRY_AFTER_DEFAULT_MS = 1_000;
  * waits one second. Nothing waits longer than a minute. Zero is a real wait
  * of zero, which is how a polite limit can be honored without sleeping.
  */
+/** Per-request backoff after a timeout. Attempt 1 waits 250ms, then 500, then 1s. */
+export function retryBackoffMs(attempt: number): number {
+  return Math.min(250 * 2 ** Math.max(0, attempt - 1), 8_000);
+}
+
 export function retryAfterMs(header: string | null, now = Date.now()): number {
   if (header == null || header.trim() === "") return RETRY_AFTER_DEFAULT_MS;
   const trimmed = header.trim();
@@ -154,7 +170,8 @@ export class ServiceTitanWriteUncertainError extends ServiceTitanReadError {}
  * Reuses the PO application's host allowlist/authentication pattern, without
  * coupling this module to its singleton state or exposing source payloads. */
 export interface GrossPayItem {
-  id: string;
+  /** ServiceTitan often sends null until the payroll period is posted. */
+  id: string | null;
   technicianId: string | null;
   date: string | null;
   activity: string | null;
@@ -165,6 +182,15 @@ export interface GrossPayItem {
   /** Regular, Overtime, DoubleOvertime, PaidTimeOff. */
   paidTimeType: string | null;
   jobId: string | null;
+  projectId?: string | null;
+  invoiceId?: string | null;
+  payrollId?: string | null;
+  startedOn?: string | null;
+  endedOn?: string | null;
+  sourceEntityId?: string | null;
+  activityCode?: string | null;
+  employeeType?: string | null;
+  jobNumber?: string | null;
 }
 
 export class ServiceTitanReadAdapter {
@@ -279,6 +305,12 @@ export class ServiceTitanReadAdapter {
           },
         });
       } catch {
+        // One request timed out or the socket dropped. Retry that request.
+        // There is no abort that covers the whole project walk.
+        if (attempt < maxAttempts) {
+          await this.sleep(retryBackoffMs(attempt));
+          continue;
+        }
         throw new ServiceTitanReadError(
           "ServiceTitan read could not complete. The previous snapshot should be retained.",
         );
@@ -326,6 +358,10 @@ export class ServiceTitanReadAdapter {
           },
         });
       } catch {
+        if (attempt < maxAttempts) {
+          await this.sleep(retryBackoffMs(attempt));
+          continue;
+        }
         throw new ServiceTitanReadError(
           "ServiceTitan read could not complete. The previous snapshot should be retained.",
         );
@@ -393,18 +429,21 @@ export class ServiceTitanReadAdapter {
         }),
       );
       const result = z
-        .object({ data: z.array(schema), hasMore: z.boolean() })
+        .object({ data: z.array(z.unknown()), hasMore: z.boolean() })
         .safeParse(raw);
       if (!result.success)
         throw new ServiceTitanReadError(
           `Unexpected ServiceTitan ${resource} response.`,
         );
-      rows.push(...result.data.data);
+      for (const row of result.data.data) {
+        if (row == null) continue;
+        const parsed = schema.safeParse(row);
+        if (!parsed.success) continue;
+        rows.push(parsed.data);
+      }
       if (!result.data.hasMore) return rows;
     }
-    throw new ServiceTitanReadError(
-      "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
-    );
+    throw new ServiceTitanReadError(`Unexpected ServiceTitan ${resource} response.`);
   }
 
   async projectNoteReceipt(projectId: string, marker: string) {
@@ -910,18 +949,43 @@ export class ServiceTitanReadAdapter {
         "ST project customer/location did not match.",
       );
     const jobs: ServiceTitanJob[] = [];
+    const warnings: string[] = [];
+    // Four jobs at a time. Each GET has its own timeout and retry. A bad job
+    // is kept as a stub so one of 83 cannot abort the project.
     for (let offset = 0; offset < project.jobIds.length; offset += 4) {
       const batch = await Promise.all(
         project.jobIds.slice(offset, offset + 4).map(async (jobId) => {
-          const job = jobSchema.parse(await this.get("jpm", "jobs/" + jobId));
-          if (
-            job.id !== jobId ||
-            (job.projectId != null && job.projectId !== id)
-          )
-            throw new ServiceTitanReadError(
-              "ST job membership changed during the read. Refresh again.",
+          try {
+            const parsed = jobSchema.safeParse(await this.get("jpm", "jobs/" + jobId));
+            if (!parsed.success) {
+              const issue = parsed.error.issues[0];
+              throw new ServiceTitanReadError(
+                `Unexpected ServiceTitan job (${issue?.path.join(".") || "job"}: ${issue?.message ?? "invalid"}).`,
+              );
+            }
+            const job = parsed.data;
+            if (job.id !== jobId || (job.projectId != null && job.projectId !== id)) {
+              throw new ServiceTitanReadError(
+                "ST job membership changed during the read. Refresh again.",
+              );
+            }
+            return job;
+          } catch (err) {
+            warnings.push(
+              `Job ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
             );
-          return job;
+            return {
+              id: jobId,
+              jobNumber: jobId,
+              projectId: id,
+              customerId: project.customerId,
+              locationId: project.locationId,
+              jobStatus: "Unknown",
+              summary: null,
+              modifiedOn: project.modifiedOn ?? "1970-01-01T00:00:00.000Z",
+              createdOn: null,
+            };
+          }
         }),
       );
       jobs.push(...batch);
@@ -940,6 +1004,7 @@ export class ServiceTitanReadAdapter {
       customer,
       location,
       jobs,
+      warnings,
       observedAt: new Date().toISOString(),
     };
   }
@@ -1176,8 +1241,37 @@ export class ServiceTitanReadAdapter {
       }
     return {
       job: parsed.data,
-      appointments,
+      appointments: appointments.filter((row) => !isBeforeSourceFloor(row.start)),
       assignments,
+      observedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Appointments and assignments for a job already loaded by readProjectDetails.
+   * Skips the second jobs/{id} GET when the caller passes that job.
+   */
+  async readJobSchedule(jobId: string, known?: ServiceTitanJob | null): Promise<{
+    job: ServiceTitanJob;
+    appointments: ServiceTitanAppointment[];
+    assignments: ServiceTitanAssignment[];
+    observedAt: string;
+  }> {
+    if (!/^\d+$/.test(jobId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
+    let job = known && known.id === jobId ? known : null;
+    if (!job) {
+      const parsed = jobSchema.safeParse(await this.get("jpm", `jobs/${jobId}`));
+      if (!parsed.success || parsed.data.id !== jobId)
+        throw new ServiceTitanReadError("ServiceTitan returned an unexpected job.");
+      job = parsed.data;
+    }
+    const appointments = await this.pages("jpm", "appointments", appointmentSchema, jobId);
+    const assignments = await this.pages("dispatch", "appointment-assignments", assignmentSchema, jobId);
+    return {
+      job,
+      appointments: appointments.filter((row) => row.jobId === jobId && !isBeforeSourceFloor(row.start)),
+      assignments: assignments.filter((row) => row.jobId === jobId),
       observedAt: new Date().toISOString(),
     };
   }
@@ -1269,6 +1363,12 @@ export class ServiceTitanReadAdapter {
   async readGrossPayItems(query: { dateOnOrAfter: string; dateOnOrBefore?: string }): Promise<{
     forbidden: boolean;
     items: GrossPayItem[];
+    /** Rows missing a job or project, an employee, or both hours and amount. */
+    skipped: number;
+    /** Rows dated before 2022-08-02. Dropped, not a failed read. */
+    omitted: number;
+    /** True when the date window still had another page after 200. */
+    capped: boolean;
   }> {
     if (Number.isNaN(Date.parse(query.dateOnOrAfter)))
       throw new ServiceTitanReadError("Use an ISO date for the gross pay window.");
@@ -1278,23 +1378,75 @@ export class ServiceTitanReadAdapter {
       .transform((value) =>
         value == null ? null : typeof value === "string" ? value : value.name ?? value.type ?? value.value ?? null,
       );
+    const looseId = z.union([z.string(), z.number(), z.null()]).optional();
+    const looseNumber = z.preprocess((value) => {
+      if (value == null || value === "") return null;
+      if (typeof value === "number") return Number.isFinite(value) ? value : null;
+      if (typeof value === "string" && value.trim() !== "") {
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      return null;
+    }, z.number().finite().nullable());
+    // Documented payroll v2 GrossPayItemResponse. Every field is optional
+    // because production rows omit id and most labels. Unknown fields pass through.
     const itemSchema = z
       .object({
-        id: sourceId,
-        employeeId: sourceId.nullish(),
+        id: looseId,
+        employeeId: looseId,
         employeeType: enumText,
+        businessUnitName: z.string().nullish(),
+        payrollId: looseId,
+        employeePayrollId: z.string().nullish(),
         date: z.string().nullish(),
         activity: z.string().nullish(),
+        activityCodeId: looseId,
         activityCode: z.string().nullish(),
-        amount: z.coerce.number().finite().nullish(),
+        amount: looseNumber.optional(),
+        amountAdjustment: looseNumber.optional(),
+        payoutBusinessUnitName: z.string().nullish(),
         grossPayItemType: enumText,
-        paidDurationHours: z.coerce.number().finite().nullish(),
+        startedOn: z.string().nullish(),
+        endedOn: z.string().nullish(),
+        startTime: z.string().nullish(),
+        endTime: z.string().nullish(),
+        paidDurationHours: looseNumber.optional(),
         paidTimeType: enumText,
-        jobId: sourceId.nullish(),
-        projectId: sourceId.nullish(),
+        sourceEntityId: looseId,
+        jobId: looseId,
+        jobNumber: z.string().nullish(),
+        jobTypeName: z.string().nullish(),
+        projectNumber: z.string().nullish(),
+        projectId: looseId,
+        invoiceId: looseId,
+        invoiceNumber: z.string().nullish(),
+        invoiceItemId: looseId,
+        customerId: looseId,
+        customerName: z.string().nullish(),
+        locationId: looseId,
+        locationName: z.string().nullish(),
+        locationAddress: z.string().nullish(),
+        locationZip: z.string().nullish(),
+        zoneName: z.string().nullish(),
+        taxZoneName: z.string().nullish(),
+        laborTypeId: looseId,
+        laborTypeCode: z.string().nullish(),
+        budgetCodeId: looseId,
+        isPrevailingWageJob: z.boolean().nullish(),
+        memo: z.string().nullish(),
+        createdOn: z.string().nullish(),
+        modifiedOn: z.string().nullish(),
       })
-      .strip();
-    const items: GrossPayItem[] = [];
+      .passthrough();
+    const textId = (value: string | number | null | undefined): string | null => {
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value === "string" && value.trim()) return value.trim();
+      return null;
+    };
+    const parsedItems: GrossPayItem[] = [];
+    let skipped = 0;
+    let omitted = 0;
+    let capped = false;
     try {
       for (let page = 1; page <= 200; page += 1) {
         const params = new URLSearchParams({
@@ -1305,35 +1457,74 @@ export class ServiceTitanReadAdapter {
         });
         if (query.dateOnOrBefore) params.set("dateOnOrBefore", query.dateOnOrBefore);
         const raw = await this.get("payroll", "gross-pay-items", params);
-        const parsed = z.object({ data: z.array(itemSchema), hasMore: z.boolean() }).safeParse(raw);
+        const parsed = z
+          .object({ data: z.array(z.unknown()), hasMore: z.boolean().optional() })
+          .passthrough()
+          .safeParse(raw);
         if (!parsed.success) {
           const issue = parsed.error.issues[0];
           throw new ServiceTitanReadError(
             `Unexpected gross pay items (${issue?.path.join(".") || "page"}: ${issue?.message ?? "invalid"}).`,
           );
         }
-        for (const row of parsed.data.data) {
-          items.push({
-            id: row.id,
-            technicianId: row.employeeId ?? null,
+        for (const rawRow of parsed.data.data) {
+          if (rawRow == null || typeof rawRow !== "object") {
+            skipped += 1;
+            continue;
+          }
+          const rowParsed = itemSchema.safeParse(rawRow);
+          if (!rowParsed.success) {
+            skipped += 1;
+            continue;
+          }
+          const row = rowParsed.data;
+          const item: GrossPayItem = {
+            id: textId(row.id),
+            technicianId: textId(row.employeeId),
             date: row.date ?? null,
             activity: row.activity ?? row.activityCode ?? null,
             amount: row.amount ?? null,
             type: row.grossPayItemType,
             paidDurationHours: row.paidDurationHours ?? null,
             paidTimeType: row.paidTimeType,
-            jobId: row.jobId ?? null,
-          });
+            jobId: textId(row.jobId),
+            projectId: textId(row.projectId),
+            invoiceId: textId(row.invoiceId),
+            payrollId: textId(row.payrollId),
+            startedOn: row.startedOn ?? row.startTime ?? null,
+            endedOn: row.endedOn ?? row.endTime ?? null,
+            sourceEntityId: textId(row.sourceEntityId),
+            activityCode: row.activityCode ?? null,
+            employeeType: row.employeeType,
+            jobNumber: row.jobNumber ?? null,
+          };
+          if (grossPayItemTooOld(item)) {
+            omitted += 1;
+            continue;
+          }
+          if (!grossPayItemUsable(item)) {
+            skipped += 1;
+            continue;
+          }
+          parsedItems.push(item);
         }
-        if (!parsed.data.hasMore) break;
+        const more = parsed.data.hasMore === true || (parsed.data.hasMore == null && parsed.data.data.length >= 500);
+        if (!more) break;
+        if (page === 200) capped = true;
       }
     } catch (err) {
       if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
-        return { forbidden: true, items: [] };
+        return { forbidden: true, items: [], skipped: 0, omitted: 0, capped: false };
       }
       throw err;
     }
-    return { forbidden: false, items };
+    return {
+      forbidden: false,
+      items: dedupeGrossPayItems(parsedItems, grossPayNaturalKey),
+      skipped,
+      omitted,
+      capped,
+    };
   }
 
   /**
@@ -1400,8 +1591,8 @@ export class ServiceTitanReadAdapter {
    * Billed labor and materials follow generalLedgerAccount.name. Items have
    * no skuType. A list row with no items array is read again by invoice id.
    */
-  async readJobInvoiceLines(jobId: string): Promise<
-    Array<{
+  async readJobInvoiceLines(jobId: string): Promise<{
+    lines: Array<{
       invoiceId: string;
       lineKey: string;
       sku: string;
@@ -1409,8 +1600,10 @@ export class ServiceTitanReadAdapter {
       quantity: number | null;
       total: number;
       technicianId: string | null;
-    }>
-  > {
+    }>;
+    /** Invoice header totals. This is ServiceTitan's billed figure, not the sum of classified lines. */
+    invoices: Array<{ id: string; total: number }>;
+  }> {
     if (!/^\d+$/.test(jobId))
       throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
     const itemSchema = z.object({
@@ -1428,9 +1621,15 @@ export class ServiceTitanReadAdapter {
     const invoiceSchema = z.object({
       id: sourceId,
       job: z.object({ id: sourceId }).nullish(),
-      // Estimate-type jobs carry $0 invoices with items: null. null must not fail the page.
-      items: z.array(itemSchema).nullish(),
+      // Estimate-type jobs carry $0 invoices with items: null. A null element
+      // inside the array is the same thing and must not fail the page.
+      items: z.preprocess(
+        (value) => (Array.isArray(value) ? value.filter((item) => item != null) : value),
+        z.array(itemSchema).nullish(),
+      ),
       total: z.coerce.number().nullish(),
+      invoiceDate: z.string().nullish(),
+      createdOn: z.string().nullish(),
     });
     const lines: Array<{
       invoiceId: string;
@@ -1441,8 +1640,18 @@ export class ServiceTitanReadAdapter {
       total: number;
       technicianId: string | null;
     }> = [];
+    const invoices: Array<{ id: string; total: number }> = [];
+    const seenInvoices = new Set<string>();
+    const noteInvoice = (invoice: { id: string; total?: number | null }) => {
+      if (seenInvoices.has(invoice.id)) return;
+      seenInvoices.add(invoice.id);
+      invoices.push({ id: invoice.id, total: invoice.total ?? 0 });
+    };
     const pushInvoice = (invoice: z.infer<typeof invoiceSchema>) => {
       if (invoice.job?.id != null && invoice.job.id !== jobId) return;
+      const dated = invoice.invoiceDate || invoice.createdOn;
+      if (dated && isBeforeSourceFloor(dated)) return;
+      noteInvoice(invoice);
       (invoice.items ?? []).forEach((item, index) => {
         const sku = String(item.skuName || item.code || item.displayName || item.description || "");
         lines.push({
@@ -1482,7 +1691,10 @@ export class ServiceTitanReadAdapter {
         }
         // ServiceTitan returns items: null on $0 invoices (Estimate-type jobs).
         // There is no line to store, and invoices/{id} answers 404 for them.
-        if (invoice.items === null && Number(invoice.total ?? 0) === 0) continue;
+        if (invoice.items === null && Number(invoice.total ?? 0) === 0) {
+          if (invoice.job?.id == null || invoice.job.id === jobId) noteInvoice(invoice);
+          continue;
+        }
         const detail = await this.get("accounting", `invoices/${invoice.id}`);
         const direct = invoiceSchema.safeParse(detail);
         const wrapped = z.object({ data: invoiceSchema }).safeParse(detail);
@@ -1492,7 +1704,7 @@ export class ServiceTitanReadAdapter {
       }
       if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
     }
-    return lines;
+    return { lines, invoices };
   }
 
   /** Purchase orders on one job. GET only. Canceled orders are omitted. */
@@ -1503,6 +1715,8 @@ export class ServiceTitanReadAdapter {
       id: sourceId,
       status: z.string().nullish(),
       total: z.coerce.number().nullish(),
+      date: z.string().nullish(),
+      createdOn: z.string().nullish(),
     }).passthrough();
     const orders: Array<{ id: string; total: number }> = [];
     for (let page = 1; page <= 100; page += 1) {
@@ -1519,6 +1733,7 @@ export class ServiceTitanReadAdapter {
         throw new ServiceTitanReadError("Unexpected ServiceTitan purchase orders.");
       for (const row of parsed.data.data) {
         if (/cancel/i.test(row.status ?? "")) continue;
+        if (isBeforeSourceFloor(row.date ?? row.createdOn)) continue;
         orders.push({ id: row.id, total: row.total ?? 0 });
       }
       if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
@@ -1586,9 +1801,150 @@ export class ServiceTitanReadAdapter {
   }
 
   /**
+   * Invoices for this project's jobs. ServiceTitan ignores invoices?projectId=
+   * and returns the whole account, so each job is read with invoices?jobId=.
+   * Four jobs at a time. A 403 is forbidden. One job's failure is a warning
+   * and incomplete, so the caller does not replace stored invoices with a partial list.
+   */
+  async readInvoicesForJobs(
+    jobIds: readonly string[],
+    modifiedSince: string | null,
+  ): Promise<{
+    forbidden: boolean;
+    invoices: Array<{
+      externalInvoiceId: string;
+      invoiceNumber: string;
+      externalJobId: string | null;
+      total: number;
+      balance: number;
+      invoicedOn: string | null;
+      paidOn: string | null;
+    }>;
+    capped: boolean;
+    incomplete: boolean;
+    warnings: string[];
+  }> {
+    const schema = this.invoiceListSchema();
+    const invoices: Array<{
+      externalInvoiceId: string;
+      invoiceNumber: string;
+      externalJobId: string | null;
+      total: number;
+      balance: number;
+      invoicedOn: string | null;
+      paidOn: string | null;
+    }> = [];
+    const warnings: string[] = [];
+    let capped = false;
+    let incomplete = false;
+    for (let offset = 0; offset < jobIds.length; offset += 4) {
+      const batch = await Promise.all(
+        jobIds.slice(offset, offset + 4).map(async (jobId) => {
+          if (!/^\d+$/.test(jobId)) {
+            return { ok: false as const, error: `Job ${jobId}: Use a numeric ServiceTitan job ID.` };
+          }
+          try {
+            const page = await this.collect("accounting", "invoices", schema, modifiedSince, { jobId });
+            return { ok: true as const, page, jobId };
+          } catch (err) {
+            return {
+              ok: false as const,
+              error: `Job ${jobId} invoices: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+        }),
+      );
+      for (const result of batch) {
+        if (!result.ok) {
+          incomplete = true;
+          warnings.push(result.error);
+          continue;
+        }
+        if (result.page.forbidden) {
+          return { forbidden: true, invoices: [], capped: false, incomplete: false, warnings: [] };
+        }
+        if (result.page.capped) {
+          capped = true;
+          incomplete = true;
+          warnings.push(`Job ${result.jobId} invoices: pagination limit reached.`);
+        }
+        invoices.push(
+          ...result.page.rows.map((row) => this.mapInvoice(row)).filter((row) => !isBeforeSourceFloor(row.invoicedOn)),
+        );
+      }
+    }
+    return { forbidden: false, invoices, capped, incomplete, warnings };
+  }
+
+  /**
+   * Payments applied to these invoices. appliedToInvoiceIds is honored;
+   * invoiceIds is not. Batches stay at 50 ids or fewer.
+   */
+  async readPaymentsAppliedTo(
+    invoiceIds: readonly string[],
+    modifiedSince: string | null,
+  ): Promise<{
+    forbidden: boolean;
+    payments: Array<{
+      externalPaymentId: string;
+      externalInvoiceId: string;
+      amount: number;
+      paidOn: string | null;
+    }>;
+    capped: boolean;
+  }> {
+    const ids = [...new Set(invoiceIds.map((id) => id.trim()).filter((id) => /^\d+$/.test(id)))];
+    const payments: Array<{
+      externalPaymentId: string;
+      externalInvoiceId: string;
+      amount: number;
+      paidOn: string | null;
+    }> = [];
+    let capped = false;
+    const schema = this.paymentListSchema();
+    for (let offset = 0; offset < ids.length; offset += 50) {
+      const batch = ids.slice(offset, offset + 50);
+      const page = await this.collect("accounting", "payments", schema, modifiedSince, {
+        appliedToInvoiceIds: batch.join(","),
+      });
+      if (page.forbidden) return { forbidden: true, payments: [], capped: false };
+      if (page.capped) capped = true;
+      payments.push(...this.mapPayments(page.rows).filter((row) => !isBeforeSourceFloor(row.paidOn)));
+    }
+    return { forbidden: false, payments, capped };
+  }
+
+  /** Estimates for one project. estimates?projectId= is honored. */
+  async readEstimatesForProject(
+    projectId: string,
+    modifiedSince: string | null,
+  ): Promise<{
+    forbidden: boolean;
+    estimates: Array<{
+      externalEstimateId: string;
+      name: string | null;
+      externalJobId: string | null;
+      status: string;
+      soldOn: string | null;
+      customerAmount: number;
+    }>;
+    capped: boolean;
+  }> {
+    if (!/^\d+$/.test(projectId))
+      throw new ServiceTitanReadError("Use a numeric ServiceTitan project ID.");
+    const page = await this.collect("sales", "estimates", this.estimateListSchema(), modifiedSince, { projectId });
+    return {
+      forbidden: page.forbidden,
+      capped: page.capped,
+      estimates: page.rows.map((row) => this.mapEstimate(row)).filter((row) => !isBeforeSourceFloor(row.soldOn)),
+    };
+  }
+
+  /**
    * Accounting and sales reads. GET only. A 403 is returned as forbidden so
-   * the caller can keep the last observations. Rows are not filtered here;
-   * the caller keeps the ones whose job is linked and active.
+   * the caller can keep the last observations. These unscoped lists are not
+   * used to add or link a project: invoices?projectId= is ignored and returns
+   * the whole account.
    */
   async readInvoices(modifiedSince: string | null): Promise<{
     forbidden: boolean;
@@ -1602,31 +1958,10 @@ export class ServiceTitanReadAdapter {
       paidOn: string | null;
     }>;
   }> {
-    const schema = z
-      .object({
-        id: sourceId,
-        referenceNumber: z.string().nullish(),
-        invoiceNumber: z.string().nullish(),
-        total: z.coerce.number().nullish(),
-        balance: z.coerce.number().nullish(),
-        invoiceDate: z.string().nullish(),
-        paidOn: z.string().nullish(),
-        jobId: sourceId.nullish(),
-        job: z.object({ id: sourceId }).nullish(),
-      })
-      .strip();
-    const page = await this.collect("accounting", "invoices", schema, modifiedSince);
+    const page = await this.collect("accounting", "invoices", this.invoiceListSchema(), modifiedSince);
     return {
       forbidden: page.forbidden,
-      invoices: page.rows.map((row) => ({
-        externalInvoiceId: row.id,
-        invoiceNumber: (row.referenceNumber ?? row.invoiceNumber ?? "").trim(),
-        externalJobId: row.job?.id ?? row.jobId ?? null,
-        total: row.total ?? 0,
-        balance: row.balance ?? 0,
-        invoicedOn: row.invoiceDate ?? null,
-        paidOn: row.paidOn ?? null,
-      })),
+      invoices: page.rows.map((row) => this.mapInvoice(row)).filter((row) => !isBeforeSourceFloor(row.invoicedOn)),
     };
   }
 
@@ -1639,7 +1974,61 @@ export class ServiceTitanReadAdapter {
       paidOn: string | null;
     }>;
   }> {
-    const schema = z
+    const page = await this.collect("accounting", "payments", this.paymentListSchema(), modifiedSince);
+    return {
+      forbidden: page.forbidden,
+      payments: this.mapPayments(page.rows).filter((row) => !isBeforeSourceFloor(row.paidOn)),
+    };
+  }
+
+  async readEstimates(modifiedSince: string | null): Promise<{
+    forbidden: boolean;
+    estimates: Array<{
+      externalEstimateId: string;
+      name: string | null;
+      externalJobId: string | null;
+      status: string;
+      soldOn: string | null;
+      customerAmount: number;
+    }>;
+  }> {
+    const page = await this.collect("sales", "estimates", this.estimateListSchema(), modifiedSince);
+    return {
+      forbidden: page.forbidden,
+      estimates: page.rows.map((row) => this.mapEstimate(row)).filter((row) => !isBeforeSourceFloor(row.soldOn)),
+    };
+  }
+
+  private invoiceListSchema() {
+    return z
+      .object({
+        id: sourceId,
+        referenceNumber: z.string().nullish(),
+        invoiceNumber: z.string().nullish(),
+        total: z.coerce.number().nullish(),
+        balance: z.coerce.number().nullish(),
+        invoiceDate: z.string().nullish(),
+        paidOn: z.string().nullish(),
+        jobId: sourceId.nullish(),
+        job: z.object({ id: sourceId }).nullish(),
+      })
+      .strip();
+  }
+
+  private mapInvoice(row: z.infer<ReturnType<ServiceTitanReadAdapter["invoiceListSchema"]>>) {
+    return {
+      externalInvoiceId: row.id,
+      invoiceNumber: (row.referenceNumber ?? row.invoiceNumber ?? "").trim(),
+      externalJobId: row.job?.id ?? row.jobId ?? null,
+      total: row.total ?? 0,
+      balance: row.balance ?? 0,
+      invoicedOn: row.invoiceDate ?? null,
+      paidOn: row.paidOn ?? null,
+    };
+  }
+
+  private paymentListSchema() {
+    return z
       .object({
         id: sourceId,
         date: z.string().nullish(),
@@ -1658,8 +2047,10 @@ export class ServiceTitanReadAdapter {
           .nullish(),
       })
       .strip();
-    const page = await this.collect("accounting", "payments", schema, modifiedSince);
-    const payments = page.rows.flatMap((row) =>
+  }
+
+  private mapPayments(rows: Array<z.infer<ReturnType<ServiceTitanReadAdapter["paymentListSchema"]>>>) {
+    return rows.flatMap((row) =>
       (row.appliedTo ?? []).flatMap((applied) => {
         const invoiceId = applied.invoiceId ?? applied.appliedTo;
         if (!invoiceId) return [];
@@ -1673,21 +2064,10 @@ export class ServiceTitanReadAdapter {
         ];
       }),
     );
-    return { forbidden: page.forbidden, payments };
   }
 
-  async readEstimates(modifiedSince: string | null): Promise<{
-    forbidden: boolean;
-    estimates: Array<{
-      externalEstimateId: string;
-      name: string | null;
-      externalJobId: string | null;
-      status: string;
-      soldOn: string | null;
-      customerAmount: number;
-    }>;
-  }> {
-    const schema = z
+  private estimateListSchema() {
+    return z
       .object({
         id: sourceId,
         name: z.string().nullish(),
@@ -1699,17 +2079,16 @@ export class ServiceTitanReadAdapter {
         total: z.coerce.number().nullish(),
       })
       .strip();
-    const page = await this.collect("sales", "estimates", schema, modifiedSince);
+  }
+
+  private mapEstimate(row: z.infer<ReturnType<ServiceTitanReadAdapter["estimateListSchema"]>>) {
     return {
-      forbidden: page.forbidden,
-      estimates: page.rows.map((row) => ({
-        externalEstimateId: row.id,
-        name: row.name ?? null,
-        externalJobId: row.job?.id ?? row.jobId ?? null,
-        status: typeof row.status === "string" ? row.status : row.status?.name ?? "",
-        soldOn: row.soldOn ?? null,
-        customerAmount: row.subtotal ?? row.total ?? 0,
-      })),
+      externalEstimateId: row.id,
+      name: row.name ?? null,
+      externalJobId: row.job?.id ?? row.jobId ?? null,
+      status: typeof row.status === "string" ? row.status : row.status?.name ?? "",
+      soldOn: row.soldOn ?? null,
+      customerAmount: row.subtotal ?? row.total ?? 0,
     };
   }
 
@@ -1718,26 +2097,32 @@ export class ServiceTitanReadAdapter {
     resource: string,
     schema: z.ZodType<T, z.ZodTypeDef, unknown>,
     modifiedSince: string | null,
-  ): Promise<{ forbidden: boolean; rows: T[] }> {
+    filters?: Record<string, string>,
+  ): Promise<{ forbidden: boolean; rows: T[]; capped: boolean }> {
     try {
       const rows: T[] = [];
       for (let page = 1; page <= 100; page++) {
         const query = new URLSearchParams({ page: String(page), pageSize: "200" });
         if (modifiedSince) query.set("modifiedOnOrAfter", modifiedSince);
+        for (const [key, value] of Object.entries(filters ?? {})) query.set(key, value);
         const raw = await this.get(family, resource, query);
-        const parsed = z.object({ data: z.array(schema), hasMore: z.boolean() }).safeParse(raw);
+        const parsed = z.object({ data: z.array(z.unknown()), hasMore: z.boolean().optional() }).safeParse(raw);
         if (!parsed.success) {
           throw new ServiceTitanReadError(`Unexpected ServiceTitan ${resource} response.`);
         }
-        rows.push(...parsed.data.data);
-        if (!parsed.data.hasMore) return { forbidden: false, rows };
+        for (const row of parsed.data.data) {
+          if (row == null) continue;
+          const item = schema.safeParse(row);
+          if (!item.success) continue;
+          rows.push(item.data);
+        }
+        const full = parsed.data.data.length >= 200;
+        if (parsed.data.hasMore !== true && !full) return { forbidden: false, rows, capped: false };
       }
-      throw new ServiceTitanReadError(
-        "ServiceTitan pagination limit reached. No partial snapshot may be imported.",
-      );
+      return { forbidden: false, rows, capped: true };
     } catch (err) {
       if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
-        return { forbidden: true, rows: [] };
+        return { forbidden: true, rows: [], capped: false };
       }
       throw err;
     }

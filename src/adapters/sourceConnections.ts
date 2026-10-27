@@ -32,6 +32,10 @@ export interface SourceConnections {
           | "readInvoices"
           | "readPayments"
           | "readEstimates"
+          | "readInvoicesForJobs"
+          | "readPaymentsAppliedTo"
+          | "readEstimatesForProject"
+          | "readJobSchedule"
           | "sourceTenantId"
         >
       >;
