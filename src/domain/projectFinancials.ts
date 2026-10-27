@@ -35,13 +35,15 @@ export const SEGRETO_FINANCIALS = {
 
 /**
  * Acceptance totals from ServiceTitan Project Financials for Dalton
- * (ST project 290588725). Live invoice lines: labor revenue 67,305.00,
- * material revenue 25,101.79, and 25,000.00 that is neither
- * (one 20,000 Sub Contractor Revenue line and two 2,500 Misc Income lines).
+ * (ST project 290588725). The 67,305.00 billed-labor constant is an early
+ * labor-revenue account total. Production reconciliation billedLabor is
+ * 66,410.00 on both sides. The 895.00 gap is MHM 250.Labor on invoice
+ * 315824798, which classifyInvoiceItem keeps out of labor and which still
+ * sits in the billed total. This constant is not the commission base.
+ * Material revenue was 25,101.79, plus 25,000.00 that is neither (one
+ * 20,000 Sub Contractor Revenue line and two 2,500 Misc Income lines).
  * Billed is the invoice header total, 117,406.79.
- * Labor expense 21,883.04 is the published ServiceTitan figure. Paid hours
- * times the burden rate can equal it. Gross-pay amounts might be that
- * figure instead. Production payroll is required to tell them apart.
+ * Labor expense 21,883.04 is the published ServiceTitan figure.
  */
 export const DALTON_PROJECT_ID = "290588725";
 export const DALTON_FINANCIALS = {
@@ -91,12 +93,31 @@ export interface ProjectMoney {
   marginPercent: number;
 }
 
+export type ReconciliationLaborStatus = "estimated" | "missing";
+
 export interface ReconciliationLine {
   key: keyof ProjectMoney;
   label: string;
   jp: number;
   st: number;
   delta: number;
+  /**
+   * Set on the labor line. `estimated` is the 25% commission plus timesheet
+   * burden, shown next to ServiceTitan's labor expense as a known difference.
+   * `missing` means a recent project had no payroll rows and was not estimated.
+   */
+  status?: ReconciliationLaborStatus;
+  commission?: number;
+  burden?: number;
+  /** The reconciliation billedLabor this commission was taken from. */
+  billed_labor?: number;
+}
+
+/** Published Project Financials Expense > Labor, where ServiceTitan's figure is known. */
+export function publishedServiceTitanLabor(stProjectId: string | null | undefined): number | null {
+  if (stProjectId === DALTON_PROJECT_ID) return DALTON_FINANCIALS.laborBurden;
+  if (stProjectId === SEGRETO_PROJECT_ID) return SEGRETO_FINANCIALS.laborBurden;
+  return null;
 }
 
 const MONEY_LABELS: Record<keyof ProjectMoney, string> = {
@@ -222,14 +243,12 @@ export function financialsFromReads(input: {
   // Actual billed is the invoice total. Subcontractor revenue and miscellaneous
   // income are not labor or material labels, and they are still billed.
   const billed = roundMoney(billedLabor + billedMaterials + billedOther);
-  // Journeyman labor burden is paid timesheet hours times the technician
-  // burden rate. ServiceTitan does not return Project Financials > Expense >
-  // Labor on the project payload. Help articles "Calculate technician burden
-  // rates" and "Set up your account for project management" describe that
-  // hours × burdenRate line. Gross pay `amount` is wages. The reconciliation
-  // stores that amount as ServiceTitan's own labor figure so the two columns
-  // are not the same calculation. Whether $21,883.04 on Dalton is the wage
-  // sum or hours × burdenRate can only be confirmed with production payroll.
+  // Journeyman labor burden is worked hours times the technician burden rate
+  // when payroll gross pay has paid hours. An older project with no matching
+  // payroll rows stores 25% of billed labor plus arrived-to-done burden instead.
+  // ServiceTitan Project Financials > Expense > Labor is not on the project
+  // payload. The refresh stores a separate breakdown: burden, plus non-PTO
+  // gross pay on the project's jobs, plus payroll adjustments.
   const laborBurden = roundMoney(
     input.timesheets.reduce((sum, row) => {
       if (row.burdenRate == null || !(row.burdenRate > 0) || !(row.hours > 0)) return sum;

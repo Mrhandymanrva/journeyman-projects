@@ -10,9 +10,9 @@ import {
 } from "../domain/commissionLabor.js";
 import {
   PAID_LABOR_LOOKBACK_DAYS,
-  grossPayLaborDollars,
   readPaidLabor,
   readTechnicianDirectoryForLabor,
+  saveLaborCostSource,
   saveLaborRefresh,
   withResolvedTechnicianNames,
   type LaborJobResult,
@@ -25,13 +25,34 @@ import {
 import {
   financialsFromReads,
   neverLaborRevenueWarnings,
+  publishedServiceTitanLabor,
   reconcileFinancials,
   withBilled,
   withLaborBurden,
   type BurdenSlice,
+  type ReconciliationLine,
 } from "../domain/projectFinancials.js";
 import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
 import { isBeforeSourceFloor, sourceWindowStart } from "../domain/sourceFloor.js";
+import { grossPayItemTooOld } from "../domain/grossPay.js";
+import {
+  RECENT_PAYROLL_MISSING_WARNING,
+  burdenFromArrivedDone,
+  chooseLaborCostSource,
+  chooseStLaborBurden,
+  countMatchingPaidHourRows,
+  isCanceledJobStatus,
+  laborEstimateFromBilled,
+  nonPtoGrossPayOnJobs,
+  projectPayrollAge,
+  stLaborTotal,
+  sumTiedAdjustments,
+  type LaborCostSource,
+  type LaborEstimate,
+  type StLaborBreakdown,
+  type WorkedTimesheet,
+} from "../domain/stLabor.js";
+import type { GrossPayItem } from "../adapters/serviceTitan.js";
 import {
   readStoredProjectMoney,
   readStoredReconciliation,
@@ -411,9 +432,15 @@ export async function refreshLinkedProject(
   const externalProjectId = connectionRow.rows[0]?.external_project_id ?? null;
   const readProjectJobs = connection.client.readProjectJobs;
   let earliestJob: number | null = null;
+  let datedJobs: Array<{ id: string; jobStatus: string | null; createdOn: string | null }> = [];
   if (readProjectJobs && externalProjectId) {
     try {
       const listed = await readProjectJobs.call(connection.client, externalProjectId);
+      datedJobs = listed.map((job) => ({
+        id: job.id,
+        jobStatus: job.jobStatus,
+        createdOn: job.createdOn,
+      }));
       for (const job of listed) {
         const created = job.createdOn ? Date.parse(job.createdOn) : NaN;
         if (Number.isFinite(created) && (earliestJob === null || created < earliestJob)) earliestJob = created;
@@ -437,8 +464,8 @@ export async function refreshLinkedProject(
     }
   }
   const jobs = await db.withTenant(tenantId, (client) =>
-    client.query<{ id: string; external_job_id: string }>(
-      `SELECT id::text AS id, external_job_id
+    client.query<{ id: string; external_job_id: string; source_job_status: string | null }>(
+      `SELECT id::text AS id, external_job_id, source_job_status
          FROM projects.project_job_links
         WHERE project_id = $1
           AND external_system_id = $2
@@ -470,8 +497,9 @@ export async function refreshLinkedProject(
     observedAt.getTime(),
     PAID_LABOR_LOOKBACK_DAYS * 86_400_000,
   );
+  const jobIds = jobs.rows.map((job) => job.external_job_id);
   const paid = await readPaidLabor(
-    jobs.rows.map((job) => job.external_job_id),
+    jobIds,
     {
       // Same call as POST /projects/:id/labor/refresh. Pulling the method off
       // the client and invoking it drops `this`, and ServiceTitanReadAdapter
@@ -484,6 +512,37 @@ export async function refreshLinkedProject(
     },
     { dateOnOrAfter: windowStart.toISOString() },
   );
+  const laborSource = chooseLaborCostSource({
+    payrollReadSucceeded: paid.grossPay != null,
+    matchingPaidHourRows: paid.grossPay ? countMatchingPaidHourRows(jobIds, paid.grossPay) : 0,
+    age: projectPayrollAge(datedJobs, observedAt.getTime()),
+  });
+  if (laborSource === "none_recent_payroll_missing") warnings.push(RECENT_PAYROLL_MISSING_WARNING);
+  let adjustmentItems: Array<{
+    id: string | null;
+    employeeId: string | null;
+    amount: number | null;
+    jobId: string | null;
+    invoiceId: string | null;
+    postedOn: string | null;
+  }> = [];
+  let adjustmentsAvailable = false;
+  if (paid.grossPay && connection.client.readPayrollAdjustments) {
+    try {
+      const read = await connection.client.readPayrollAdjustments.call(connection.client, {
+        postedOnOrAfter: windowStart.toISOString(),
+      });
+      if (read.forbidden) {
+        warnings.push("Payroll adjustments: ServiceTitan read failed (HTTP 403).");
+      } else if (!read.unavailable) {
+        adjustmentsAvailable = true;
+        adjustmentItems = read.items;
+        if (read.capped) warnings.push("Payroll adjustments: pagination limit reached.");
+      }
+    } catch (err) {
+      warnings.push(`Payroll adjustments: ${errorText(err)}`);
+    }
+  }
   const results = paid.results;
   warnings.push(...paid.warnings);
   const directory = await readTechnicianDirectoryForLabor({
@@ -498,7 +557,23 @@ export async function refreshLinkedProject(
     technicians,
     connection.client.readStaffName?.bind(connection.client),
   );
+  const timesheetBurden =
+    laborSource === "billed_labor_25pct"
+      ? await timesheetBurdenForJobs({
+          connection,
+          jobIds: jobs.rows
+            .filter((job) => !isCanceledJobStatus(job.source_job_status))
+            .map((job) => job.external_job_id),
+          technicians,
+          warnings,
+        })
+      : null;
   await db.withTenant(tenantId, async (client) => {
+    const stampRow = await client.query<{ labor_refreshed_at: Date | null }>(
+      `SELECT labor_refreshed_at FROM projects.projects WHERE id = $1`,
+      [projectId],
+    );
+    const previouslyStamped = stampRow.rows[0]?.labor_refreshed_at != null;
     await saveLaborRefresh(client, {
       tenantId,
       projectId,
@@ -510,11 +585,22 @@ export async function refreshLinkedProject(
       stamp: paid.stamp,
     });
     await applyResolvedLaborCode(client, tenantId, laborCode);
-    const jp = await readStoredProjectMoney(client, projectId);
-    const rateByTechnician = new Map(
-      technicians.map((tech) => [technicianIdKey(tech.id), tech.appliedBurdenRate]),
-    );
-    const jobIds = jobs.rows.map((job) => job.external_job_id);
+    let jp = await readStoredProjectMoney(client, projectId);
+    const estimate =
+      laborSource === "billed_labor_25pct" && timesheetBurden
+        ? laborEstimateFromBilled({
+            billedLabor: jp.billedLabor,
+            burden: timesheetBurden.burden,
+            burdenHours: timesheetBurden.hours,
+          })
+        : null;
+    if (laborSource) {
+      await saveLaborCostSource(client, {
+        projectId,
+        source: laborSource,
+        estimate,
+      });
+    }
     let st = financialsFromReads({
       invoiceLines: operational.lines.map((line) => ({
         kind: line.kind,
@@ -532,23 +618,53 @@ export async function refreshLinkedProject(
         operational.invoiceTotals.reduce((sum, total) => sum + total, 0),
       );
     }
-    if (paid.payroll === "gross-pay" && paid.grossPay && paid.stamp) {
-      // Gross-pay amount is ServiceTitan's payroll dollar. It is not hours ×
-      // burden rate, so a mismatch can show up here.
-      st = withLaborBurden(st, grossPayLaborDollars(jobIds, paid.grossPay));
-    } else if (paid.payroll === "failed" || (paid.payroll === "gross-pay" && !paid.stamp)) {
-      const prior = await readStoredReconciliation(client, projectId);
-      const priorBurden = prior?.lines.find((line) => line.key === "laborBurden")?.st;
-      if (priorBurden != null) st = withLaborBurden(st, priorBurden);
+    const invoiceIds = [...new Set(operational.lines.map((line) => line.invoiceId))];
+    const breakdown = paid.grossPay
+      ? laborBreakdown({
+          burden: st.laborBurden,
+          workHours: workedHours(namedResults),
+          driveHours: 0,
+          grossPay: nonPtoGrossPayOnJobs(jobIds, paid.grossPay),
+          adjustments: adjustmentsAvailable
+            ? sumTiedAdjustments(adjustmentItems, {
+                jobIds,
+                invoiceIds,
+                technicianIds: technicianIdsOnProject(jobIds, paid.grossPay, namedResults),
+              }).sum
+            : null,
+          adjustmentsAvailable,
+          hoursSource: paid.hoursSource,
+        })
+      : null;
+    const prior = await readStoredReconciliation(client, projectId);
+    const choice = chooseStLaborBurden({
+      breakdown,
+      projectGrossPayRows: paid.grossPay ? grossPayRowsOnJobs(jobIds, paid.grossPay) : 0,
+      previouslyStamped,
+      priorBurden: prior?.lines.find((line) => line.key === "laborBurden")?.st ?? null,
+    });
+    let stLabor: StLaborBreakdown | null = choice.breakdown;
+    if (choice.carriedPrior) {
+      if (choice.laborBurden != null) st = withLaborBurden(st, choice.laborBurden);
+      stLabor = prior?.st_labor ?? null;
+    } else if (choice.laborBurden != null) {
+      st = withLaborBurden(st, choice.laborBurden);
+    }
+    if (laborSource === "billed_labor_25pct" && estimate) {
+      jp = withLaborBurden(jp, estimate.total);
+      const published = publishedServiceTitanLabor(externalProjectId);
+      if (published != null) st = withLaborBurden(st, published);
     }
     warnings.push(...neverLaborRevenueWarnings(operational.lines));
+    const lines = reconcileFinancials(jp, st).map((line) => laborLine(line, laborSource, estimate));
     await writeFinancialReconciliation(client, {
       tenantId,
       projectId,
       observedAt,
-      lines: reconcileFinancials(jp, st),
+      lines,
       technicians: await technicianSnapshot(client, projectId, technicians),
       error: warnings.length > 0 ? warnings.join("; ") : null,
+      stLabor,
     });
   });
   try {
@@ -629,6 +745,82 @@ async function storeProjectFinancialSummary(
   );
 }
 
+async function timesheetBurdenForJobs(input: {
+  connection: ServiceTitanSource;
+  jobIds: readonly string[];
+  technicians: readonly ResolvedTechPay[];
+  warnings: string[];
+}): Promise<{ hours: number; burden: number }> {
+  const rates = new Map<string, number | null>();
+  for (const tech of input.technicians) {
+    const id = technicianIdKey(tech.id);
+    if (id) rates.set(id, tech.appliedBurdenRate);
+  }
+  let rows: WorkedTimesheet[] = [];
+  const bulk = input.connection.client.readJobTimesheetsForJobs;
+  if (input.jobIds.length === 0) {
+    rows = [];
+  } else if (bulk) {
+    try {
+      const read = await bulk.call(input.connection.client, input.jobIds);
+      if (read.forbidden) {
+        input.warnings.push("Payroll job timesheets: ServiceTitan read failed (HTTP 403). Burden was left at 0.");
+      } else if (read.capped) {
+        input.warnings.push("Payroll job timesheets: pagination limit reached. Burden was left at 0.");
+      } else {
+        rows = read.timesheets;
+      }
+    } catch (err) {
+      input.warnings.push(`Payroll job timesheets: ${errorText(err)} Burden was left at 0.`);
+    }
+  } else {
+    const readOne = input.connection.client.readJobTimesheets;
+    for (const jobId of input.jobIds) {
+      if (!readOne) {
+        input.warnings.push("Payroll job timesheets are not configured. Burden was left at 0.");
+        break;
+      }
+      try {
+        const read = await readOne.call(input.connection.client, jobId);
+        if (read.forbidden) {
+          input.warnings.push(`Job ${jobId} timesheets: ServiceTitan read failed (HTTP 403).`);
+          continue;
+        }
+        rows.push(...read.timesheets.map((row) => ({ ...row, jobId })));
+      } catch (err) {
+        input.warnings.push(`Job ${jobId} timesheets: ${errorText(err)}`);
+      }
+    }
+  }
+  const burden = burdenFromArrivedDone(rows, rates);
+  if (burden.techsMissingRate > 0) {
+    input.warnings.push(
+      `Labor burden: ${burden.techsMissingRate} technician${burden.techsMissingRate === 1 ? "" : "s"} with arrived-to-done hours had no burden rate.`,
+    );
+  }
+  return { hours: burden.hours, burden: burden.burden };
+}
+
+function laborLine(
+  line: ReconciliationLine,
+  source: LaborCostSource | null,
+  estimate: LaborEstimate | null,
+): ReconciliationLine {
+  if (line.key !== "laborBurden") return line;
+  if (source === "billed_labor_25pct" && estimate) {
+    return {
+      ...line,
+      label: "Labor cost (commission + burden)",
+      status: "estimated",
+      commission: estimate.commission,
+      burden: estimate.burden,
+      billed_labor: estimate.billed_labor,
+    };
+  }
+  if (source === "none_recent_payroll_missing") return { ...line, status: "missing" };
+  return line;
+}
+
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -647,6 +839,50 @@ async function mapPool<T, R>(items: readonly T[], limit: number, fn: (item: T) =
   });
   await Promise.all(workers);
   return results;
+}
+
+function laborBreakdown(input: Omit<StLaborBreakdown, "total">): StLaborBreakdown {
+  return { ...input, total: stLaborTotal(input.burden, input.grossPay, input.adjustments) };
+}
+
+function workedHours(results: readonly LaborJobResult[]): number {
+  let sum = 0;
+  for (const result of results) {
+    if (result.outcome !== "timesheet") continue;
+    for (const draft of result.drafts) sum += draft.hours;
+  }
+  return roundMoney(sum);
+}
+
+function grossPayRowsOnJobs(jobIds: readonly string[], items: readonly GrossPayItem[]): number {
+  const wanted = new Set(jobIds);
+  let count = 0;
+  for (const item of items) {
+    if (grossPayItemTooOld(item)) continue;
+    if (item.jobId && wanted.has(item.jobId)) count += 1;
+  }
+  return count;
+}
+
+function technicianIdsOnProject(
+  jobIds: readonly string[],
+  items: readonly GrossPayItem[],
+  results: readonly LaborJobResult[],
+): string[] {
+  const wanted = new Set(jobIds);
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (!item.jobId || !wanted.has(item.jobId)) continue;
+    const id = technicianIdKey(item.technicianId);
+    if (id) ids.add(id);
+  }
+  for (const result of results) {
+    for (const draft of result.drafts) {
+      const id = technicianIdKey(draft.externalTechnicianId);
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 function burdenSlicesFrom(

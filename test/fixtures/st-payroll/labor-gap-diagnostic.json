@@ -1,0 +1,138 @@
+{
+  "_note": "Synthetic payroll rows for the labor-gap diagnostic. Names, memos, and rates must not appear in the aggregate response.",
+  "stProjectId": "290588725",
+  "jobs": [
+    { "id": "100", "jobStatus": "Completed", "createdOn": "2026-01-02T00:00:00Z" },
+    { "id": "101", "jobStatus": "Canceled", "createdOn": "2026-01-03T00:00:00Z" }
+  ],
+  "timesheetTimeWithoutJob": { "count": 3, "withPaidHours": 1 },
+  "grossPayItems": [
+    {
+      "id": "g1",
+      "technicianId": "tech-SECRET-77",
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "Working",
+      "amount": 50,
+      "amountAdjustment": 0,
+      "type": "TimesheetTime",
+      "paidDurationHours": 2,
+      "paidTimeType": "Regular",
+      "jobId": "100",
+      "projectId": "290588725"
+    },
+    {
+      "id": "g2",
+      "technicianId": "tech-SECRET-77",
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "Commission",
+      "amount": 80,
+      "amountAdjustment": 5,
+      "type": "InvoiceRelatedBonus",
+      "paidDurationHours": null,
+      "paidTimeType": null,
+      "jobId": "100",
+      "projectId": "290588725"
+    },
+    {
+      "id": "g3",
+      "technicianId": "tech-SECRET-77",
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "PTO",
+      "amount": 40,
+      "type": "TimesheetTime",
+      "paidDurationHours": 8,
+      "paidTimeType": "PaidTimeOff",
+      "jobId": "100",
+      "projectId": "290588725"
+    },
+    {
+      "id": "g4",
+      "technicianId": "tech-SECRET-88",
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "Working",
+      "amount": 10,
+      "type": "TimesheetTime",
+      "paidDurationHours": 1,
+      "paidTimeType": "Regular",
+      "jobId": "999",
+      "projectId": "1"
+    },
+    {
+      "id": "g5",
+      "technicianId": "tech-SECRET-77",
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "Working",
+      "amount": 7,
+      "type": "CustomBonus",
+      "paidDurationHours": null,
+      "paidTimeType": null,
+      "jobId": null,
+      "projectId": "290588725"
+    }
+  ],
+  "timesheets": [
+    {
+      "id": "ts-1",
+      "jobId": "100",
+      "technicianId": "tech-SECRET-77",
+      "technicianName": "Quinlan Placeholder",
+      "dispatchedOn": "2026-10-20T11:30:00Z",
+      "arrivedOn": "2026-10-20T12:00:00Z",
+      "doneOn": "2026-10-20T16:00:00Z",
+      "canceledOn": null,
+      "paidDurationHours": null
+    },
+    {
+      "id": "ts-cancel",
+      "jobId": "100",
+      "technicianId": "tech-SECRET-77",
+      "technicianName": "Quinlan Placeholder",
+      "dispatchedOn": "2026-10-20T08:00:00Z",
+      "arrivedOn": "2026-10-20T09:00:00Z",
+      "doneOn": "2026-10-20T12:00:00Z",
+      "canceledOn": "2026-10-20T09:30:00Z",
+      "paidDurationHours": 3
+    },
+    {
+      "id": "ts-long",
+      "jobId": "100",
+      "technicianId": "tech-SECRET-88",
+      "technicianName": "Other Person",
+      "dispatchedOn": null,
+      "arrivedOn": "2026-10-21T08:00:00Z",
+      "doneOn": "2026-10-22T04:00:00Z",
+      "canceledOn": null,
+      "paidDurationHours": null
+    },
+    {
+      "id": "ts-old",
+      "jobId": "100",
+      "technicianId": "tech-SECRET-77",
+      "technicianName": "Quinlan Placeholder",
+      "arrivedOn": "2022-08-01T12:00:00Z",
+      "doneOn": "2022-08-01T16:00:00Z",
+      "canceledOn": null,
+      "paidDurationHours": 4
+    },
+    {
+      "id": "ts-canceled-job",
+      "jobId": "101",
+      "technicianId": "tech-SECRET-77",
+      "technicianName": "Quinlan Placeholder",
+      "arrivedOn": "2026-10-20T12:00:00Z",
+      "doneOn": "2026-10-20T17:00:00Z",
+      "canceledOn": null,
+      "paidDurationHours": 5
+    }
+  ],
+  "burdenRates": {
+    "tech-SECRET-77": 13.37,
+    "tech-SECRET-88": 20
+  },
+  "adjustments": [
+    { "id": "a1", "employeeId": "tech-SECRET-77", "amount": 12, "jobId": "100", "invoiceId": null, "postedOn": "2026-10-22T00:00:00Z", "memo": "MEMO-SECRET-44" },
+    { "id": "a2", "employeeId": "tech-SECRET-77", "amount": 3, "jobId": null, "invoiceId": "inv-1", "postedOn": "2026-10-22T00:00:00Z", "memo": "MEMO-SECRET-44" },
+    { "id": "a3", "employeeId": "tech-SECRET-77", "amount": 9, "jobId": "777", "invoiceId": null, "postedOn": "2026-10-22T00:00:00Z", "memo": "MEMO-SECRET-44" }
+  ],
+  "invoiceIds": ["inv-1"]
+}

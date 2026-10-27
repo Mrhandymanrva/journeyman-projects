@@ -76,6 +76,7 @@ const db = await PgliteDatabase.create([
   "db/052_st_status_sync.sql",
   "db/053_st_financial_summary.sql",
   "db/054_project_budget_entry.sql",
+  "db/055_st_labor_gap.sql",
 ]);
 
 await assertDatabaseContract(db);

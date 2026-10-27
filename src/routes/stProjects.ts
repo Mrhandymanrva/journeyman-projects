@@ -689,7 +689,7 @@ async function readOptionalSources(
         "Payroll gross pay items: no job creation date was returned, so the window is the last 120 days.",
       );
     }
-    const paid = await readLinkedLabor(client, jobIds, window.start);
+    const paid = await readLinkedLabor(client, details.jobs, window.start);
     if (paid) {
       labor = paid.results;
       warnings.push(...paid.warnings);
@@ -746,21 +746,19 @@ async function recordSourceWarnings(ctx: StaffContext, projectId: string, warnin
 
 async function readLinkedLabor(
   client: StClient,
-  jobIds: string[],
+  jobs: readonly { id: string; jobStatus?: string | null }[],
   dateOnOrAfter: string,
 ): Promise<PaidLaborRead | null> {
-  if (!client?.readJobTimesheets && !client?.readGrossPayItems) return null;
+  if (!client?.readJobTimesheets && !client?.readJobTimesheetsForJobs && !client?.readGrossPayItems) return null;
   return readPaidLabor(
-    jobIds,
+    jobs.map((job) => job.id),
     {
       readGrossPayItems: client.readGrossPayItems
         ? (query) => client.readGrossPayItems!(query)
         : undefined,
       readJobTimesheets: client.readJobTimesheets
         ? (jobId) => client.readJobTimesheets!(jobId)
-        : async () => {
-            throw new Error("timesheets must not be read when gross pay is the payroll source");
-          },
+        : undefined,
       readJob: (jobId) => client.readJob(jobId),
     },
     { dateOnOrAfter },

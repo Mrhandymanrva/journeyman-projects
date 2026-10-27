@@ -1,5 +1,6 @@
 import type { SqlClient } from "../db/database.js";
 import type { ListedJob, ReconciliationLine } from "./projectFinancials.js";
+import type { HoursPayrollSource, StLaborBreakdown } from "./stLabor.js";
 import { financialsFromReads, type ProjectMoney } from "./projectFinancials.js";
 
 export async function replaceProjectJobs(
@@ -216,6 +217,7 @@ export interface StoredReconciliation {
   lines: ReconciliationLine[];
   technicians: ReconciliationTechnician[];
   error: string | null;
+  st_labor: StLaborBreakdown | null;
 }
 
 export interface LaborRefreshRunRecord {
@@ -290,14 +292,45 @@ function presentLines(value: unknown): ReconciliationLine[] {
   return asArray(value).flatMap((row) => {
     const record = asRecord(row);
     if (!record || typeof record.key !== "string") return [];
+    const status: "estimated" | "missing" | undefined =
+      record.status === "estimated" || record.status === "missing" ? record.status : undefined;
+    const extra =
+      record.key === "laborBurden"
+        ? {
+            ...(status ? { status } : {}),
+            ...(record.commission == null ? {} : { commission: Number(record.commission) }),
+            ...(record.burden == null ? {} : { burden: Number(record.burden) }),
+            ...(record.billed_labor == null ? {} : { billed_labor: Number(record.billed_labor) }),
+          }
+        : {};
     return [{
       key: record.key as ReconciliationLine["key"],
       label: typeof record.label === "string" ? record.label : record.key,
       jp: Number(record.jp ?? 0),
       st: Number(record.st ?? 0),
       delta: Number(record.delta ?? 0),
+      ...extra,
     }];
   });
+}
+
+function presentStLabor(value: unknown): StLaborBreakdown | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const hoursSource = record.hoursSource;
+  const source: HoursPayrollSource | null =
+    hoursSource === "gross-pay" || hoursSource === "job-timesheet" || hoursSource === "mixed" ? hoursSource : null;
+  const adjustments = record.adjustments;
+  return {
+    burden: Number(record.burden ?? 0),
+    workHours: Number(record.workHours ?? 0),
+    driveHours: Number(record.driveHours ?? 0),
+    grossPay: Number(record.grossPay ?? 0),
+    adjustments: adjustments == null ? null : Number(adjustments),
+    adjustmentsAvailable: record.adjustmentsAvailable === true,
+    total: Number(record.total ?? 0),
+    hoursSource: source,
+  };
 }
 
 function presentTechnicians(value: unknown): ReconciliationTechnician[] {
@@ -353,17 +386,24 @@ export async function writeFinancialReconciliation(
     lines: readonly ReconciliationLine[];
     technicians: readonly ReconciliationTechnician[];
     error: string | null;
+    /** Undefined leaves the stored breakdown as it is. Null clears it. */
+    stLabor?: StLaborBreakdown | null;
   },
 ): Promise<void> {
+  const stLabor = input.stLabor === undefined ? undefined : input.stLabor;
   await db.query(
     `INSERT INTO projects.st_financial_reconciliation
-       (tenant_id, project_id, observed_at, lines, technicians, error)
-     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
+       (tenant_id, project_id, observed_at, lines, technicians, error, st_labor)
+     VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb)
      ON CONFLICT (tenant_id, project_id) DO UPDATE
        SET observed_at = EXCLUDED.observed_at,
            lines = EXCLUDED.lines,
            technicians = EXCLUDED.technicians,
-           error = EXCLUDED.error`,
+           error = EXCLUDED.error,
+           st_labor = CASE
+             WHEN $8::boolean THEN projects.st_financial_reconciliation.st_labor
+             ELSE EXCLUDED.st_labor
+           END`,
     [
       input.tenantId,
       input.projectId,
@@ -371,6 +411,8 @@ export async function writeFinancialReconciliation(
       JSON.stringify(input.lines),
       JSON.stringify(input.technicians),
       input.error,
+      stLabor == null ? null : JSON.stringify(stLabor),
+      stLabor === undefined,
     ],
   );
 }
@@ -384,8 +426,9 @@ export async function readStoredReconciliation(
     lines: unknown;
     technicians: unknown;
     error: string | null;
+    st_labor: unknown;
   }>(
-    `SELECT observed_at, lines, technicians, error
+    `SELECT observed_at, lines, technicians, error, st_labor
        FROM projects.st_financial_reconciliation
       WHERE project_id = $1`,
     [projectId],
@@ -397,6 +440,7 @@ export async function readStoredReconciliation(
     lines: presentLines(row.lines),
     technicians: presentTechnicians(row.technicians),
     error: row.error,
+    st_labor: presentStLabor(row.st_labor),
   };
 }
 
@@ -413,8 +457,9 @@ export async function readPortfolioFinancialFeed(db: SqlClient): Promise<{
     lines: unknown;
     technicians: unknown;
     error: string | null;
+    st_labor: unknown;
   }>(
-    `SELECT project_id::text AS project_id, observed_at, lines, technicians, error
+    `SELECT project_id::text AS project_id, observed_at, lines, technicians, error, st_labor
        FROM projects.st_financial_reconciliation`,
   );
   const reconciliation = new Map<string, StoredReconciliation>();
@@ -424,6 +469,7 @@ export async function readPortfolioFinancialFeed(db: SqlClient): Promise<{
       lines: presentLines(row.lines),
       technicians: presentTechnicians(row.technicians),
       error: row.error,
+      st_labor: presentStLabor(row.st_labor),
     });
   }
   return { run: settings.rows[0]?.labor_refresh_run ?? null, reconciliation };

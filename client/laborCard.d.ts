@@ -8,6 +8,11 @@ export function laborCardHtml(
     labor_wage?: number;
     labor_burden?: number;
     total?: number;
+    labor_source?: string | null;
+    labor_label?: string | null;
+    labor_warning?: string | null;
+    commission_label?: string | null;
+    burden_label?: string | null;
     missing?: string[];
     rate_gaps?: Array<{ technician_name?: string; messages?: string[] }>;
     technicians?: Array<{

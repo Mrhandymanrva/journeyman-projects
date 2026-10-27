@@ -807,6 +807,7 @@ describe("payroll gross pay items", () => {
       date: "2026-10-20T00:00:00Z",
       activity: "Working",
       amount: 97.5,
+      amountAdjustment: 0,
       type: "TimesheetTime",
       paidDurationHours: 3.25,
       paidTimeType: "Regular",
@@ -843,6 +844,8 @@ describe("payroll gross pay items", () => {
       skipped: 0,
       omitted: 0,
       capped: false,
+      pagesRead: 0,
+      timesheetTimeWithoutJob: { count: 0, withPaidHours: 0 },
     });
     const broken = setup([{ data: "nope", hasMore: false }]);
     await expect(broken.client.readGrossPayItems({ dateOnOrAfter: "2026-09-16T00:00:00Z" })).rejects.toThrow(
@@ -909,6 +912,84 @@ describe("payroll gross pay items", () => {
         type: "TimesheetTime",
       }),
     ]);
+  });
+});
+
+describe("payroll job timesheets and adjustments", () => {
+  it("reads jobs/timesheets in batches of 50 with GET and drops wage fields", async () => {
+    const row = (id: number, jobId: number) => ({
+      id,
+      jobId,
+      appointmentId: 4,
+      technicianId: 6,
+      technicianName: "Alex",
+      dispatchedOn: "2026-10-20T11:00:00Z",
+      arrivedOn: "2026-10-20T12:00:00Z",
+      doneOn: "2026-10-20T15:00:00Z",
+      canceledOn: null,
+      hourlyRate: 42,
+      grossPay: 126,
+    });
+    const ids = Array.from({ length: 51 }, (_, index) => String(index + 1));
+    const { client, fetcher } = setup([
+      { data: [row(1, 1)], hasMore: false },
+      { data: [row(2, 51)], hasMore: false },
+    ]);
+    const read = await client.readJobTimesheetsForJobs(ids);
+    expect(read.forbidden).toBe(false);
+    expect(read.timesheets.map((sheet) => sheet.id)).toEqual(["1", "2"]);
+    expect(read.timesheets[0]).not.toHaveProperty("hourlyRate");
+    expect(read.timesheets[0]).not.toHaveProperty("grossPay");
+    const calls = fetcher.mock.calls.filter((call) => String(call[0]).includes("/jobs/timesheets"));
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call[1]?.method === "GET")).toBe(true);
+    const first = new URL(String(calls[0]?.[0]));
+    expect(first.pathname).toBe("/payroll/v2/tenant/10/jobs/timesheets");
+    expect(first.searchParams.getAll("jobIds")).toHaveLength(50);
+    expect(new URL(String(calls[1]?.[0])).searchParams.getAll("jobIds")).toEqual(["51"]);
+  });
+
+  it("reads payroll adjustments with GET and drops memo text", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: [
+          {
+            id: 9,
+            employeeId: 6,
+            employeeType: "Technician",
+            postedOn: "2026-10-20T00:00:00Z",
+            amount: 12.5,
+            jobId: 100,
+            invoiceId: null,
+            memo: "MEMO-SECRET-44",
+          },
+          {
+            id: 10,
+            employeeId: 7,
+            postedOn: "2022-08-01T00:00:00Z",
+            amount: 4,
+            jobId: 100,
+          },
+        ],
+        hasMore: false,
+      },
+    ]);
+    const read = await client.readPayrollAdjustments({ postedOnOrAfter: "2026-01-01T00:00:00.000Z" });
+    expect(read).toMatchObject({ forbidden: false, unavailable: false, capped: false });
+    expect(read.items).toEqual([
+      {
+        id: "9",
+        employeeId: "6",
+        amount: 12.5,
+        jobId: "100",
+        invoiceId: null,
+        postedOn: "2026-10-20T00:00:00Z",
+      },
+    ]);
+    expect(read.items[0]).not.toHaveProperty("memo");
+    const call = fetcher.mock.calls.find((entry) => String(entry[0]).includes("/payroll-adjustments"));
+    expect(call?.[1]?.method).toBe("GET");
+    expect(String(call?.[0])).toContain("postedOnOrAfter=2026-01-01T00%3A00%3A00.000Z");
   });
 });
 
