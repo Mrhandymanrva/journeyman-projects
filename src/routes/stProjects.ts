@@ -26,8 +26,14 @@ import {
   storeJobLabor,
   withResolvedTechnicianNames,
   type LaborJobResult,
+  type PaidLaborRead,
   type TechnicianDirectory,
 } from "../domain/laborActuals.js";
+import { sourceWindowStart } from "../domain/sourceFloor.js";
+import {
+  readStoredReconciliation,
+  writeFinancialReconciliation,
+} from "../domain/projectSync.js";
 import { applyResolvedLaborCode, resolveStLaborCode, type StLaborResolve } from "../domain/stLaborCode.js";
 import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
@@ -35,6 +41,7 @@ import {
   pickFieldStart,
   presentFieldStart,
   storeComputedFieldStart,
+  type FieldStartPick,
 } from "../domain/fieldStart.js";
 type Details = Awaited<
   ReturnType<ServiceTitanReadAdapter["readProjectDetails"]>
@@ -229,33 +236,7 @@ export function stProjectRoutes(
           modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
-      async (p) => {
-        const details = await p.c.client.readProjectDetails!(
-          p.b.external_project_id,
-        );
-        const fieldStart = p.manual
-          ? null
-          : await pickFieldStart(
-              details.jobs.map((job) => job.id),
-              (id) => p.c.client.readJob(id),
-              details.project.id,
-            );
-        const labor = await readLinkedLabor(
-          p.c.client,
-          details.jobs.map((job) => job.id),
-        );
-        const directory = await readTechnicianDirectory(p.c.client);
-        const namedLabor = labor
-          ? await withResolvedTechnicianNames(
-              labor,
-              directory.technicians,
-              p.c.client.readStaffName?.bind(p.c.client),
-            )
-          : labor;
-        const laborCode = await resolveStLaborCode(p.c.client);
-        const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor: namedLabor, directory, laborCode, ar };
-      },
+      async (p) => readOptionalSources(p.c.client, p.b.external_project_id, p.manual, p.modifiedSince),
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
         if(ctx.settings.enforceBusinessUnitScoping&&!p.b.business_unit_id)throw new ApiError("validation_failed","Choose a business unit for this project.");
@@ -302,15 +283,17 @@ export function stProjectRoutes(
         await applySource(ctx, id, c, result.details);
         await storeReadLabor(ctx, id, result.labor, result.directory, result.laborCode);
         await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
-        if (!p.manual) {
+        if (!p.manual && result.fieldStartRead !== "failed") {
           await storeComputedFieldStart(ctx.db, id, result.fieldStart);
         }
+        await recordSourceWarnings(ctx, id, result.warnings);
         sendData(
           ctx.res,
           {
             id,
             project: result.details.project,
             linkedJobs: result.details.jobs.length,
+            warnings: result.warnings,
             ...arNotice(result.ar),
           },
           undefined,
@@ -395,33 +378,7 @@ export function stProjectRoutes(
           modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
-      async (p) => {
-        const details = await p.c.client.readProjectDetails!(
-          p.b.external_project_id,
-        );
-        const fieldStart = p.manual
-          ? null
-          : await pickFieldStart(
-              details.jobs.map((job) => job.id),
-              (id) => p.c.client.readJob(id),
-              details.project.id,
-            );
-        const labor = await readLinkedLabor(
-          p.c.client,
-          details.jobs.map((job) => job.id),
-        );
-        const directory = await readTechnicianDirectory(p.c.client);
-        const namedLabor = labor
-          ? await withResolvedTechnicianNames(
-              labor,
-              directory.technicians,
-              p.c.client.readStaffName?.bind(p.c.client),
-            )
-          : labor;
-        const laborCode = await resolveStLaborCode(p.c.client);
-        const ar = await readLinkedAr(p.c.client, p.modifiedSince);
-        return { details, fieldStart, labor: namedLabor, directory, laborCode, ar };
-      },
+      async (p) => readOptionalSources(p.c.client, p.b.external_project_id, p.manual, p.modifiedSince),
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
         await loadVisibleProject(ctx, p.id, "id");
@@ -440,13 +397,15 @@ export function stProjectRoutes(
           result.details.jobs.map((job) => job.id),
           result.ar,
         );
-        if (!p.manual) {
+        if (!p.manual && result.fieldStartRead !== "failed") {
           await storeComputedFieldStart(ctx.db, p.id, result.fieldStart);
         }
+        await recordSourceWarnings(ctx, p.id, result.warnings);
         sendData(ctx.res, {
           project: result.details.project,
           observedAt: result.details.observedAt,
           linkedJobs: result.details.project.jobIds.length,
+          warnings: result.warnings,
           ...arNotice(result.ar),
         });
       },
@@ -548,9 +507,9 @@ export function stProjectRoutes(
         if (
           !source ||
           source.tenantId !== ctx.staff.tenantId ||
-          !source.client.readInvoices ||
-          !source.client.readPayments ||
-          !source.client.readEstimates
+          !source.client.readInvoicesForJobs ||
+          !source.client.readPaymentsAppliedTo ||
+          !source.client.readEstimatesForProject
         ) {
           throw new ApiError(
             "conflict",
@@ -563,6 +522,17 @@ export function stProjectRoutes(
             ORDER BY external_job_id`,
           [id, source.externalSystemId],
         );
+        const link = await ctx.db.query<{ external_project_id: string }>(
+          `SELECT external_project_id FROM projects.st_project_connections
+            WHERE project_id = $1 AND external_system_id = $2`,
+          [id, source.externalSystemId],
+        );
+        if (!link.rows[0]) {
+          throw new ApiError(
+            "conflict",
+            "This project is not linked to ServiceTitan. Existing invoices were left as they are.",
+          );
+        }
         const since = await ctx.db.query<{ observed_at: Date | null }>(
           `SELECT max(observed_at) AS observed_at FROM projects.st_invoice_observations WHERE project_id = $1`,
           [id],
@@ -571,34 +541,36 @@ export function stProjectRoutes(
           id,
           externalSystemId: source.externalSystemId,
           jobIds: jobs.rows.map((row) => row.external_job_id),
+          projectId: link.rows[0].external_project_id,
           modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
-          readInvoices: source.client.readInvoices.bind(source.client),
-          readPayments: source.client.readPayments.bind(source.client),
-          readEstimates: source.client.readEstimates.bind(source.client),
+          client: source.client,
         };
       },
       async (prepared) =>
-        readLinkedAr(
-          {
-            readInvoices: prepared.readInvoices,
-            readPayments: prepared.readPayments,
-            readEstimates: prepared.readEstimates,
-          },
-          prepared.modifiedSince,
-        ),
-      async (ctx, prepared, ar) => {
+        readLinkedAr(prepared.client, {
+          jobIds: prepared.jobIds,
+          projectId: prepared.projectId,
+          modifiedSince: prepared.modifiedSince,
+        }),
+      async (ctx, prepared, result) => {
         requireCapability(ctx.staff.role, "refresh_ar");
         await loadVisibleProject(ctx, prepared.id, "id");
-        if (!ar) {
-          throw new ApiError(
-            "conflict",
-            "ServiceTitan invoice read is not configured. Existing invoices were left as they are.",
-          );
+        if (!result.ar) {
+          if (result.warnings.length) await recordSourceWarnings(ctx, prepared.id, result.warnings);
+          sendData(ctx.res, {
+            refreshed: false,
+            message: result.warnings.join("; ") || "ServiceTitan invoice read is not configured. Existing invoices were left as they are.",
+          });
+          return;
         }
-        await storeReadAr(ctx, prepared.id, prepared.externalSystemId, prepared.jobIds, ar);
+        if (!result.ar.forbidden) {
+          await storeReadAr(ctx, prepared.id, prepared.externalSystemId, prepared.jobIds, result.ar);
+        }
+        if (result.warnings.length) await recordSourceWarnings(ctx, prepared.id, result.warnings);
         sendData(ctx.res, {
-          refreshed: !ar.forbidden,
-          ...(ar.forbidden ? { message: AR_READ_REFUSED } : {}),
+          refreshed: !result.ar.forbidden,
+          ...(result.ar.forbidden ? { message: AR_READ_REFUSED } : {}),
+          ...(result.warnings.length ? { warnings: result.warnings } : {}),
         });
       },
     ),
@@ -606,29 +578,157 @@ export function stProjectRoutes(
   return router;
 }
 
+type StClient = NonNullable<SourceConnections["serviceTitan"]>["client"];
+
+function sourceText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function laborWindow(jobs: readonly { createdOn?: string | null }[]): { start: string; missingCreatedOn: boolean } {
+  let earliest: number | null = null;
+  for (const job of jobs) {
+    const created = job.createdOn ? Date.parse(job.createdOn) : NaN;
+    if (Number.isFinite(created) && (earliest == null || created < earliest)) earliest = created;
+  }
+  return {
+    missingCreatedOn: earliest == null,
+    start: sourceWindowStart(
+      earliest == null ? null : earliest - 86_400_000,
+      Date.now(),
+      PAID_LABOR_LOOKBACK_DAYS * 86_400_000,
+    ).toISOString(),
+  };
+}
+
+async function readOptionalSources(
+  client: StClient,
+  externalProjectId: string,
+  manual: boolean,
+  modifiedSince: string | null,
+): Promise<{
+  details: Details;
+  fieldStart: FieldStartPick | null;
+  fieldStartRead: "ok" | "failed";
+  labor: LaborJobResult[] | null;
+  directory: TechnicianDirectory;
+  laborCode: StLaborResolve;
+  ar: ArRead | null;
+  warnings: string[];
+}> {
+  const details = await client.readProjectDetails!(externalProjectId);
+  const warnings = [...(details.warnings ?? [])];
+  const jobIds = details.jobs.map((job) => job.id);
+  let fieldStart: FieldStartPick | null = null;
+  let fieldStartRead: "ok" | "failed" = "ok";
+  if (!manual) {
+    try {
+      const knownJobs = new Map(details.jobs.map((job) => [job.id, job]));
+      fieldStart = await pickFieldStart(
+        jobIds,
+        async (id) => {
+          try {
+            if (client.readJobSchedule) return await client.readJobSchedule(id, knownJobs.get(id) ?? null);
+            return await client.readJob(id);
+          } catch (err) {
+            warnings.push(`Job ${id} appointments: ${sourceText(err)}`);
+            return {
+              job: { id, jobStatus: "Unknown", projectId: details.project.id },
+              appointments: [],
+              observedAt: new Date().toISOString(),
+            };
+          }
+        },
+        details.project.id,
+      );
+    } catch (err) {
+      fieldStartRead = "failed";
+      warnings.push(`Field start: ${sourceText(err)}`);
+    }
+  }
+  let labor: LaborJobResult[] | null = null;
+  try {
+    const window = laborWindow(details.jobs);
+    if (client.readGrossPayItems && window.missingCreatedOn) {
+      warnings.push(
+        "Payroll gross pay items: no job creation date was returned, so the window is the last 120 days.",
+      );
+    }
+    const paid = await readLinkedLabor(client, jobIds, window.start);
+    if (paid) {
+      labor = paid.results;
+      warnings.push(...paid.warnings);
+    }
+  } catch (err) {
+    warnings.push(`Payroll gross pay items: ${sourceText(err)} Stored hours kept.`);
+    labor = jobIds.map((jobId) => ({ jobId, outcome: "keep", drafts: [], failed: true }));
+  }
+  let directory: TechnicianDirectory = { read: false, forbidden: false, technicians: [] };
+  try {
+    directory = await readTechnicianDirectory(client);
+  } catch (err) {
+    warnings.push(`Technicians: ${sourceText(err)}`);
+  }
+  if (labor) {
+    try {
+      labor = await withResolvedTechnicianNames(
+        labor,
+        directory.technicians,
+        client.readStaffName?.bind(client),
+      );
+    } catch (err) {
+      warnings.push(`Technician names: ${sourceText(err)}`);
+    }
+  }
+  const laborCode = await resolveStLaborCode(client);
+  let ar: ArRead | null = null;
+  try {
+    const linked = await readLinkedAr(client, {
+      jobIds,
+      projectId: externalProjectId,
+      modifiedSince,
+    });
+    ar = linked.ar;
+    warnings.push(...linked.warnings);
+  } catch (err) {
+    warnings.push(`Invoices: ${sourceText(err)}`);
+  }
+  return { details, fieldStart, fieldStartRead, labor, directory, laborCode, ar, warnings };
+}
+
+async function recordSourceWarnings(ctx: StaffContext, projectId: string, warnings: string[]): Promise<void> {
+  if (!warnings.length) return;
+  const prior = await readStoredReconciliation(ctx.db, projectId);
+  await writeFinancialReconciliation(ctx.db, {
+    tenantId: ctx.staff.tenantId,
+    projectId,
+    observedAt: new Date(),
+    lines: prior?.lines ?? [],
+    technicians: prior?.technicians ?? [],
+    error: warnings.join("; "),
+  });
+}
+
 async function readLinkedLabor(
-  client: SourceConnections["serviceTitan"] extends infer T
-    ? T extends { client: infer C }
-      ? C
-      : never
-    : never,
+  client: StClient,
   jobIds: string[],
-): Promise<LaborJobResult[] | null> {
-  if (!client?.readJobTimesheets) return null;
-  const paid = await readPaidLabor(
+  dateOnOrAfter: string,
+): Promise<PaidLaborRead | null> {
+  if (!client?.readJobTimesheets && !client?.readGrossPayItems) return null;
+  return readPaidLabor(
     jobIds,
     {
       readGrossPayItems: client.readGrossPayItems
         ? (query) => client.readGrossPayItems!(query)
         : undefined,
-      readJobTimesheets: (jobId) => client.readJobTimesheets!(jobId),
+      readJobTimesheets: client.readJobTimesheets
+        ? (jobId) => client.readJobTimesheets!(jobId)
+        : async () => {
+            throw new Error("timesheets must not be read when gross pay is the payroll source");
+          },
       readJob: (jobId) => client.readJob(jobId),
     },
-    {
-      dateOnOrAfter: new Date(Date.now() - PAID_LABOR_LOOKBACK_DAYS * 86_400_000).toISOString(),
-    },
+    { dateOnOrAfter },
   );
-  return paid.results;
 }
 
 async function storeReadLabor(
@@ -661,27 +761,70 @@ async function storeReadLabor(
 }
 
 async function readLinkedAr(
-  client: {
-    readInvoices?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; invoices: ArRead["invoices"] }>;
-    readPayments?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; payments: ArRead["payments"] }>;
-    readEstimates?: (modifiedSince: string | null) => Promise<{ forbidden: boolean; estimates: ArRead["estimates"] }>;
-  },
-  modifiedSince: string | null,
-): Promise<ArRead | null> {
-  if (!client.readInvoices || !client.readPayments || !client.readEstimates) return null;
-  const [invoices, payments, estimates] = await Promise.all([
-    client.readInvoices(modifiedSince),
-    client.readPayments(modifiedSince),
-    client.readEstimates(modifiedSince),
-  ]);
-  if (invoices.forbidden || payments.forbidden || estimates.forbidden) {
-    return { forbidden: true, invoices: [], payments: [], estimates: [] };
+  client: StClient,
+  input: { jobIds: string[]; projectId: string; modifiedSince: string | null },
+): Promise<{ ar: ArRead | null; warnings: string[] }> {
+  if (!client.readInvoicesForJobs || !client.readPaymentsAppliedTo || !client.readEstimatesForProject) {
+    return { ar: null, warnings: [] };
+  }
+  const warnings: string[] = [];
+  let invoices: Awaited<ReturnType<NonNullable<StClient["readInvoicesForJobs"]>>>;
+  try {
+    invoices = await client.readInvoicesForJobs(input.jobIds, input.modifiedSince);
+  } catch (err) {
+    return { ar: null, warnings: [`Invoices: ${sourceText(err)}`] };
+  }
+  warnings.push(...invoices.warnings);
+  if (invoices.forbidden) {
+    return { ar: { forbidden: true, invoices: [], payments: [], estimates: [] }, warnings };
+  }
+  if (invoices.incomplete) {
+    if (!warnings.length) warnings.push("Invoices: the project invoice read was incomplete. Existing invoices were left as they are.");
+    return { ar: null, warnings };
+  }
+  let payments: Awaited<ReturnType<NonNullable<StClient["readPaymentsAppliedTo"]>>>;
+  try {
+    payments = await client.readPaymentsAppliedTo(
+      invoices.invoices.map((row) => row.externalInvoiceId),
+      input.modifiedSince,
+    );
+  } catch (err) {
+    warnings.push(`Payments: ${sourceText(err)} Existing invoices were left as they are.`);
+    return { ar: null, warnings };
+  }
+  if (payments.forbidden) {
+    return { ar: { forbidden: true, invoices: [], payments: [], estimates: [] }, warnings };
+  }
+  if (payments.capped) {
+    warnings.push("Payments: pagination limit reached. Existing invoices were left as they are.");
+    return { ar: null, warnings };
+  }
+  let estimates: Awaited<ReturnType<NonNullable<StClient["readEstimatesForProject"]>>>;
+  try {
+    estimates = await client.readEstimatesForProject(input.projectId, input.modifiedSince);
+  } catch (err) {
+    warnings.push(`Estimates: ${sourceText(err)} Existing invoices were left as they are.`);
+    return { ar: null, warnings };
+  }
+  if (estimates.forbidden) {
+    return { ar: { forbidden: true, invoices: [], payments: [], estimates: [] }, warnings };
+  }
+  if (estimates.capped) {
+    warnings.push("Estimates: pagination limit reached. Existing invoices were left as they are.");
+    return { ar: null, warnings };
+  }
+  if (invoices.capped) {
+    warnings.push("Invoices: pagination limit reached. Existing invoices were left as they are.");
+    return { ar: null, warnings };
   }
   return {
-    forbidden: false,
-    invoices: invoices.invoices,
-    payments: payments.payments,
-    estimates: estimates.estimates,
+    ar: {
+      forbidden: false,
+      invoices: invoices.invoices,
+      payments: payments.payments,
+      estimates: estimates.estimates,
+    },
+    warnings,
   };
 }
 

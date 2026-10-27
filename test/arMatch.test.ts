@@ -150,6 +150,14 @@ describe("draw matching", () => {
 
   it("keeps the previous observations when ServiceTitan refuses the read", async () => {
     await save({ invoices: [invoice("inv-1", "ST-100", 10)] });
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `INSERT INTO projects.st_project_connections
+           (project_id, tenant_id, external_system_id, external_project_id, connection_key, snapshot, observed_at, linked_by)
+         VALUES ($1, $2, $3, '290588725', 'st:test', '{}'::jsonb, now(), $4)`,
+        [projectId, t.id, systemId, t.staff.owner!.id],
+      ),
+    );
     sources.serviceTitan = {
       tenantId: t.id,
       externalSystemId: systemId,
@@ -158,9 +166,9 @@ describe("draw matching", () => {
         readJob: async () => {
           throw new Error("unused");
         },
-        readInvoices: async () => ({ forbidden: true, invoices: [] }),
-        readPayments: async () => ({ forbidden: true, payments: [] }),
-        readEstimates: async () => ({ forbidden: true, estimates: [] }),
+        readInvoicesForJobs: async () => ({ forbidden: true, invoices: [], capped: false, incomplete: false, warnings: [] }),
+        readPaymentsAppliedTo: async () => ({ forbidden: true, payments: [], capped: false }),
+        readEstimatesForProject: async () => ({ forbidden: true, estimates: [], capped: false }),
       },
     };
     const refused = await owner().post(`/api/v1/projects/projects/${projectId}/servicetitan/ar-refresh`);

@@ -1,0 +1,23 @@
+{
+  "_note": "Documented GrossPayItemResponse row whose id is null. Production rejected this with data.0.id: Invalid input.",
+  "data": [
+    {
+      "id": null,
+      "employeeId": 6,
+      "employeeType": "Technician",
+      "payrollId": 5001,
+      "date": "2026-10-20T00:00:00Z",
+      "activity": "Working",
+      "activityCode": "REG",
+      "amount": 40,
+      "grossPayItemType": "TimesheetTime",
+      "startedOn": "2026-10-20T12:00:00Z",
+      "endedOn": "2026-10-20T14:00:00Z",
+      "paidDurationHours": 2,
+      "paidTimeType": "Regular",
+      "jobId": 100,
+      "projectId": 290588725
+    }
+  ],
+  "hasMore": false
+}

@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { Database, SqlClient } from "../db/database.js";
 import { ApiError } from "./errors.js";
+import { sourceFailureMessage } from "./sourceError.js";
 import type { StaffRole } from "./capabilities.js";
 
 /**
@@ -227,10 +228,7 @@ export function staffExternalRoute<P, R>(
         console.error(
           `[source-refresh] ${req.method} ${req.originalUrl} failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
         );
-        throw new ApiError(
-          "source_unavailable",
-          "Source refresh failed. The previous snapshot is unchanged.",
-        );
+        throw new ApiError("source_unavailable", sourceFailureMessage(err));
       }
       const current = await deps.sessions.resolve(req);
       if (
