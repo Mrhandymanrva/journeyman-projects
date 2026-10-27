@@ -595,6 +595,19 @@ const ROUTES: RouteCase[] = [
     body: () => ({ budget_amount: 1 }),
   },
   {
+    method: "put",
+    template: `${BASE}/projects/:id/budget/entry`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget/entry`,
+    body: () => ({
+      contract_value: null,
+      labor: 10,
+      labor_hours: 1,
+      materials: null,
+      subcontractor: null,
+      other: null,
+    }),
+  },
+  {
     method: "get",
     template: `${BASE}/projects/:id/exceptions`,
     path: (f) => `${BASE}/projects/${f.projectId}/exceptions`,

@@ -6,6 +6,7 @@ import {
   SEGRETO_DASHBOARD_FIXTURE,
   segretoBilledMaterials,
   segretoDashboardInput,
+  segretoExampleBudget,
   segretoInvoiceLines,
   segretoOpenInvoices,
 } from "../src/demo/segretoDashboardFixture.js";
@@ -38,7 +39,11 @@ describe("Segreto dashboard fixture", () => {
     expect(dashboard.actualExpense.value).toBeNull();
     expect(dashboard.actualMargin.value).toBeNull();
     expect(dashboard.actualMarginPercent.value).toBeNull();
-    expect(dashboard.contractValue.value).toBeNull();
+    expect(fixture.journeymanContract).toBeNull();
+    expect(segretoExampleBudget(fixture).contractValue).toBeNull();
+    expect(segretoExampleBudget(fixture).totalBudgetedExpense).toBe(38916.8);
+    expect(dashboard.budgetEntered).toBe(false);
+    expect(dashboard.contractValue).toEqual({ value: null, source: "missing", gap: "budget" });
     expect(dashboard.totalBudgetedExpense.value).toBeNull();
     expect(dashboard.changeOrders.value).toBeNull();
     expect(dashboard.costAdjustments.value).toBeNull();
@@ -50,10 +55,11 @@ describe("Segreto dashboard fixture", () => {
     expect(dashboard.budgetedLaborExpense.value).toBeNull();
     expect(dashboard.budgetedLaborHours.value).toBeNull();
     expect(dashboard.retainage.value).toBeNull();
-    expect(dashboard.contractValue.value).not.toBe(fixture.journeymanContract);
     expect(dashboard.contractValue.value).not.toBe(fixture.payments.total);
 
     const html = financialsDashboardHtml(dashboard);
+    expect(html.replace(/<[^>]+>/g, "")).toContain("No budget entered \u2014 Enter budget");
+    expect(html).toContain("No budget entered for this figure.");
     expect(html).toContain("ServiceTitan did not return this figure. Nothing is estimated.");
     expect(html).toContain("$28,289.92");
     expect(html).toContain("$3,930.32");

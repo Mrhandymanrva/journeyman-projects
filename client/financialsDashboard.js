@@ -1,12 +1,18 @@
 /**
- * Project financials summary. A missing ServiceTitan figure is a dash.
- * Nothing on this card is estimated, and nothing is written to ServiceTitan.
+ * Project financials summary. Budget tiles come from the Journeyman budget.
+ * A missing ServiceTitan figure is a dash. Nothing on this card is estimated,
+ * and nothing is written to ServiceTitan.
  */
 
-const TIP = "ServiceTitan did not return this figure. Nothing is estimated.";
+const TIPS = {
+  budget: "No budget entered for this figure.",
+  computed: "This figure stays blank until every number it uses has been entered.",
+  servicetitan: "ServiceTitan did not return this figure. Nothing is estimated.",
+};
 
-function dash() {
-  return `<span class="fin-dash" title="${TIP}">\u2014</span>`;
+function dash(gap) {
+  const tip = TIPS[gap] || TIPS.servicetitan;
+  return `<span class="fin-dash" title="${tip}">\u2014</span>`;
 }
 
 function money(value) {
@@ -31,6 +37,7 @@ function hours(value) {
 
 function show(figure, kind) {
   const value = figure && figure.value != null ? figure.value : null;
+  if (value == null) return dash(figure && figure.gap);
   if (kind === "percent") return percent(value);
   if (kind === "hours") return hours(value);
   return money(value);
@@ -132,9 +139,24 @@ function stacked(dashboard) {
 
 const empty = { value: null, source: "missing" };
 
+function soldReference(sold) {
+  if (!sold) return "";
+  const parts = [];
+  if (sold.contractValue != null) parts.push(`contract ${money(sold.contractValue)}`);
+  if (sold.totalBudgetedExpense != null) parts.push(`budgeted expense ${money(sold.totalBudgetedExpense)}`);
+  if (sold.budgetedLaborExpense != null) parts.push(`labor ${money(sold.budgetedLaborExpense)}`);
+  if (sold.budgetedLaborHours != null) parts.push(`${hours(sold.budgetedLaborHours)} labor hours`);
+  if (sold.budgetedMaterials != null) parts.push(`materials ${money(sold.budgetedMaterials)}`);
+  if (parts.length === 0) return "";
+  return `<p class="fin-sold-ref">ServiceTitan sold estimate, read only: ${parts.join(" · ")}</p>`;
+}
+
 export function financialsDashboardHtml(dashboard) {
   const d = dashboard || {};
   const figure = (key) => d[key] || empty;
+  const emptyState = d.budgetEntered
+    ? ""
+    : `<p class="fin-empty">No budget entered \u2014 <button type="button" class="btn sm" id="enter-budget">Enter budget</button></p>`;
   const contract = figure("contractValue");
   const revenue = figure("actualRevenue");
   const budget = figure("totalBudgetedExpense");
@@ -157,6 +179,8 @@ export function financialsDashboardHtml(dashboard) {
     earnedRevenue: figure("earnedRevenue"),
   };
   return `<h2 class="fin-summary-title">Project financials</h2>
+    ${emptyState}
+    ${soldReference(d.soldEstimate)}
     ${pair("Contract value", contract, "money", "Actual revenue", revenue, "money")}
     ${pair("Total budgeted expense", budget, "money", "Cost to complete", remaining, "money")}
     ${pair("Change orders", changes, "money", "Cost adjustments", adjustments, "money")}

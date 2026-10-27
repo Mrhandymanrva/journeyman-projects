@@ -1,18 +1,22 @@
 /**
- * ServiceTitan Project Financials summary tiles.
- * Actual revenue and actual expense come from the figures already on the
- * Financials page. Contract, budget, change orders, retainage, and open
- * invoices come from a ServiceTitan read. A missing figure stays null.
- * Nothing here invents a number, and nothing writes to ServiceTitan.
+ * Project financials summary tiles.
+ * Budget tiles come from the Journeyman budget. Actuals, billed, open
+ * invoices, retainage, change orders, and cost adjustments stay on the
+ * ServiceTitan read. A missing figure stays null. Nothing here invents a
+ * number, and nothing writes to ServiceTitan.
  */
 
 import { roundMoney } from "./projectFinancials.js";
 
-export type FigureSource = "servicetitan" | "actuals" | "computed" | "missing";
+export type FigureSource = "journeyman" | "servicetitan" | "actuals" | "computed" | "missing";
+
+export type FigureGap = "budget" | "computed" | "servicetitan";
 
 export interface Figure {
   value: number | null;
   source: FigureSource;
+  /** Why a missing figure is blank. Omitted when the figure has a value. */
+  gap?: FigureGap;
 }
 
 export interface DashboardActuals {
@@ -43,7 +47,30 @@ export interface DashboardServiceTitan {
   retainage: number | null;
 }
 
+/** Category dollars are sums of budget lines. A missing category is null, not zero. */
+export interface DashboardBudget {
+  entered: boolean;
+  contractValue: number | null;
+  laborHours: number | null;
+  labor: number | null;
+  materials: number | null;
+  subcontractor: number | null;
+  other: number | null;
+  totalBudgetedExpense: number | null;
+}
+
+/** Read-only ServiceTitan sold estimate. Never the tile value. */
+export interface SoldEstimateReference {
+  contractValue: number | null;
+  totalBudgetedExpense: number | null;
+  budgetedLaborExpense: number | null;
+  budgetedLaborHours: number | null;
+  budgetedMaterials: number | null;
+}
+
 export interface FinancialsDashboard {
+  budgetEntered: boolean;
+  soldEstimate: SoldEstimateReference | null;
   contractValue: Figure;
   actualRevenue: Figure;
   totalBudgetedExpense: Figure;
@@ -70,19 +97,56 @@ export interface FinancialsDashboard {
 export const MISSING_FIGURE_TOOLTIP =
   "ServiceTitan did not return this figure. Nothing is estimated.";
 
-const missing = (): Figure => ({ value: null, source: "missing" });
+const missing = (gap: FigureGap = "servicetitan"): Figure => ({
+  value: null,
+  source: "missing",
+  gap,
+});
 
 function reported(
   value: number | null | undefined,
   source: "servicetitan" | "actuals",
 ): Figure {
-  if (value == null || !Number.isFinite(value)) return missing();
+  if (value == null || !Number.isFinite(value)) return missing("servicetitan");
   return { value: roundMoney(value), source };
 }
 
-function computed(value: number | null): Figure {
-  if (value == null || !Number.isFinite(value)) return missing();
+function computed(value: number | null, gap: FigureGap = "computed"): Figure {
+  if (value == null || !Number.isFinite(value)) return missing(gap);
   return { value: roundMoney(value), source: "computed" };
+}
+
+function budgeted(value: number | null | undefined): Figure {
+  if (value == null || !Number.isFinite(value)) return missing("budget");
+  return { value: roundMoney(value), source: "journeyman" };
+}
+
+function finiteMoney(value: number | null | undefined): number | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  return roundMoney(value);
+}
+
+function readSoldEstimate(
+  serviceTitan: DashboardServiceTitan | null | undefined,
+): SoldEstimateReference | null {
+  if (!serviceTitan?.estimatesRead) return null;
+  const ref: SoldEstimateReference = {
+    contractValue: finiteMoney(serviceTitan.contractValue),
+    totalBudgetedExpense: finiteMoney(serviceTitan.totalBudgetedExpense),
+    budgetedLaborExpense: finiteMoney(serviceTitan.budgetedLaborExpense),
+    budgetedLaborHours: finiteMoney(serviceTitan.budgetedLaborHours),
+    budgetedMaterials: finiteMoney(serviceTitan.budgetedMaterials),
+  };
+  if (
+    ref.contractValue == null &&
+    ref.totalBudgetedExpense == null &&
+    ref.budgetedLaborExpense == null &&
+    ref.budgetedLaborHours == null &&
+    ref.budgetedMaterials == null
+  ) {
+    return null;
+  }
+  return ref;
 }
 
 /** Margin and completion percents, two decimal places. Null when the base is not positive. */
@@ -111,11 +175,13 @@ export function earnedRevenue(contract: number, actualExpense: number, budget: n
 export function buildFinancialsDashboard(input: {
   actuals: DashboardActuals | null;
   serviceTitan: DashboardServiceTitan | null;
+  budget?: DashboardBudget | null;
 }): FinancialsDashboard {
   const actuals = input.actuals?.observed ? input.actuals : null;
   const st = input.serviceTitan;
   const estimates = st?.estimatesRead ? st : null;
   const invoices = st?.invoicesRead ? st : null;
+  const budget = input.budget?.entered ? input.budget : null;
 
   const actualRevenue = actuals ? reported(actuals.billed, "actuals") : missing();
   const actualExpense =
@@ -126,19 +192,13 @@ export function buildFinancialsDashboard(input: {
       : missing();
   const laborExpense = actuals ? reported(actuals.laborBurden, "actuals") : missing();
 
-  const contractValue = estimates ? reported(estimates.contractValue, "servicetitan") : missing();
-  const totalBudgetedExpense = estimates
-    ? reported(estimates.totalBudgetedExpense, "servicetitan")
-    : missing();
+  const contractValue = budgeted(budget ? budget.contractValue : null);
+  const totalBudgetedExpense = budgeted(budget ? budget.totalBudgetedExpense : null);
   const changeOrders = estimates ? reported(estimates.changeOrders, "servicetitan") : missing();
   const costAdjustments = estimates ? reported(estimates.costAdjustments, "servicetitan") : missing();
-  const budgetedLaborExpense = estimates
-    ? reported(estimates.budgetedLaborExpense, "servicetitan")
-    : missing();
-  const budgetedLaborHours = estimates
-    ? reported(estimates.budgetedLaborHours, "servicetitan")
-    : missing();
-  const budgetedMaterials = estimates ? reported(estimates.budgetedMaterials, "servicetitan") : missing();
+  const budgetedLaborExpense = budgeted(budget ? budget.labor : null);
+  const budgetedLaborHours = budgeted(budget ? budget.laborHours : null);
+  const budgetedMaterials = budgeted(budget ? budget.materials : null);
   const billed = invoices ? reported(invoices.billed, "servicetitan") : missing();
   const openInvoices = invoices ? reported(invoices.openInvoices, "servicetitan") : missing();
   const retainage = st && st.retainage != null ? reported(st.retainage, "servicetitan") : missing();
@@ -153,13 +213,15 @@ export function buildFinancialsDashboard(input: {
       : null;
 
   return {
+    budgetEntered: input.budget?.entered === true,
+    soldEstimate: readSoldEstimate(st),
     contractValue,
     actualRevenue,
     totalBudgetedExpense,
     costToComplete:
       totalBudgetedExpense.value != null && actualExpense.value != null
         ? computed(costToComplete(totalBudgetedExpense.value, actualExpense.value))
-        : missing(),
+        : missing("computed"),
     changeOrders,
     costAdjustments,
     actualExpense,
@@ -167,11 +229,12 @@ export function buildFinancialsDashboard(input: {
     laborExpense,
     budgetedMaterials,
     budgetedLaborExpense,
-    actualMargin: computed(marginDollars),
+    actualMargin: computed(marginDollars, "servicetitan"),
     actualMarginPercent: computed(
       marginDollars != null && actualRevenue.value != null
         ? percentOf(marginDollars, actualRevenue.value)
         : null,
+      "servicetitan",
     ),
     billed,
     budgetedMargin: computed(budgetMarginDollars),

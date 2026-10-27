@@ -12,8 +12,11 @@ const cents = (n) =>
     maximumFractionDigits: 2,
   });
 
-export function budgetSummary(cost) {
+export function budgetSummary(cost, entry) {
   const rows = Array.isArray(cost) ? cost : [];
+  if (rows.length === 0) {
+    return entry?.entered ? "No cost-code lines" : "No budget entered";
+  }
   const total = rows.reduce((sum, row) => sum + Number(row?.baseline || 0), 0);
   const count = rows.length;
   return `${count} line${count === 1 ? "" : "s"} · ${whole(total)} budget`;

@@ -38,6 +38,8 @@ describe("financials sections", () => {
 
   it("summarizes the other financials sections as a count and a dollar total", () => {
     expect(budgetSummary([{ baseline: 100 }, { baseline: 50 }])).toBe("2 lines · $150 budget");
+    expect(budgetSummary([])).toBe("No budget entered");
+    expect(budgetSummary([], { entered: true })).toBe("No cost-code lines");
     expect(purchaseOrderSummary([{ amount: 2600 }])).toBe("1 purchase order · $2,600");
     expect(changeOrderSummary({ change_orders: [{ customer_amount: 2400 }] })).toBe(
       "1 change order · $2,400",

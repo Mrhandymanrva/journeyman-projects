@@ -5,6 +5,7 @@ import {
   type DashboardServiceTitan,
   type FinancialsDashboard,
 } from "./financialsDashboard.js";
+import { loadBudget } from "./projectBudget.js";
 import { roundMoney, type ProjectMoney } from "./projectFinancials.js";
 import { readStoredProjectMoney, readStoredReconciliation } from "./projectSync.js";
 import type { ServiceTitanSummaryNumbers } from "./stFinancialSummary.js";
@@ -197,9 +198,11 @@ export async function readFinancialsDashboard(
   projectId: string,
 ): Promise<FinancialsDashboard> {
   const facts = await loadFinancialFacts(db, projectId);
+  const budget = await loadBudget(db, projectId);
   return buildFinancialsDashboard({
     actuals: facts.actuals,
     serviceTitan: facts.serviceTitan,
+    budget,
   });
 }
 

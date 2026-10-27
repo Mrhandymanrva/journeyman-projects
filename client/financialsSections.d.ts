@@ -1,5 +1,6 @@
 export function budgetSummary(
   cost: Array<{ baseline?: number | null }> | null | undefined,
+  entry?: { entered?: boolean } | null,
 ): string;
 export function purchaseOrderSummary(
   orders: Array<{ amount?: number | null }> | null | undefined,

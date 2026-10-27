@@ -21,11 +21,18 @@ import {
 } from "./closeoutCard.js";
 import { financialsDashboardHtml } from "./financialsDashboard.js";
 import {
+  budgetEntryHtml,
+  budgetEntryPayload,
+  budgetEntryTotal,
+  formatBudgetMoney,
+} from "./budgetEntry.js";
+import {
   budgetSummary,
   changeOrderSummary,
   drawSummary,
   laborSummary,
   purchaseOrderSummary,
+  setSectionExpanded,
   stDetailSummary,
 } from "./financialsSections.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
@@ -627,21 +634,78 @@ function renderFinancialsDashboard(summary) {
   node.innerHTML = financialsDashboardHtml(summary);
 }
 
-function renderBudget(cost, budget) {
-  setFinSummary("budget", budgetSummary(cost));
-  if (cost.length === 0) {
-    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
-    el("btag").textContent = "No budget";
-    el("btag").className = "tag";
-    return;
+function renderBudgetEntry(budget) {
+  const host = el("budget-entry");
+  if (!host) return;
+  const editable = can("edit_budget_before_freeze") && !budget?.baseline_frozen;
+  host.innerHTML = budgetEntryHtml(budget?.entry, {
+    editable,
+    frozen: Boolean(budget?.baseline_frozen),
+  });
+  const form = el("budget-entry-form");
+  if (!form || !editable) return;
+  const refresh = () => {
+    const total = budgetEntryTotal({
+      labor: el("budget-labor")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    const node = el("budget-total");
+    if (node) node.textContent = formatBudgetMoney(total);
+  };
+  for (const id of ["budget-labor", "budget-materials", "budget-sub", "budget-other"]) {
+    el(id)?.addEventListener("input", refresh);
   }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const msg = el("budget-entry-msg");
+    const parsed = budgetEntryPayload({
+      contract_value: el("budget-contract")?.value,
+      labor: el("budget-labor")?.value,
+      labor_hours: el("budget-hours")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    if (parsed.error) {
+      if (msg) {
+        msg.textContent = parsed.error;
+        msg.className = "msg bad";
+      }
+      return;
+    }
+    try {
+      await api(`/projects/${current.id}/budget/entry`, {
+        method: "PUT",
+        body: JSON.stringify(parsed.body),
+      });
+      await select(current.id);
+    } catch (err) {
+      if (msg) {
+        msg.textContent = err.message;
+        msg.className = "msg bad";
+      }
+    }
+  });
+}
 
+function renderBudget(cost, budget) {
+  setFinSummary("budget", budgetSummary(cost, budget?.entry));
+  renderBudgetEntry(budget);
   const freeze = {
     frozen: Boolean(budget?.baseline_frozen),
     gateNumber: budget?.frozen_by_gate,
   };
   const editable = can("edit_budget_before_freeze");
-  el("budget-add").hidden = !editable || freeze.frozen;
+  const add = el("budget-add");
+  if (add) add.hidden = !editable || freeze.frozen;
+  if (cost.length === 0) {
+    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
+    el("btag").textContent = budget?.entry?.entered ? "No cost-code lines" : "No budget";
+    el("btag").className = "tag";
+    return;
+  }
 
   const maxScale = Math.max(
     ...cost.map((r) =>
@@ -2138,6 +2202,13 @@ async function newProjectDrawer() {
 el("project-new").textContent = "Add from ServiceTitan";
 el("project-new").addEventListener("click", newProjectDrawer);
 el("budget-add").addEventListener("click", addBudgetLineDrawer);
+document.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("#enter-budget");
+  if (!button) return;
+  const toggle = document.querySelector('[aria-controls="fin-body-budget"]');
+  setSectionExpanded(toggle, true);
+  el("budget-contract")?.focus();
+});
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
 el("log-new").addEventListener("click", dailyLogDrawer);

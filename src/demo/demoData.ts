@@ -284,7 +284,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     unit: string;
     jurisdiction: string;
     pm: string;
-    contract: number;
+    contract: number | null;
     target: number;
     stage: string;
     approvedGates: number;
@@ -969,8 +969,8 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
   await seedDraws(delaney, 3, 0, 57200, '117980');
 log('project: Delaney — Basement Finish (healthy)');
 
-  // Segreto reads SEGRETO_DASHBOARD_FIXTURE only. The local contract column
-  // is a stub and is not copied onto the dashboard.
+  // Segreto reads SEGRETO_DASHBOARD_FIXTURE only. Contract and budget stay
+  // blank until someone enters them on Financials. The example budget is not seeded.
   const segretoFixture = SEGRETO_DASHBOARD_FIXTURE;
   const segretoTiles = segretoDashboardInput(segretoFixture);
   const segreto = await buildProject({

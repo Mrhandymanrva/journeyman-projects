@@ -7,7 +7,11 @@
  * Purchase-order cost and payroll both returned 403. There is no sold estimate.
  */
 
-import type { DashboardActuals, DashboardServiceTitan } from "../domain/financialsDashboard.js";
+import type {
+  DashboardActuals,
+  DashboardBudget,
+  DashboardServiceTitan,
+} from "../domain/financialsDashboard.js";
 import { roundMoney, SEGRETO_LINKED_JOB, SEGRETO_PROJECT_ID } from "../domain/projectFinancials.js";
 
 export interface SegretoDashboardFixture {
@@ -68,10 +72,22 @@ export interface SegretoDashboardFixture {
     retainage: number | null;
   };
   /**
-   * Local projects.contract_value. The column must be greater than zero.
-   * The dashboard does not read this. It is not a ServiceTitan contract.
+   * Local projects.contract_value. Null leaves the contract blank.
+   * The dashboard reads this column. It is not a ServiceTitan contract.
    */
-  journeymanContract: number;
+  journeymanContract: number | null;
+  /**
+   * Typed on Financials for the demo. Not seeded, so the page opens empty.
+   * Contract stays blank. The expense total is the sum of the entered categories.
+   */
+  exampleBudget: {
+    contractValue: number | null;
+    labor: number | null;
+    laborHours: number | null;
+    materials: number | null;
+    subcontractor: number | null;
+    other: number | null;
+  };
   targetMargin: number;
 }
 
@@ -126,7 +142,15 @@ export const SEGRETO_DASHBOARD_FIXTURE: SegretoDashboardFixture = {
     budgetedMaterials: null,
     retainage: null,
   },
-  journeymanContract: 1,
+  journeymanContract: null,
+  exampleBudget: {
+    contractValue: null,
+    labor: 21480,
+    laborHours: 120,
+    materials: 6708.8,
+    subcontractor: 10728,
+    other: null,
+  },
   targetMargin: 0,
 };
 
@@ -160,6 +184,26 @@ export function segretoReadNotes(fixture: SegretoDashboardFixture = SEGRETO_DASH
     notes.push("Payroll returned 403. Labor burden is the Project Financials figure. Hours were not returned.");
   }
   return notes.length > 0 ? notes.join("; ") : null;
+}
+
+export function segretoExampleBudget(
+  fixture: SegretoDashboardFixture = SEGRETO_DASHBOARD_FIXTURE,
+): DashboardBudget {
+  const budget = fixture.exampleBudget;
+  const parts = [budget.labor, budget.materials, budget.subcontractor, budget.other].filter(
+    (value): value is number => value != null,
+  );
+  return {
+    entered:
+      budget.contractValue != null || budget.laborHours != null || parts.length > 0,
+    contractValue: budget.contractValue,
+    laborHours: budget.laborHours,
+    labor: budget.labor,
+    materials: budget.materials,
+    subcontractor: budget.subcontractor,
+    other: budget.other,
+    totalBudgetedExpense: parts.length === 0 ? null : roundMoney(parts.reduce((sum, value) => sum + value, 0)),
+  };
 }
 
 export function segretoDashboardInput(fixture: SegretoDashboardFixture = SEGRETO_DASHBOARD_FIXTURE): {
