@@ -50,6 +50,15 @@ describe("portfolio project feed", () => {
       hours_source: null,
       observed_at: null,
     });
+    expect(res.body.data.projects[0].labor_refresh).toEqual({
+      status: null,
+      started_at: null,
+      finished_at: null,
+      ok: 0,
+      failed: 0,
+      error: null,
+    });
+    expect(res.body.data.projects[0].reconciliation).toBeNull();
     expect(res.body.data.projects[0].ar).toEqual({
       draws_matched: 0,
       draws_suggested: 0,

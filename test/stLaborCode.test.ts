@@ -503,6 +503,25 @@ describe("stamping the pricebook labor code", () => {
 
     reads = 0;
     clearStLaborCodeCache();
+    const systemId = "33333333-3333-4333-8333-333333333333";
+    await h.db.withTenant(tenant.id, async (db) => {
+      await db.query(
+        `INSERT INTO projects.external_systems (id, tenant_id, adapter_key, display_name)
+         VALUES ($1, $2, 'servicetitan', 'ServiceTitan')`,
+        [systemId, tenant.id],
+      );
+      for (const [projectId, externalId] of [
+        [activeId, "321586598"],
+        [secondId, "321293715"],
+      ] as const) {
+        await db.query(
+          `INSERT INTO projects.st_project_connections
+             (project_id, tenant_id, external_system_id, external_project_id, connection_key, snapshot, observed_at, linked_by)
+           VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, now(), $6)`,
+          [projectId, tenant.id, systemId, externalId, `st:${externalId}`, tenant.staff.owner!.id],
+        );
+      }
+    });
     const report = await runHourlyLaborRefresh(h.db, sources.serviceTitan!, {
       tenantId: tenant.id,
       gapMs: 0,

@@ -134,9 +134,28 @@ export function payrollHours(row: {
   return null;
 }
 
-export function classifySku(sku: string, skuType: string | null | undefined): "labor" | "material" | "other" {
-  if (sku.toLowerCase().includes("mhm.25plfe")) return "labor";
-  if (/material|equipment/i.test(skuType ?? "")) return "material";
+/**
+ * Billed labor and billed materials follow the invoice item's general ledger
+ * account, which is how ServiceTitan Project Financials groups the lines.
+ * No endpoint sends a project label. "Labor Revenue…" is labor. "Material
+ * Revenue…" is materials, including the Van Stock price modifier. When the
+ * account is missing, Service is labor and Material or PriceModifier is
+ * materials. The sku is not a labor code. MHM.25PLFE stays the cost code
+ * for labor expense and is not used here.
+ */
+export function classifyInvoiceItem(item: {
+  type?: string | null;
+  accountName?: string | null;
+}): "labor" | "material" | "other" {
+  const account = item.accountName?.trim().toLowerCase() ?? "";
+  if (account) {
+    if (account.startsWith("labor revenue")) return "labor";
+    if (account.startsWith("material revenue")) return "material";
+    return "other";
+  }
+  const type = item.type?.trim().toLowerCase() ?? "";
+  if (type === "service") return "labor";
+  if (type === "material" || type === "pricemodifier") return "material";
   return "other";
 }
 

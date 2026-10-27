@@ -1,0 +1,426 @@
+{
+  "projectId": "321293715",
+  "invoiceCount": 13,
+  "jobCount": 12,
+  "invoices": [
+    {
+      "id": 321294995,
+      "referenceNumber": "144659",
+      "jobId": 321274510,
+      "items": [
+        {
+          "id": 321261449,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "31.59",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322612595,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "132.11",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322928031,
+          "skuName": "MHM.25PLFE",
+          "type": "Service",
+          "total": "920.77",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321275402,
+      "referenceNumber": "144648",
+      "jobId": 321275397,
+      "items": [
+        {
+          "id": 321285062,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "48.33",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322294496,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1611.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321278787,
+      "referenceNumber": "144652",
+      "jobId": 321278782,
+      "items": [
+        {
+          "id": 321262984,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "46.02",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322329336,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1297.75",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        },
+        {
+          "id": 322346035,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "236.37",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321278829,
+      "referenceNumber": "144656",
+      "jobId": 321278824,
+      "items": [
+        {
+          "id": 321285447,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "40.28",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322429494,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1342.50",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321283656,
+      "referenceNumber": "144657",
+      "jobId": 321283651,
+      "items": [
+        {
+          "id": 321293340,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "42.32",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322586394,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "119.58",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322601238,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "38.19",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322611264,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1253.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321284307,
+      "referenceNumber": "144658",
+      "jobId": 321284302,
+      "items": [
+        {
+          "id": 321294739,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "50.41",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322514920,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1432.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        },
+        {
+          "id": 322525219,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "161.76",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322527774,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "35.25",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322528414,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "51.17",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321293845,
+      "referenceNumber": "144650",
+      "jobId": 321286416,
+      "items": [
+        {
+          "id": 321288876,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "104.33",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322304615,
+          "skuName": "MHM.25PLFE",
+          "type": "Service",
+          "total": "1611.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        },
+        {
+          "id": 322332059,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "1866.78",
+          "technicianId": 292216790,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321287105,
+      "referenceNumber": "144662",
+      "jobId": 321287100,
+      "items": []
+    },
+    {
+      "id": 321288375,
+      "referenceNumber": "144654",
+      "jobId": 321288370,
+      "items": [
+        {
+          "id": 321290293,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "38.63",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322394519,
+          "skuName": "MHM.25PLFE",
+          "type": "Service",
+          "total": "1253.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        },
+        {
+          "id": 322397078,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "34.80",
+          "technicianId": 292216790,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321289644,
+      "referenceNumber": "144653",
+      "jobId": 321289639,
+      "items": [
+        {
+          "id": 321272304,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "50.74",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322373731,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "348.96",
+          "technicianId": 314976178,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322392382,
+          "skuName": "MHM 250.Labor",
+          "type": "Service",
+          "total": "1342.50",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 321291294,
+      "referenceNumber": "144651",
+      "jobId": 321291289,
+      "items": [
+        {
+          "id": 321274887,
+          "skuName": "MH.VS.700.002",
+          "type": "PriceModifier",
+          "total": "74.13",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322332936,
+          "skuName": "MHM.25PLFE",
+          "type": "Service",
+          "total": "1611.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        },
+        {
+          "id": 322341344,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "660.78",
+          "technicianId": 292216790,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        },
+        {
+          "id": 322342350,
+          "skuName": "MH.PO.700.003",
+          "type": "Material",
+          "total": "199.09",
+          "technicianId": 292216790,
+          "generalLedgerAccount": {
+            "name": "Material Revenue:Material Billed"
+          }
+        }
+      ]
+    },
+    {
+      "id": 322557251,
+      "referenceNumber": "145583",
+      "jobId": 322557246,
+      "items": [
+        {
+          "id": 322616866,
+          "skuName": "MHM.25LFCO",
+          "type": "Service",
+          "total": "940.00",
+          "technicianId": null,
+          "generalLedgerAccount": {
+            "name": "Labor Revenue:Labor Revenue"
+          }
+        }
+      ]
+    },
+    {
+      "id": 322674513,
+      "referenceNumber": "145583-1",
+      "jobId": 322557246,
+      "items": []
+    }
+  ]
+}

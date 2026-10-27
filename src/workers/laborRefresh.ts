@@ -1,22 +1,38 @@
 import { z } from "zod";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
-import type { AdvisoryLock, Database } from "../db/database.js";
-import { payrollReaderFrom, resolvePayForTechnicians } from "../domain/commissionLabor.js";
+import type { AdvisoryLock, Database, SqlClient } from "../db/database.js";
+import {
+  payrollReaderFrom,
+  resolvePayForTechnicians,
+  roundMoney,
+  technicianIdKey,
+  type ResolvedTechPay,
+} from "../domain/commissionLabor.js";
 import {
   readLaborJobs,
   readTechnicianDirectoryForLabor,
   saveLaborRefresh,
   withResolvedTechnicianNames,
+  type LaborJobResult,
 } from "../domain/laborActuals.js";
 import {
-  missedOvernightCatchUp,
   nextOvernight,
+  refreshBootAction,
+  type RefreshBootAction,
 } from "../domain/overnightSchedule.js";
 import {
+  financialsFromReads,
+  reconcileFinancials,
+  type BurdenSlice,
+} from "../domain/projectFinancials.js";
+import {
+  readStoredProjectMoney,
   replaceInvoiceLines,
   replaceMaterialExpenses,
   replacePlanAppointments,
   replaceProjectJobs,
+  writeFinancialReconciliation,
+  type ReconciliationTechnician,
   type StoredAppointment,
   type StoredInvoiceLine,
 } from "../domain/projectSync.js";
@@ -29,6 +45,8 @@ import {
 
 const GAP_MS = 250;
 export const LABOR_REFRESH_LOCK_KEY = "journeyman.labor_auto_refresh";
+export const OVERNIGHT_LOCK_RETRY_MS = 15 * 60 * 1000;
+const RUN_IN_PROGRESS_MS = 30 * 60 * 1000;
 
 type ServiceTitanSource = NonNullable<SourceConnections["serviceTitan"]>;
 
@@ -81,6 +99,8 @@ export interface LaborSchedulerOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Test seam. Defaults to setTimeout. */
   schedule?: (run: () => void, delayMs: number) => { cancel: () => void };
+  /** Test seam. Defaults to the database advisory lock. */
+  tryLock?: (key: string) => Promise<AdvisoryLock | null>;
 }
 
 /**
@@ -103,8 +123,8 @@ export function laborRefreshTenantId(
 }
 
 /**
- * The same full read the Refresh button runs, for every project that is not
- * complete or cancelled. One overnight pass reads jobs, appointments,
+ * The same full read the Refresh button runs, for every linked project that
+ * is not complete or cancelled. One overnight pass reads jobs, appointments,
  * payroll timesheets, invoices, and purchase orders. ServiceTitan is only
  * read. The stamp source is scheduled.
  */
@@ -121,10 +141,20 @@ export async function runHourlyLaborRefresh(
   try {
     const projects = await db.withTenant(tenantId, (client) =>
       client.query<{ id: string; project_number: string }>(
-        `SELECT id::text AS id, project_number
-           FROM projects.projects
-          WHERE stage NOT IN ('complete', 'cancelled')
-          ORDER BY project_number`,
+        `SELECT p.id::text AS id, p.project_number
+           FROM projects.projects p
+          WHERE p.stage NOT IN ('complete', 'cancelled')
+            AND (
+              EXISTS (
+                SELECT 1 FROM projects.st_project_connections c
+                 WHERE c.project_id = p.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM projects.project_job_links j
+                 WHERE j.project_id = p.id AND j.source_active
+              )
+            )
+          ORDER BY p.project_number`,
       ),
     );
     const laborCode = await resolveStLaborCode(connection.client);
@@ -134,10 +164,27 @@ export async function runHourlyLaborRefresh(
     }));
     const refreshed: string[] = [];
     const failed: LaborRefreshFailure[] = [];
+    const warned: LaborRefreshFailure[] = [];
+    const startedAt = (options.now?.() ?? new Date()).toISOString();
+    const writeRun = (status: "started" | "finished", error: string | null) =>
+      saveLaborRefreshRun(db, tenantId, {
+        status,
+        started_at: startedAt,
+        finished_at: status === "finished" ? (options.now?.() ?? new Date()).toISOString() : null,
+        due_at: null,
+        ok: refreshed.filter((id) => !warned.some((item) => item.projectId === id)),
+        failed: [...failed, ...warned].map((item) => ({
+          project_id: item.projectId,
+          project_number: item.projectNumber,
+          error: item.message,
+        })),
+        error,
+      });
+    await writeRun("started", null);
     for (let index = 0; index < projects.rows.length; index += 1) {
       const project = projects.rows[index]!;
       try {
-        await refreshLinkedProject(
+        const result = await refreshLinkedProject(
           db,
           connection,
           tenantId,
@@ -147,6 +194,15 @@ export async function runHourlyLaborRefresh(
           "scheduled",
         );
         refreshed.push(project.id);
+        if (result.warnings.length > 0) {
+          const message = result.warnings.join("; ");
+          console.error(`Labor refresh stamped ${project.project_number} with errors: ${message}`);
+          warned.push({
+            projectId: project.id,
+            projectNumber: project.project_number,
+            message,
+          });
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.error(`Labor refresh failed for ${project.project_number}: ${message}`);
@@ -156,12 +212,20 @@ export async function runHourlyLaborRefresh(
           message,
         });
       }
+      await writeRun("started", null);
       if (gapMs > 0 && index < projects.rows.length - 1) await sleep(gapMs);
     }
+    await writeRun("finished", null);
     return { skipped: null, projects: projects.rows.length, refreshed, failed, laborCode };
   } finally {
     await lock.release();
   }
+}
+
+interface OperationalRead {
+  warnings: string[];
+  lines: StoredInvoiceLine[];
+  orders: Array<{ id: string; externalJobId: string; total: number }>;
 }
 
 async function storeOperationalReads(
@@ -171,67 +235,92 @@ async function storeOperationalReads(
   projectId: string,
   jobs: Array<{ external_job_id: string }>,
   observedAt: Date,
-): Promise<void> {
+): Promise<OperationalRead> {
+  const warnings: string[] = [];
   const appointments: StoredAppointment[] = [];
   const lines: StoredInvoiceLine[] = [];
   const orders: Array<{ id: string; externalJobId: string; total: number }> = [];
+  let appointmentsFailed = false;
+  let invoicesFailed = false;
+  let ordersFailed = false;
   const readJob = connection.client.readJob.bind(connection.client);
   for (const job of jobs) {
-    const read = await readJob(job.external_job_id);
-    for (const appointment of read.appointments) {
-      appointments.push({
-        externalJobId: read.job.id,
-        externalAppointmentId: appointment.id,
-        jobNumber: read.job.jobNumber,
-        appointmentNumber: appointment.appointmentNumber,
-        jobStatus: read.job.jobStatus,
-        startsAt: appointment.start,
-        endsAt: appointment.end,
-        status: appointment.status,
-        active: appointment.active,
-        technicians: read.assignments
-          .filter((assignment) => assignment.appointmentId === appointment.id && assignment.active)
-          .map((assignment) => ({ id: assignment.technicianId, name: assignment.technicianName })),
-      });
+    try {
+      const read = await readJob(job.external_job_id);
+      for (const appointment of read.appointments) {
+        appointments.push({
+          externalJobId: read.job.id,
+          externalAppointmentId: appointment.id,
+          jobNumber: read.job.jobNumber,
+          appointmentNumber: appointment.appointmentNumber,
+          jobStatus: read.job.jobStatus,
+          startsAt: appointment.start,
+          endsAt: appointment.end,
+          status: appointment.status,
+          active: appointment.active,
+          technicians: read.assignments
+            .filter((assignment) => assignment.appointmentId === appointment.id && assignment.active)
+            .map((assignment) => ({ id: assignment.technicianId, name: assignment.technicianName })),
+        });
+      }
+    } catch (err) {
+      appointmentsFailed = true;
+      warnings.push(`Job ${job.external_job_id} appointments: ${errorText(err)}`);
     }
     if (connection.client.readJobInvoiceLines) {
-      const invoiceLines = await connection.client.readJobInvoiceLines.call(connection.client, job.external_job_id);
-      lines.push(
-        ...invoiceLines.map((line) => ({
-          invoiceId: line.invoiceId,
-          externalJobId: job.external_job_id,
-          lineKey: line.lineKey,
-          sku: line.sku,
-          kind: line.kind,
-          quantity: line.quantity,
-          total: line.total,
-          technicianId: line.technicianId,
-        })),
-      );
+      try {
+        const invoiceLines = await connection.client.readJobInvoiceLines.call(
+          connection.client,
+          job.external_job_id,
+        );
+        lines.push(
+          ...invoiceLines.map((line) => ({
+            invoiceId: line.invoiceId,
+            externalJobId: job.external_job_id,
+            lineKey: line.lineKey,
+            sku: line.sku,
+            kind: line.kind,
+            quantity: line.quantity,
+            total: line.total,
+            technicianId: line.technicianId,
+          })),
+        );
+      } catch (err) {
+        invoicesFailed = true;
+        warnings.push(`Job ${job.external_job_id} invoices: ${errorText(err)}`);
+      }
     }
     if (connection.client.readJobPurchaseOrders) {
-      const purchaseOrders = await connection.client.readJobPurchaseOrders.call(
-        connection.client,
-        job.external_job_id,
-      );
-      orders.push(
-        ...purchaseOrders.map((order) => ({
-          id: order.id,
-          externalJobId: job.external_job_id,
-          total: order.total,
-        })),
-      );
+      try {
+        const purchaseOrders = await connection.client.readJobPurchaseOrders.call(
+          connection.client,
+          job.external_job_id,
+        );
+        orders.push(
+          ...purchaseOrders.map((order) => ({
+            id: order.id,
+            externalJobId: job.external_job_id,
+            total: order.total,
+          })),
+        );
+      } catch (err) {
+        ordersFailed = true;
+        warnings.push(`Job ${job.external_job_id} purchase orders: ${errorText(err)}`);
+      }
     }
   }
   await db.withTenant(tenantId, async (client) => {
-    await replacePlanAppointments(client, { tenantId, projectId, appointments, observedAt });
-    if (connection.client.readJobInvoiceLines) {
+    if (!appointmentsFailed) {
+      await replacePlanAppointments(client, { tenantId, projectId, appointments, observedAt });
+    }
+    if (connection.client.readJobInvoiceLines && !invoicesFailed) {
       await replaceInvoiceLines(client, { tenantId, projectId, lines, observedAt });
     }
-    if (connection.client.readJobPurchaseOrders) {
+    if (connection.client.readJobPurchaseOrders && !ordersFailed) {
       await replaceMaterialExpenses(client, { tenantId, projectId, orders, observedAt });
     }
   });
+  return { warnings, lines, orders };
 }
 
 export async function refreshLinkedProject(
@@ -242,11 +331,12 @@ export async function refreshLinkedProject(
   observedAt: Date,
   laborCode: StLaborResolve,
   source: "manual" | "scheduled" = "scheduled",
-): Promise<void> {
+): Promise<{ warnings: string[] }> {
   const readJobTimesheets = connection.client.readJobTimesheets;
   if (!readJobTimesheets) {
     throw new Error("ServiceTitan timesheet read is not configured.");
   }
+  const warnings: string[] = [];
   const connectionRow = await db.withTenant(tenantId, (client) =>
     client.query<{ external_project_id: string }>(
       `SELECT external_project_id
@@ -258,21 +348,25 @@ export async function refreshLinkedProject(
   const externalProjectId = connectionRow.rows[0]?.external_project_id ?? null;
   const readProjectJobs = connection.client.readProjectJobs;
   if (readProjectJobs && externalProjectId) {
-    const listed = await readProjectJobs.call(connection.client, externalProjectId);
-    await db.withTenant(tenantId, (client) =>
-      replaceProjectJobs(client, {
-        tenantId,
-        projectId,
-        externalSystemId: connection.externalSystemId,
-        jobs: listed.map((job) => ({
-          id: job.id,
-          jobNumber: job.jobNumber,
-          jobStatus: job.jobStatus,
-          createdOn: job.createdOn,
-          completedOn: job.completedOn,
-        })),
-      }),
-    );
+    try {
+      const listed = await readProjectJobs.call(connection.client, externalProjectId);
+      await db.withTenant(tenantId, (client) =>
+        replaceProjectJobs(client, {
+          tenantId,
+          projectId,
+          externalSystemId: connection.externalSystemId,
+          jobs: listed.map((job) => ({
+            id: job.id,
+            jobNumber: job.jobNumber,
+            jobStatus: job.jobStatus,
+            createdOn: job.createdOn,
+            completedOn: job.completedOn,
+          })),
+        }),
+      );
+    } catch (err) {
+      warnings.push(`Jobs: ${errorText(err)}`);
+    }
   }
   const jobs = await db.withTenant(tenantId, (client) =>
     client.query<{ id: string; external_job_id: string }>(
@@ -285,8 +379,21 @@ export async function refreshLinkedProject(
       [projectId, connection.externalSystemId],
     ),
   );
+  let operational: OperationalRead = { warnings: [], lines: [], orders: [] };
   if (readProjectJobs) {
-    await storeOperationalReads(db, connection, tenantId, projectId, jobs.rows, observedAt);
+    try {
+      operational = await storeOperationalReads(
+        db,
+        connection,
+        tenantId,
+        projectId,
+        jobs.rows,
+        observedAt,
+      );
+      warnings.push(...operational.warnings);
+    } catch (err) {
+      warnings.push(`Appointments, invoices, or purchase orders: ${errorText(err)}`);
+    }
   }
   const results = await readLaborJobs(
     jobs.rows.map((job) => job.external_job_id),
@@ -321,18 +428,155 @@ export async function refreshLinkedProject(
       observedAt,
     });
     await applyResolvedLaborCode(client, tenantId, laborCode);
+    const jp = await readStoredProjectMoney(client, projectId);
+    const st = financialsFromReads({
+      invoiceLines: operational.lines.map((line) => ({
+        kind: line.kind,
+        total: line.total,
+        technicianId: line.technicianId,
+      })),
+      timesheets: burdenSlicesFrom(namedResults, technicians),
+      purchaseOrders: operational.orders.map((order) => ({ total: order.total })),
+    });
+    await writeFinancialReconciliation(client, {
+      tenantId,
+      projectId,
+      observedAt,
+      lines: reconcileFinancials(jp, st),
+      technicians: await technicianSnapshot(client, projectId, technicians),
+      error: warnings.length > 0 ? warnings.join("; ") : null,
+    });
+  });
+  return { warnings };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function burdenSlicesFrom(
+  results: readonly LaborJobResult[],
+  technicians: readonly ResolvedTechPay[],
+): BurdenSlice[] {
+  const rates = new Map(
+    technicians.map((tech) => [technicianIdKey(tech.id), tech.appliedBurdenRate]),
+  );
+  const slices: BurdenSlice[] = [];
+  for (const result of results) {
+    if (result.outcome !== "timesheet") continue;
+    for (const draft of result.drafts) {
+      const id = technicianIdKey(draft.externalTechnicianId);
+      if (!id || !(draft.hours > 0)) continue;
+      slices.push({
+        technicianId: id,
+        hours: draft.hours,
+        burdenRate: rates.get(id) ?? null,
+      });
+    }
+  }
+  return slices;
+}
+
+async function technicianSnapshot(
+  db: SqlClient,
+  projectId: string,
+  technicians: readonly ResolvedTechPay[],
+): Promise<ReconciliationTechnician[]> {
+  const pay = new Map(technicians.map((tech) => [technicianIdKey(tech.id), tech]));
+  const { rows } = await db.query<{
+    technician_id: string;
+    technician_name: string | null;
+    hours: string;
+    labor_amount: string | null;
+    burden_amount: string | null;
+  }>(
+    `SELECT external_technician_id AS technician_id,
+            NULLIF(btrim(MAX(technician_name)), '') AS technician_name,
+            COALESCE(SUM(hours), 0)::text AS hours,
+            SUM(labor_amount)::text AS labor_amount,
+            SUM(burden_amount)::text AS burden_amount
+       FROM projects.labor_actuals
+      WHERE project_id = $1
+      GROUP BY external_technician_id
+      ORDER BY 2 NULLS LAST, 1`,
+    [projectId],
+  );
+  return rows.map((row) => {
+    const tech = pay.get(technicianIdKey(row.technician_id));
+    const commission = tech?.payBasis === "commission" && tech.commissionFraction != null;
+    return {
+      technician_id: row.technician_id,
+      technician_name: row.technician_name?.trim() || tech?.name || row.technician_id,
+      hours: roundMoney(Number(row.hours)),
+      commission_percent: commission ? roundMoney((tech?.commissionFraction ?? 0) * 100) : null,
+      commission_source: commission ? tech?.commissionSource ?? null : null,
+      commission_amount: commission ? roundMoney(Number(row.labor_amount ?? 0)) : null,
+      burden: row.burden_amount == null ? null : roundMoney(Number(row.burden_amount)),
+    };
   });
 }
 
-async function lastOvernightFinish(db: Database, tenantId: string): Promise<Date | null> {
+interface RefreshRunBody {
+  status: "started" | "finished";
+  started_at: string;
+  finished_at: string | null;
+  due_at: string | null;
+  ok: string[];
+  failed: Array<{ project_id: string; project_number: string; error: string }>;
+  error: string | null;
+}
+
+async function saveLaborRefreshRun(
+  db: Database,
+  tenantId: string,
+  run: RefreshRunBody,
+): Promise<void> {
+  await db.withTenant(tenantId, (client) =>
+    client.query(
+      `UPDATE projects.tenant_settings
+          SET labor_refresh_run = $2::jsonb
+        WHERE tenant_id = $1`,
+      [tenantId, JSON.stringify(run)],
+    ),
+  );
+}
+
+async function readOvernightState(
+  db: Database,
+  tenantId: string,
+): Promise<{ dueAt: Date | null; finishedAt: Date | null; run: RefreshRunBody | null }> {
   const row = await db.withTenant(tenantId, (client) =>
-    client.query<{ finished: Date | null }>(
-      `SELECT overnight_refresh_finished_at AS finished
-         FROM projects.tenant_settings WHERE tenant_id = $1`,
+    client.query<{ due_at: Date | null; finished_at: Date | null; run: RefreshRunBody | null }>(
+      `SELECT overnight_refresh_due_at AS due_at,
+              overnight_refresh_finished_at AS finished_at,
+              labor_refresh_run AS run
+         FROM projects.tenant_settings
+        WHERE tenant_id = $1`,
       [tenantId],
     ),
   );
-  return row.rows[0]?.finished ?? null;
+  const found = row.rows[0];
+  return {
+    dueAt: asDate(found?.due_at),
+    finishedAt: asDate(found?.finished_at),
+    run: found?.run ?? null,
+  };
+}
+
+function asDate(value: Date | string | null | undefined): Date | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+  return null;
+}
+
+function runStillGoing(run: RefreshRunBody | null, now: Date): boolean {
+  if (!run || run.status !== "started" || !run.started_at) return false;
+  const started = new Date(run.started_at).getTime();
+  if (Number.isNaN(started)) return false;
+  return now.getTime() - started >= 0 && now.getTime() - started < RUN_IN_PROGRESS_MS;
 }
 
 async function stampOvernightFinish(db: Database, tenantId: string, finishedAt: Date): Promise<void> {
@@ -344,11 +588,21 @@ async function stampOvernightFinish(db: Database, tenantId: string, finishedAt: 
   );
 }
 
+async function stampOvernightDue(db: Database, tenantId: string, dueAt: Date): Promise<void> {
+  await db.withTenant(tenantId, (client) =>
+    client.query(
+      `UPDATE projects.tenant_settings SET overnight_refresh_due_at = $2 WHERE tenant_id = $1`,
+      [tenantId, dueAt],
+    ),
+  );
+}
+
 /**
- * One run a day at 2:00 AM America/New_York. Nothing runs on the first boot.
- * If a previous night finished and today's 2 AM was missed because the
- * process was down, one catch-up runs at boot and the next wait is the
- * following 2 AM. There is no hourly interval.
+ * One run a day at 2:00 AM America/New_York. A restart runs a missed night
+ * instead of waiting until the next day. The timer is saved as a due instant
+ * before the wait, so a new process can see the night that did not finish.
+ * A lock held by another replica retries in 15 minutes and does not move
+ * that due instant forward. There is no hourly interval.
  */
 export function startLaborRefreshScheduler(
   db: Database,
@@ -367,53 +621,98 @@ export function startLaborRefreshScheduler(
   const now = () => options.now?.() ?? new Date();
   const schedule = options.schedule ?? ((run, delayMs) => {
     const handle = setTimeout(run, delayMs);
-    handle.unref();
     return { cancel: () => clearTimeout(handle) };
   });
   let pending: { cancel: () => void } | null = null;
   let stopped = false;
   let busy = false;
-  const tick = async (reason: "overnight" | "missed-night") => {
-    if (busy || stopped) return;
+  const tick = async (reason: "overnight" | "missed-night"): Promise<boolean> => {
+    if (busy || stopped) return false;
     busy = true;
     try {
+      console.log(`Overnight ServiceTitan refresh started (${reason}).`);
       const report = await runHourlyLaborRefresh(db, serviceTitan, {
         tenantId,
         gapMs: options.gapMs,
         now,
         sleep: options.sleep,
+        tryLock: options.tryLock,
       });
       if (report.skipped === "locked") {
-        console.log("Overnight ServiceTitan refresh skipped. Another replica holds the lock.");
-        return;
+        console.log(
+          "Overnight ServiceTitan refresh skipped. Another replica holds the lock. Retrying in 15 minutes.",
+        );
+        return true;
       }
       await stampOvernightFinish(db, tenantId, now());
       console.log(`${reason} ${formatLaborRefreshRun(report)}`);
+      return false;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = errorText(err);
       console.error(`Overnight ServiceTitan refresh did not run. ${message}`);
+      try {
+        const state = await readOvernightState(db, tenantId);
+        await saveLaborRefreshRun(db, tenantId, {
+          status: "started",
+          started_at: state.run?.started_at ?? now().toISOString(),
+          finished_at: null,
+          due_at: state.run?.due_at ?? null,
+          ok: state.run?.ok ?? [],
+          failed: state.run?.failed ?? [],
+          error: message,
+        });
+      } catch (writeErr) {
+        console.error(`Overnight refresh status was not saved. ${errorText(writeErr)}`);
+      }
+      return true;
     } finally {
       busy = false;
     }
   };
-  const arm = () => {
+  const follow = (retry: boolean) => {
     if (stopped) return;
-    const delay = Math.max(0, nextOvernight(now()).getTime() - now().getTime());
+    if (retry) retryLater();
+    else void arm();
+  };
+  const retryLater = () => {
+    if (stopped) return;
+    pending?.cancel();
     pending = schedule(() => {
-      void tick("overnight").finally(arm);
+      void tick("overnight").then(follow);
+    }, OVERNIGHT_LOCK_RETRY_MS);
+  };
+  const arm = async () => {
+    if (stopped) return;
+    const due = nextOvernight(now());
+    const delay = Math.max(0, due.getTime() - now().getTime());
+    try {
+      await stampOvernightDue(db, tenantId, due);
+    } catch (err) {
+      console.error(`Overnight due time was not saved. ${errorText(err)}`);
+    }
+    if (stopped) return;
+    console.log(`Overnight ServiceTitan refresh armed for ${due.toISOString()} in ${delay} ms.`);
+    pending?.cancel();
+    pending = schedule(() => {
+      void tick("overnight").then(follow);
     }, delay);
   };
-  void lastOvernightFinish(db, tenantId).then((finished) => {
+  void readOvernightState(db, tenantId).then((state) => {
     if (stopped) return;
-    if (missedOvernightCatchUp(now(), finished)) {
+    const action: RefreshBootAction = refreshBootAction(now(), state.dueAt, state.finishedAt);
+    if (action === "catch-up") {
+      if (runStillGoing(state.run, now())) {
+        console.log("Overnight ServiceTitan refresh is already running. Retrying in 15 minutes.");
+        retryLater();
+        return;
+      }
       console.log("Missed the 2 AM America/New_York refresh. Running one catch-up.");
-      void tick("missed-night").finally(arm);
+      void tick("missed-night").then(follow);
       return;
     }
-    arm();
+    void arm();
   }).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`Overnight schedule did not arm. ${message}`);
+    console.error(`Overnight schedule did not arm. ${errorText(err)}`);
   });
   return {
     cancel: () => {

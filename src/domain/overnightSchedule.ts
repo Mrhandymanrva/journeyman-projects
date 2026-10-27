@@ -1,8 +1,9 @@
 /**
  * One ServiceTitan refresh per day at 2:00 AM America/New_York.
- * There is no hourly interval. A process that was down at 2 AM runs one
- * catch-up on boot only when a previous night finished and today's 2 AM
- * was missed. The first boot, with no finished night, waits until 2 AM.
+ * There is no hourly interval. A restart runs the missed night when a due
+ * instant was saved and not finished, when the last finish is older than
+ * the latest 2 AM, or when nothing has been saved and that 2 AM was within
+ * the last six hours. A first boot earlier in the day waits until 2 AM.
  */
 
 export const OVERNIGHT_TIME_ZONE = "America/New_York";
@@ -83,4 +84,39 @@ export function nextOvernight(now: Date): Date {
 export function missedOvernightCatchUp(now: Date, lastFinishedAt: Date | null): boolean {
   if (!lastFinishedAt || Number.isNaN(lastFinishedAt.getTime())) return false;
   return lastFinishedAt.getTime() < mostRecentOvernight(now).getTime();
+}
+
+/** A deploy that lands inside this window after 2 AM, with no saved night, catch-up runs. */
+export const OVERNIGHT_CATCH_UP_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+export type RefreshBootAction = "catch-up" | "wait";
+
+function validInstant(value: Date | null | undefined): Date | null {
+  if (!value || Number.isNaN(value.getTime())) return null;
+  return value;
+}
+
+/**
+ * Whether this process should run the overnight refresh now.
+ * A saved due instant that has passed, and has not finished, always runs.
+ * A previous finish older than the latest 2 AM runs.
+ * A blank due and a blank finish run only in the six hours after 2 AM,
+ * so a restart the same morning still writes the night the timer lost.
+ */
+export function refreshBootAction(
+  now: Date,
+  dueAt: Date | null,
+  finishedAt: Date | null,
+): RefreshBootAction {
+  const due = validInstant(dueAt);
+  const finished = validInstant(finishedAt);
+  if (due && due.getTime() <= now.getTime() && (!finished || finished.getTime() < due.getTime())) {
+    return "catch-up";
+  }
+  if (finished && missedOvernightCatchUp(now, finished)) return "catch-up";
+  if (!due && !finished) {
+    const elapsed = now.getTime() - mostRecentOvernight(now).getTime();
+    if (elapsed >= 0 && elapsed <= OVERNIGHT_CATCH_UP_WINDOW_MS) return "catch-up";
+  }
+  return "wait";
 }
