@@ -16,6 +16,7 @@ import {
   SEGRETO_PROJECT_ID,
   classifyInvoiceItem,
   commissionDollars,
+  neverLaborRevenueWarnings,
   financialsFromReads,
   otherProjectJobList,
   payrollHours,
@@ -139,10 +140,11 @@ describe("Segreto project financials", () => {
       timesheets: [],
       purchaseOrders: [],
     });
-    expect(willardMoney.billedLabor).toBe(14614.52);
+    expect(willardMoney.billedLabor).toBe(5395.77);
     expect(willardMoney.billedMaterials).toBe(4411.62);
-    expect(willard.lines.filter((line) => line.sku === "MHM 250.Labor").every((line) => line.kind === "labor")).toBe(true);
-    expect(willard.lines.filter((line) => line.sku === "MHM.25LFCO").every((line) => line.kind === "labor")).toBe(true);
+    expect(willardMoney.billed).toBe(19026.14);
+    expect(willard.lines.filter((line) => line.sku === "MHM 250.Labor").every((line) => line.kind === "other")).toBe(true);
+    expect(willard.lines.filter((line) => line.sku === "MHM.25LFCO").every((line) => line.kind === "other")).toBe(true);
     expect(willard.lines.filter((line) => line.sku === "MH.VS.700.002").every((line) => line.kind === "material")).toBe(true);
   });
 
@@ -168,6 +170,33 @@ describe("Segreto project financials", () => {
     expect(classifyInvoiceItem({ type: "Material", accountName: null })).toBe("material");
     expect(classifyInvoiceItem({ type: "PriceModifier", accountName: null })).toBe("material");
     expect(classifyInvoiceItem({ type: "Equipment", accountName: null })).toBe("other");
+  });
+
+  it("keeps MHM 250.Labor in billed as other when the label says Labor Revenue", () => {
+    const kind = classifyInvoiceItem({
+      sku: "MHM 250.Labor",
+      type: "Service",
+      accountName: "Labor Revenue:Labor Revenue",
+    });
+    expect(kind).toBe("other");
+    expect(classifyInvoiceItem({
+      sku: "MHM.25LFCO",
+      type: "Service",
+      accountName: "Labor Revenue:Labor Revenue",
+    })).toBe("other");
+    const money = financialsFromReads({
+      invoiceLines: [
+        { kind: "labor", total: 100 },
+        { kind, total: 80 },
+      ],
+      timesheets: [],
+      purchaseOrders: [],
+    });
+    expect(money.billedLabor).toBe(100);
+    expect(money.billed).toBe(180);
+    expect(neverLaborRevenueWarnings([{ sku: "MHM 250.Labor", invoiceId: "10" }])).toEqual([
+      "MHM 250.Labor on invoice 10 is not labor revenue.",
+    ]);
   });
 
   it("ignores dispatch and arrive clocks and keeps a payroll duration", () => {
@@ -434,6 +463,7 @@ function billedFromFixture(name: string) {
       sku: item.skuName,
       total: Number(item.total),
       kind: classifyInvoiceItem({
+        sku: item.skuName,
         type: item.type,
         accountName: item.generalLedgerAccount?.name ?? null,
       }),

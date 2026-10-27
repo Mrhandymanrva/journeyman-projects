@@ -156,19 +156,43 @@ export function payrollHours(row: {
   return null;
 }
 
+/** Mason: these codes are never labor revenue, whatever the account label says. */
+export function neverLaborCode(sku: string | null | undefined): "MHM 250.Labor" | "MHM.25LFCO" | null {
+  const key = sku?.trim().toLowerCase() ?? "";
+  if (key === "mhm 250.labor") return "MHM 250.Labor";
+  if (key === "mhm.25lfco") return "MHM.25LFCO";
+  return null;
+}
+
+/** One warning per line, naming the code and the invoice. The amount stays in billed as other. */
+export function neverLaborRevenueWarnings(
+  lines: readonly { sku: string; invoiceId: string }[],
+): string[] {
+  const warnings: string[] = [];
+  for (const line of lines) {
+    const code = neverLaborCode(line.sku);
+    if (!code) continue;
+    warnings.push(`${code} on invoice ${line.invoiceId} is not labor revenue.`);
+  }
+  return warnings;
+}
+
 /**
  * Billed labor and billed materials follow the invoice item's general ledger
  * account, which is how ServiceTitan Project Financials groups the lines.
  * No endpoint sends a project label. "Labor Revenue…" is labor. "Material
  * Revenue…" is materials, including the Van Stock price modifier. When the
  * account is missing, Service is labor and Material or PriceModifier is
- * materials. The sku is not a labor code. MHM.25PLFE stays the cost code
+ * materials. MHM 250.Labor and MHM.25LFCO are never labor revenue. Their
+ * amount stays in the billed total as other. MHM.25PLFE stays the cost code
  * for labor expense and is not used here.
  */
 export function classifyInvoiceItem(item: {
+  sku?: string | null;
   type?: string | null;
   accountName?: string | null;
 }): "labor" | "material" | "other" {
+  if (neverLaborCode(item.sku)) return "other";
   const account = item.accountName?.trim().toLowerCase() ?? "";
   if (account) {
     if (account.startsWith("labor revenue")) return "labor";

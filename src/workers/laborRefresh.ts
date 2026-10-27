@@ -24,6 +24,7 @@ import {
 } from "../domain/overnightSchedule.js";
 import {
   financialsFromReads,
+  neverLaborRevenueWarnings,
   reconcileFinancials,
   withBilled,
   withLaborBurden,
@@ -528,6 +529,7 @@ export async function refreshLinkedProject(
       const priorBurden = prior?.lines.find((line) => line.key === "laborBurden")?.st;
       if (priorBurden != null) st = withLaborBurden(st, priorBurden);
     }
+    warnings.push(...neverLaborRevenueWarnings(operational.lines));
     await writeFinancialReconciliation(client, {
       tenantId,
       projectId,

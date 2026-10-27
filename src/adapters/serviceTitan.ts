@@ -1659,6 +1659,7 @@ export class ServiceTitanReadAdapter {
           lineKey: item.id ?? String(index),
           sku,
           kind: classifyInvoiceItem({
+            sku,
             type: item.type ?? null,
             accountName: item.generalLedgerAccount?.name ?? null,
           }),

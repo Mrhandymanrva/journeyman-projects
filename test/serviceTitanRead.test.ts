@@ -715,7 +715,7 @@ describe("job invoice lines", () => {
     ]);
     const { lines } = await client.readJobInvoiceLines("500");
     expect(lines).toEqual([
-      expect.objectContaining({ invoiceId: "10", sku: "MHM 250.Labor", kind: "labor", total: 80 }),
+      expect.objectContaining({ invoiceId: "10", sku: "MHM 250.Labor", kind: "other", total: 80 }),
       expect.objectContaining({ invoiceId: "12", sku: "MH.VS.700.002", kind: "material", total: 12.5 }),
     ]);
     const urls = fetcher.mock.calls.map((call) => String(call[0]));
