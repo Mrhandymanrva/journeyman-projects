@@ -1,5 +1,6 @@
 import type { GrossPayItem } from "../adapters/serviceTitan.js";
 import type { SqlClient } from "../db/database.js";
+import { grossPayItemTooOld } from "./grossPay.js";
 import {
   BURDEN_NOT_SET_MESSAGE,
   DEFAULT_BILLABLE_RATE,
@@ -12,7 +13,13 @@ import {
   type PayBasis,
   type ResolvedTechPay,
 } from "./commissionLabor.js";
-import { commissionDollars, payrollHours, roundMoney as roundProjectMoney, splitBilledLabor } from "./projectFinancials.js";
+import {
+  commissionDollars,
+  payrollHours,
+  roundMoney as roundProjectMoney,
+  splitBilledLabor,
+  type BurdenSlice,
+} from "./projectFinancials.js";
 import { newYorkDate } from "./fieldStart.js";
 
 /** Read batches match the schedule route. */
@@ -141,6 +148,13 @@ export interface PaidLaborRead {
   warnings: string[];
   /** False when payroll failed, was denied, or had no paid hours. Stored hours stay. */
   stamp: boolean;
+  /**
+   * Gross pay rows from a successful read. Null when that read failed or
+   * the client has no gross-pay endpoint. ServiceTitan labor burden is
+   * computed from these rows, not from an empty draft list.
+   */
+  grossPay: GrossPayItem[] | null;
+  payroll: "gross-pay" | "timesheet" | "failed";
 }
 
 interface GrossPaySource {
@@ -159,6 +173,7 @@ export function draftsFromGrossPay(jobIds: readonly string[], items: readonly Gr
   const wanted = new Set(jobIds);
   const sums = new Map<string, { jobId: string; tech: string | null; hours: number; date: string | null }>();
   for (const item of items) {
+    if (grossPayItemTooOld(item)) continue;
     if (!item.jobId || !wanted.has(item.jobId)) continue;
     if ((item.type ?? "").toLowerCase() !== "timesheettime") continue;
     if ((item.paidTimeType ?? "").toLowerCase() === "paidtimeoff") continue;
@@ -188,6 +203,48 @@ export function draftsFromGrossPay(jobIds: readonly string[], items: readonly Gr
 }
 
 /**
+ * ServiceTitan Project Financials labor burden for these jobs.
+ * Paid gross-pay hours times each technician's burden rate.
+ */
+export function burdenSlicesFromGrossPay(
+  jobIds: readonly string[],
+  items: readonly GrossPayItem[],
+  rateByTechnician: ReadonlyMap<string, number | null>,
+): BurdenSlice[] {
+  const slices: BurdenSlice[] = [];
+  for (const drafts of draftsFromGrossPay(jobIds, items).values()) {
+    for (const draft of drafts) {
+      const id = draft.externalTechnicianId?.trim();
+      if (!id || !(draft.hours > 0)) continue;
+      slices.push({
+        technicianId: id,
+        hours: draft.hours,
+        burdenRate: rateByTechnician.get(id) ?? null,
+      });
+    }
+  }
+  return slices;
+}
+
+/**
+ * ServiceTitan's own payroll dollars for these jobs: TimesheetTime gross-pay
+ * amount, not hours times the burden rate, and not PTO or bonuses.
+ */
+export function grossPayLaborDollars(jobIds: readonly string[], items: readonly GrossPayItem[]): number {
+  const wanted = new Set(jobIds);
+  let sum = 0;
+  for (const item of items) {
+    if (grossPayItemTooOld(item)) continue;
+    if (!item.jobId || !wanted.has(item.jobId)) continue;
+    if ((item.type ?? "").toLowerCase() !== "timesheettime") continue;
+    if ((item.paidTimeType ?? "").toLowerCase() === "paidtimeoff") continue;
+    if (typeof item.amount !== "number" || !Number.isFinite(item.amount)) continue;
+    sum += item.amount;
+  }
+  return roundProjectMoney(sum);
+}
+
+/**
  * Hours for a refresh. Gross pay items when the client has them (the live
  * adapter does). Otherwise payroll timesheets that carry a paid duration.
  * Any failure, denial, or empty answer keeps stored hours and the stamp.
@@ -201,9 +258,11 @@ export async function readPaidLabor(
     results: jobIds.map((jobId) => ({ jobId, outcome: "keep", drafts: [], failed: true })),
     warnings: [warning],
     stamp: false,
+    grossPay: null,
+    payroll: "failed",
   });
   if (client.readGrossPayItems) {
-    let read: { forbidden: boolean; items: GrossPayItem[] };
+    let read: { forbidden: boolean; items: GrossPayItem[]; skipped?: number; omitted?: number; capped?: boolean };
     try {
       read = await client.readGrossPayItems({ dateOnOrAfter: options.dateOnOrAfter });
     } catch (err) {
@@ -212,17 +271,50 @@ export async function readPaidLabor(
     if (read.forbidden) {
       return keepAll("Payroll gross pay items: ServiceTitan read failed (HTTP 403). Stored hours kept.");
     }
+    const notes: string[] = [];
+    if ((read.skipped ?? 0) > 0) {
+      notes.push(
+        `Payroll gross pay items: skipped ${read.skipped} item(s) missing a job or project, an employee, or hours and amount.`,
+      );
+    }
+    if ((read.omitted ?? 0) > 0) {
+      notes.push(`Payroll gross pay items: omitted ${read.omitted} item(s) dated before 2022-08-02.`);
+    }
+    if (read.capped) {
+      notes.push("Payroll gross pay items: stopped after 200 pages. Stored hours kept.");
+      return {
+        results: jobIds.map((jobId) => ({ jobId, outcome: "keep" as const, drafts: [], failed: true })),
+        warnings: notes,
+        stamp: false,
+        grossPay: null,
+        payroll: "failed",
+      };
+    }
     const byJob = draftsFromGrossPay(jobIds, read.items);
     if (byJob.size === 0) {
-      return keepAll("Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept.");
+      return {
+        ...keepAll("Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept."),
+        warnings: [
+          "Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept.",
+          ...notes,
+        ],
+        // The read succeeded. Burden is computed from these rows (often zero
+        // hours). A thrown or forbidden read leaves grossPay null instead.
+        grossPay: read.items,
+        payroll: "gross-pay",
+      };
     }
     return {
       results: jobIds.map((jobId) => {
         const drafts = byJob.get(jobId);
-        return drafts ? { jobId, outcome: "timesheet", drafts } : { jobId, outcome: "keep", drafts: [] };
+        // A successful read replaces stored hours, including a 0 left behind
+        // by an earlier wipe. Jobs with no paid time stay as they are.
+        return drafts ? { jobId, outcome: "timesheet" as const, drafts } : { jobId, outcome: "keep" as const, drafts: [] };
       }),
-      warnings: [],
+      warnings: notes,
       stamp: true,
+      grossPay: read.items,
+      payroll: "gross-pay",
     };
   }
   const results = await readLaborJobs(jobIds, client);
@@ -231,7 +323,14 @@ export async function readPaidLabor(
   if (!anyHours && !results.some((result) => result.failed) && jobIds.length > 0) {
     warnings.push("Payroll timesheets: no paid hours for this project's jobs. Stored hours kept.");
   }
-  return { results, warnings, stamp: anyHours && !results.some((result) => result.failed) };
+  const failed = results.some((result) => result.failed);
+  return {
+    results,
+    warnings,
+    stamp: anyHours && !failed,
+    grossPay: null,
+    payroll: failed || !anyHours ? "failed" : "timesheet",
+  };
 }
 
 export function hoursBetween(start: string, end: string): number | null {

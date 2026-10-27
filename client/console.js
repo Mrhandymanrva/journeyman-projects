@@ -1489,9 +1489,22 @@ function renderStageBar(project, gates) {
           ? `blocked: gate ${blocking[0].gate_number} (${blocking[0].title}) is ${blocking[0].status}`
           : `ready to advance to ${next}`;
 
+  const st = project.st_status;
+  const badge = st?.badge
+    ? `<span class="st-status-badge" data-st-badge="${esc(st.badge)}">ServiceTitan ${esc(st.badge)}</span>`
+    : "";
+  const gateWarning = st?.gate_warning
+    ? `<p class="st-gate-warning" role="status">${esc(st.gate_warning)}</p>`
+    : "";
+  const writeError =
+    st && (st.write_result === "rejected" || st.write_result === "failed") && st.write_detail
+      ? `<p class="st-write-error" role="alert">${esc(st.write_detail)}</p>`
+      : "";
+
   el("stagebar").innerHTML = `
     <span class="lbl">Stage</span>
     <span class="now">${esc(String(project.stage).replace(/_/g, " "))}</span>
+    ${badge}
     <span class="why ${blocking.length ? "blocked" : ""}">${esc(why)}</span>
     ${
       next && project.stage !== "cancelled"
@@ -1499,15 +1512,20 @@ function renderStageBar(project, gates) {
             allowed ? "" : "disabled"
           }>Advance to ${esc(next)}</button>`
         : ""
-    }`;
+    }
+    ${gateWarning}
+    ${writeError}`;
 
   el("stage-advance")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      await api(`/projects/${current.id}/stage`, {
+      const updated = await api(`/projects/${current.id}/stage`, {
         method: "POST",
         body: JSON.stringify({ stage: next }),
       });
+      if (updated?.st_status_sync && updated.st_status_sync.ok === false) {
+        alert(updated.st_status_sync.message);
+      }
       await select(current.id);
     } catch (err) {
       e.target.disabled = false;
@@ -2398,7 +2416,11 @@ function renderStFinancials(money) {
     };
   }
   if (!money || !money.observed_at) {
+    const early = money?.error
+      ? `<p class="note warn">${esc(String(money.error))}</p>`
+      : "";
     node.innerHTML =
+      early +
       '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
     return;
   }
@@ -2410,10 +2432,11 @@ function renderStFinancials(money) {
     `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
   const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
   const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
+  const kept = problems.some((line) => /stored hours kept|left as they are|kept their last/i.test(line));
   const readError = problems.length
-    ? `<details class="note warn"><summary>${problems.length} ServiceTitan read${problems.length === 1 ? "" : "s"} failed on that refresh. Those lines kept their last stored values.</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></details>`
+    ? `<details class="note warn"><summary>${problems.length} ServiceTitan note${problems.length === 1 ? "" : "s"} from that refresh.${kept ? " Failed lines kept their last stored values." : ""}</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></details>`
     : "";
-  node.innerHTML = `${readAt}${readError}<p class="note">Billed labor and billed materials come from ServiceTitan invoice items. Labor burden is payroll timesheet hours times each technician's burden rate. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
+  node.innerHTML = `${readAt}${readError}<p class="note">Billed counts every invoice line, including lines that are not labor or materials. Labor and materials still follow the ServiceTitan account label. Labor burden on this card is paid timesheet hours times each technician's burden rate. The ServiceTitan column on the reconciliation uses invoice totals for billed and gross-pay amounts for labor, so the two sides are not the same calculation. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
     ${line("Billed labor", money.billedLabor)}
     ${line("Billed materials", money.billedMaterials)}
     ${line("Billed", money.billed)}

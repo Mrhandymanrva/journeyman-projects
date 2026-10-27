@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { classifyTechnician } from "../src/domain/commissionLabor.js";
+import { burdenSlicesFromGrossPay, grossPayLaborDollars } from "../src/domain/laborActuals.js";
+import type { GrossPayItem } from "../src/adapters/serviceTitan.js";
 import {
+  DALTON_FINANCIALS,
+  DALTON_PROJECT_ID,
   FRANCISCO_JOB_ID,
   OTHER_JOB_COUNT,
   OTHER_MISSING_JOB,
@@ -12,6 +16,7 @@ import {
   SEGRETO_PROJECT_ID,
   classifyInvoiceItem,
   commissionDollars,
+  neverLaborRevenueWarnings,
   financialsFromReads,
   otherProjectJobList,
   payrollHours,
@@ -19,6 +24,8 @@ import {
   segretoJobList,
   splitBilledLabor,
   unionProjectJobs,
+  withBilled,
+  withLaborBurden,
 } from "../src/domain/projectFinancials.js";
 import {
   missedOvernightCatchUp,
@@ -60,7 +67,6 @@ describe("Segreto project financials", () => {
       { kind: "labor" as const, total: 10000 },
       { kind: "labor" as const, total: 5096.4, technicianId: "francisco" },
       { kind: "material" as const, total: 9263.2 },
-      { kind: "other" as const, total: 50 },
     ];
     const money = financialsFromReads({
       invoiceLines: lines,
@@ -134,10 +140,11 @@ describe("Segreto project financials", () => {
       timesheets: [],
       purchaseOrders: [],
     });
-    expect(willardMoney.billedLabor).toBe(14614.52);
+    expect(willardMoney.billedLabor).toBe(5395.77);
     expect(willardMoney.billedMaterials).toBe(4411.62);
-    expect(willard.lines.filter((line) => line.sku === "MHM 250.Labor").every((line) => line.kind === "labor")).toBe(true);
-    expect(willard.lines.filter((line) => line.sku === "MHM.25LFCO").every((line) => line.kind === "labor")).toBe(true);
+    expect(willardMoney.billed).toBe(19026.14);
+    expect(willard.lines.filter((line) => line.sku === "MHM 250.Labor").every((line) => line.kind === "other")).toBe(true);
+    expect(willard.lines.filter((line) => line.sku === "MHM.25LFCO").every((line) => line.kind === "other")).toBe(true);
     expect(willard.lines.filter((line) => line.sku === "MH.VS.700.002").every((line) => line.kind === "material")).toBe(true);
   });
 
@@ -165,6 +172,33 @@ describe("Segreto project financials", () => {
     expect(classifyInvoiceItem({ type: "Equipment", accountName: null })).toBe("other");
   });
 
+  it("keeps MHM 250.Labor in billed as other when the label says Labor Revenue", () => {
+    const kind = classifyInvoiceItem({
+      sku: "MHM 250.Labor",
+      type: "Service",
+      accountName: "Labor Revenue:Labor Revenue",
+    });
+    expect(kind).toBe("other");
+    expect(classifyInvoiceItem({
+      sku: "MHM.25LFCO",
+      type: "Service",
+      accountName: "Labor Revenue:Labor Revenue",
+    })).toBe("other");
+    const money = financialsFromReads({
+      invoiceLines: [
+        { kind: "labor", total: 100 },
+        { kind, total: 80 },
+      ],
+      timesheets: [],
+      purchaseOrders: [],
+    });
+    expect(money.billedLabor).toBe(100);
+    expect(money.billed).toBe(180);
+    expect(neverLaborRevenueWarnings([{ sku: "MHM 250.Labor", invoiceId: "10" }])).toEqual([
+      "MHM 250.Labor on invoice 10 is not labor revenue.",
+    ]);
+  });
+
   it("ignores dispatch and arrive clocks and keeps a payroll duration", () => {
     expect(
       payrollHours({
@@ -182,6 +216,131 @@ describe("Segreto project financials", () => {
       }),
     ).toBeNull();
     expect(payrollHours({ canceledOn: "2026-10-01T18:00:00Z", paidDurationHours: 4 })).toBeNull();
+  });
+});
+
+describe("ServiceTitan labor burden from gross pay items", () => {
+  const item = (over: Partial<GrossPayItem>): GrossPayItem => ({
+    id: null,
+    technicianId: "a",
+    date: "2026-10-01T00:00:00Z",
+    activity: "Working",
+    amount: 1,
+    type: "TimesheetTime",
+    paidDurationHours: 1,
+    paidTimeType: "Regular",
+    jobId: "1",
+    projectId: SEGRETO_PROJECT_ID,
+    ...over,
+  });
+
+  it("compares Segreto labor burden to the ServiceTitan Project Financials figure", () => {
+    const slices = burdenSlicesFromGrossPay(
+      ["1"],
+      [
+        item({ id: null, technicianId: "a", paidDurationHours: 40, amount: 9999 }),
+        item({ id: "string-id", technicianId: "b", paidDurationHours: 40.3, amount: 1 }),
+        item({ id: "pto", technicianId: "a", paidTimeType: "PaidTimeOff", paidDurationHours: 8, amount: 100 }),
+        item({ id: "bonus", type: "InvoiceRelatedBonus", paidDurationHours: null, amount: 500 }),
+        item({ id: "other-job", jobId: "999", technicianId: "a", paidDurationHours: 20 }),
+      ],
+      new Map([
+        ["a", 30],
+        ["b", 30.78],
+      ]),
+    );
+    const st = financialsFromReads({
+      invoiceLines: [
+        { kind: "labor", total: 10000 },
+        { kind: "labor", total: 5096.4 },
+        { kind: "material", total: 9263.2 },
+      ],
+      timesheets: slices,
+      purchaseOrders: [{ total: 5239.21 }],
+    });
+    expect(st.laborBurden).toBe(SEGRETO_FINANCIALS.laborBurden);
+    expect(st).toEqual(SEGRETO_FINANCIALS);
+    expect(reconcileFinancials(st, SEGRETO_FINANCIALS).find((line) => line.key === "laborBurden")).toMatchObject({
+      jp: 2440.43,
+      st: 2440.43,
+      delta: 0,
+    });
+  });
+
+  it("counts other invoice lines so Dalton billed equals the invoice total", () => {
+    expect(DALTON_PROJECT_ID).toBe("290588725");
+    const slices = burdenSlicesFromGrossPay(
+      ["2901"],
+      [
+        item({ jobId: "2901", technicianId: "d1", paidDurationHours: 500, amount: 15000, projectId: DALTON_PROJECT_ID }),
+        item({ id: "d2", jobId: "2901", technicianId: "d2", paidDurationHours: 200, amount: 6883.04, projectId: DALTON_PROJECT_ID }),
+      ],
+      new Map([
+        ["d1", 30],
+        ["d2", 34.4152],
+      ]),
+    );
+    const lines = [
+      { kind: "labor" as const, total: 67305 },
+      { kind: "material" as const, total: 25101.79 },
+      { kind: "other" as const, total: 20000 },
+      { kind: "other" as const, total: 2500 },
+      { kind: "other" as const, total: 2500 },
+    ];
+    const jp = financialsFromReads({
+      invoiceLines: lines,
+      timesheets: slices,
+      purchaseOrders: [{ total: DALTON_FINANCIALS.materialsExpense }],
+    });
+    expect(jp).toEqual(DALTON_FINANCIALS);
+    expect(jp.billed).toBe(117406.79);
+
+    const dropped = financialsFromReads({
+      invoiceLines: lines.filter((line) => line.kind !== "other"),
+      timesheets: slices,
+      purchaseOrders: [{ total: DALTON_FINANCIALS.materialsExpense }],
+    });
+    expect(dropped.billed).toBe(92406.79);
+    const stBilled = withBilled(dropped, 117406.79);
+    expect(reconcileFinancials(dropped, stBilled).find((line) => line.key === "billed")).toMatchObject({
+      jp: 92406.79,
+      st: 117406.79,
+      delta: -25000,
+    });
+    expect(reconcileFinancials(jp, withBilled(jp, 117406.79)).find((line) => line.key === "billed")?.delta).toBe(0);
+
+    const wageSum = grossPayLaborDollars(
+      ["2901"],
+      [
+        item({ jobId: "2901", technicianId: "d1", paidDurationHours: 500, amount: 10000, projectId: DALTON_PROJECT_ID }),
+        item({ id: "d2", jobId: "2901", technicianId: "d2", paidDurationHours: 200, amount: 5000, projectId: DALTON_PROJECT_ID }),
+      ],
+    );
+    expect(wageSum).toBe(15000);
+    const compared = reconcileFinancials(jp, withLaborBurden(jp, wageSum)).find((line) => line.key === "laborBurden");
+    expect(compared).toMatchObject({ jp: 21883.04, st: 15000, delta: 6883.04 });
+  });
+
+  it("includes a non-labor non-material line in billed and leaves the labor and material buckets alone", () => {
+    const money = financialsFromReads({
+      invoiceLines: [
+        { kind: "labor", total: 10000 },
+        { kind: "labor", total: 5096.4 },
+        { kind: "material", total: 9263.2 },
+        { kind: "other", total: 50 },
+      ],
+      timesheets: [
+        { technicianId: "a", hours: 40, burdenRate: 30 },
+        { technicianId: "b", hours: 40.3, burdenRate: 30.78 },
+      ],
+      purchaseOrders: [{ total: 5239.21 }],
+    });
+    expect(money.billedLabor).toBe(SEGRETO_FINANCIALS.billedLabor);
+    expect(money.billedMaterials).toBe(SEGRETO_FINANCIALS.billedMaterials);
+    expect(money.billed).toBe(24409.6);
+    expect(money.expenses).toBe(SEGRETO_FINANCIALS.expenses);
+    expect(money.margin).toBe(16729.96);
+    expect(money.marginPercent).toBe(68.54);
   });
 });
 
@@ -304,6 +463,7 @@ function billedFromFixture(name: string) {
       sku: item.skuName,
       total: Number(item.total),
       kind: classifyInvoiceItem({
+        sku: item.skuName,
         type: item.type,
         accountName: item.generalLedgerAccount?.name ?? null,
       }),

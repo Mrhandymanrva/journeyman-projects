@@ -7,6 +7,7 @@ import {
   type TenantFixture,
 } from "./support/harness.js";
 import type { SourceConnections } from "../src/adapters/sourceConnections.js";
+import { ServiceTitanReadError } from "../src/adapters/serviceTitan.js";
 let h: Harness,
   t: TenantFixture,
   other: TenantFixture,
@@ -53,6 +54,7 @@ const snapshot = () => ({
     jobStatus: "Scheduled",
     modifiedOn: "2026-09-15T00:00:00Z",
     summary: "From ST",
+    createdOn: null as string | null,
   })),
   observedAt: new Date(Date.UTC(2026, 8, 15, 0, 0, ++n)).toISOString(),
 });
@@ -201,14 +203,15 @@ it("enforces tenant ownership and source failure retains the existing snapshot",
     ).status,
   ).toBe(404);
   expect(readProject.mock.calls).toHaveLength(before);
-  readProject.mockRejectedValueOnce(Error("upstream"));
-  expect(
-    (
-      await owner()
-        .post(base + "/projects/" + pm + "/servicetitan")
-        .send({ external_project_id: "200" })
-    ).status,
-  ).toBe(502);
+  readProject.mockRejectedValueOnce(new ServiceTitanReadError("ServiceTitan invoices: pagination limit reached."));
+  const failed = await owner()
+    .post(base + "/projects/" + pm + "/servicetitan")
+    .send({ external_project_id: "200" });
+  expect(failed.status).toBe(502);
+  expect(failed.body.error.message).toContain("Source refresh failed:");
+  expect(failed.body.error.message).toContain("pagination limit reached");
+  expect(failed.body.error.message).toContain("previous snapshot is unchanged");
+  expect(failed.body.error.message).not.toMatch(/Bearer |client_secret|ak1\./);
   expect(
     (await owner().get(base + "/projects/" + pm + "/servicetitan")).body.data
       .connection.snapshot.id,
@@ -280,6 +283,145 @@ it("imports a new project with source identity and jobs and no invented financia
     (await owner().get(base + "/projects/" + p.id + "/jobs")).body.data[0]
       .source_active,
   ).toBe(true);
+});
+
+it("imports the project when payroll gross pay fails and records the real warning", async () => {
+  const data = snapshot();
+  data.project = { ...st, id: "290588725", number: "DALTON", name: "Dalton", jobIds: ["8301"] };
+  data.jobs = [{
+    ...data.jobs[0]!,
+    id: "8301",
+    jobNumber: "J8301",
+    projectId: "290588725",
+    createdOn: "2025-01-02T15:00:00.000Z",
+  }];
+  readProject.mockResolvedValueOnce(data);
+  const client = sources.serviceTitan!.client as {
+    readGrossPayItems?: (query: { dateOnOrAfter: string }) => Promise<unknown>;
+    readJobTimesheets?: (jobId: string) => Promise<unknown>;
+  };
+  let window = "";
+  client.readJobTimesheets = async () => ({ forbidden: false, timesheets: [] });
+  client.readGrossPayItems = async (query) => {
+    window = query.dateOnOrAfter;
+    throw new Error("Unexpected gross pay items (data.0.id: Invalid input).");
+  };
+  const r = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "290588725" });
+  expect(r.status, JSON.stringify(r.body)).toBe(201);
+  expect(window).toBe("2025-01-01T15:00:00.000Z");
+  expect(r.body.data.warnings.join(" ")).toMatch(/data\.0\.id: Invalid input/);
+  expect(r.body.data.warnings.join(" ")).toMatch(/Stored hours kept/);
+  expect(r.body.data.warnings.join(" ")).not.toMatch(/last 120 days/);
+  const created = r.body.data.id as string;
+  const stored = await h.db.withTenant(t.id, (db) =>
+    db.query<{ error: string | null }>(
+      `SELECT error FROM projects.st_financial_reconciliation WHERE project_id = $1`,
+      [created],
+    ),
+  );
+  expect(stored.rows[0]?.error).toMatch(/data\.0\.id/);
+  delete client.readGrossPayItems;
+  delete client.readJobTimesheets;
+});
+
+it("adds the project when the scoped invoice read fails and does not read the whole account", async () => {
+  const data = snapshot();
+  data.project = { ...st, id: "290588726", number: "D2", name: "Dalton 2", jobIds: ["8302", "8303"] };
+  data.jobs = data.project.jobIds.map((id) => ({
+    ...data.jobs[0]!,
+    id,
+    jobNumber: "J" + id,
+    projectId: "290588726",
+    createdOn: "2025-01-02T12:00:00.000Z",
+  }));
+  readProject.mockResolvedValueOnce(data);
+  const client = sources.serviceTitan!.client as Record<string, unknown>;
+  const calls: string[] = [];
+  client.readInvoices = async () => {
+    throw new Error("tenant-wide invoices must not be read");
+  };
+  client.readInvoicesForJobs = async (jobIds: string[]) => {
+    calls.push(`invoices:${jobIds.join(",")}`);
+    throw new Error("ServiceTitan invoices: pagination limit reached. No partial snapshot may be imported.");
+  };
+  client.readPaymentsAppliedTo = async () => {
+    calls.push("payments");
+    return { forbidden: false, payments: [], capped: false };
+  };
+  client.readEstimatesForProject = async () => {
+    calls.push("estimates");
+    return { forbidden: false, estimates: [], capped: false };
+  };
+  const r = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "290588726" });
+  expect(r.status, JSON.stringify(r.body)).toBe(201);
+  expect(calls).toEqual(["invoices:8302,8303"]);
+  expect(r.body.data.warnings.join(" ")).toMatch(/pagination limit reached/);
+  const created = r.body.data.id as string;
+  const stored = await h.db.withTenant(t.id, (db) =>
+    db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM projects.st_invoice_observations WHERE project_id = $1`,
+      [created],
+    ),
+  );
+  expect(stored.rows[0]?.n).toBe("0");
+  delete client.readInvoices;
+  delete client.readInvoicesForJobs;
+  delete client.readPaymentsAppliedTo;
+  delete client.readEstimatesForProject;
+});
+
+it("scopes invoices, payments, and estimates to the project on import", async () => {
+  const data = snapshot();
+  data.project = { ...st, id: "290588727", number: "D3", name: "Dalton 3", jobIds: ["8304", "8305"] };
+  data.jobs = data.project.jobIds.map((id) => ({
+    ...data.jobs[0]!,
+    id,
+    jobNumber: "J" + id,
+    projectId: "290588727",
+    createdOn: "2025-01-02T12:00:00.000Z",
+  }));
+  readProject.mockResolvedValueOnce(data);
+  const client = sources.serviceTitan!.client as Record<string, unknown>;
+  const calls: string[] = [];
+  client.readInvoicesForJobs = async (jobIds: string[]) => {
+    calls.push(`invoices:${jobIds.join(",")}`);
+    return {
+      forbidden: false,
+      incomplete: false,
+      capped: false,
+      warnings: [],
+      invoices: jobIds.map((id) => ({
+        externalInvoiceId: id,
+        invoiceNumber: "INV-" + id,
+        externalJobId: id,
+        total: 10,
+        balance: 0,
+        invoicedOn: "2026-10-01",
+        paidOn: null,
+      })),
+    };
+  };
+  client.readPaymentsAppliedTo = async (ids: string[]) => {
+    expect(ids.length).toBeLessThanOrEqual(50);
+    calls.push(`payments:${ids.join(",")}`);
+    return { forbidden: false, payments: [], capped: false };
+  };
+  client.readEstimatesForProject = async (projectId: string) => {
+    calls.push(`estimates:${projectId}`);
+    return { forbidden: false, estimates: [], capped: false };
+  };
+  const r = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "290588727" });
+  expect(r.status, JSON.stringify(r.body)).toBe(201);
+  expect(calls).toEqual(["invoices:8304,8305", "payments:8304,8305", "estimates:290588727"]);
+  delete client.readInvoicesForJobs;
+  delete client.readPaymentsAppliedTo;
+  delete client.readEstimatesForProject;
 });
 
 it('lets office staff browse ST projects for their permitted import workflow',async()=>{

@@ -18,6 +18,8 @@ import { feedHealth, loadProjectHealth } from "../domain/projectHealth.js";
 import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/projectSync.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { presentFeedStatus, readServiceTitanAccess } from "../domain/stStatusMap.js";
 
 /**
  * The project half of the portfolio feed, for keeping QuickBooks in step with the project list. The dashboard reads
@@ -26,11 +28,16 @@ import { ApiError } from "../http/errors.js";
  */
 const ACCOUNTING = z.object({ qbo_customer_id: z.string().max(40).nullable() });
 
-export function portfolioProjectRoutes(database: Database, config: PortfolioFeedConfig): Router {
+export function portfolioProjectRoutes(
+  database: Database,
+  config: PortfolioFeedConfig,
+  sources?: SourceConnections,
+): Router {
   const router = Router();
 
   router.get("/projects", (_req, res, next) => {
-    database
+    Promise.all([
+      database
       .withTenant(config.tenantId, async (db) => {
         const rows = (await db.query<Record<string, unknown>>(
         `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.source_customer_name, p.external_customer_id, p.qbo_customer_id,
@@ -41,7 +48,8 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
                 ${portfolioCloseoutColumns("p")},
                 ${portfolioLaborColumns("p")},
                 ${portfolioArColumns("p")},
-                p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
+                p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name,
+                p.st_status_name, p.st_substatus_name, p.st_status_synced_at, p.st_status_write_result
            FROM projects.projects p
            LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
           ORDER BY p.project_number`)).rows;
@@ -50,8 +58,10 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
         );
         const financials = await readPortfolioFinancialFeed(db);
         return { rows, health, financials };
-      })
-      .then(({ rows, health, financials }) => sendData(res, {
+      }),
+      readServiceTitanAccess(sources?.serviceTitan?.client),
+    ])
+      .then(([{ rows, health, financials }, serviceTitan]) => sendData(res, {
         generated_at: new Date().toISOString(),
         projects: rows.map((row) => {
           const releasedAt = row.field_released_at;
@@ -82,8 +92,14 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
           for (const key of PORTFOLIO_LABOR_KEYS) delete rest[key];
           for (const key of PORTFOLIO_AR_KEYS) delete rest[key];
           const assessed = feedHealth(health.get(String(row.id)));
+          const serviceTitanStatus = presentFeedStatus(rest);
+          delete rest.st_status_name;
+          delete rest.st_substatus_name;
+          delete rest.st_status_synced_at;
+          delete rest.st_status_write_result;
           return {
             ...rest,
+            service_titan_status: serviceTitanStatus,
             field_release: presentFieldRelease({ released_at: releasedAt, released_by: releasedBy, note }),
             field_start: fieldStart,
             precon,
@@ -99,6 +115,7 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
             health: assessed.health,
           };
         }),
+        service_titan: serviceTitan,
       }))
       .catch(next);
   });

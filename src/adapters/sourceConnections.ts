@@ -16,6 +16,10 @@ export interface SourceConnections {
           | "readStaffName"
           | "rescheduleAppointment"
           | "readProject"
+          | "readProjectStatus"
+          | "readStatusCatalog"
+          | "updateProjectStatus"
+          | "grantedScopes"
           | "listProjects"
           | "readProjectDetails"
           | "publishRecord"
@@ -35,6 +39,10 @@ export interface SourceConnections {
           | "readProjectEstimates"
           | "readJobInvoiceSummaries"
           | "readProjectRetainage"
+          | "readInvoicesForJobs"
+          | "readPaymentsAppliedTo"
+          | "readEstimatesForProject"
+          | "readJobSchedule"
           | "sourceTenantId"
         >
       >;
@@ -63,6 +71,8 @@ export function readSourceConnections(
       tenantId,
       externalSystemId,
       key: `st:${environment}:${sourceTenant}`,
+      // Consulted by schedule reschedule and record publication only.
+      // It does not wrap the adapter, and project status sync does not read it.
       writesEnabled: env.PM_ST_WRITES_ENABLED === "true",
       client: new ServiceTitanReadAdapter({
         environment,

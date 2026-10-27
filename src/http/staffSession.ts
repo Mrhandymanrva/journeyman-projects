@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { Database, SqlClient } from "../db/database.js";
 import { ApiError } from "./errors.js";
+import { sourceFailureMessage } from "./sourceError.js";
 import type { StaffRole } from "./capabilities.js";
 
 /**
@@ -91,31 +92,35 @@ export function staffAuthentication(
   };
 }
 
+export async function withStaff<T>(
+  deps: StaffRouterDeps,
+  req: Request,
+  res: Response,
+  fn: (ctx: StaffContext) => Promise<T>,
+): Promise<T> {
+  const session = getStaffSession(req);
+  if (!session) {
+    throw new ApiError("unauthenticated", "A staff session is required.");
+  }
+  return deps.database.withTenant(session.tenantId, async (db) => {
+    // Entitlement is already enforced by the RLS predicate; every read
+    // would simply return nothing. This turns that silence into the honest
+    // answer, and it reads the entitlements table, which is tenant-isolated
+    // but deliberately not entitlement-gated so a suspended customer can be
+    // told why.
+    await assertModulesLive(db, session.tenantId);
+    const staff = await loadStaff(db, session.staffId);
+    const settings = await loadSettings(db, session.tenantId);
+    return fn({ db, staff, settings, req, res });
+  });
+}
+
 export function staffRoute(
   deps: StaffRouterDeps,
   handler: (ctx: StaffContext) => Promise<void>,
 ): RequestHandler {
   return (req, res, next) => {
-    const session = getStaffSession(req);
-    if (!session) {
-      next(new ApiError("unauthenticated", "A staff session is required."));
-      return;
-    }
-
-    deps.database
-      .withTenant(session.tenantId, async (db) => {
-        // Entitlement is already enforced by the RLS predicate; every read
-        // would simply return nothing. This turns that silence into the honest
-        // answer, and it reads the entitlements table, which is tenant-isolated
-        // but deliberately not entitlement-gated so a suspended customer can be
-        // told why.
-        await assertModulesLive(db, session.tenantId);
-
-        const staff = await loadStaff(db, session.staffId);
-        const settings = await loadSettings(db, session.tenantId);
-        await handler({ db, staff, settings, req, res });
-      })
-      .catch(next);
+    withStaff(deps, req, res, handler).catch(next);
   };
 }
 
@@ -227,10 +232,7 @@ export function staffExternalRoute<P, R>(
         console.error(
           `[source-refresh] ${req.method} ${req.originalUrl} failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`,
         );
-        throw new ApiError(
-          "source_unavailable",
-          "Source refresh failed. The previous snapshot is unchanged.",
-        );
+        throw new ApiError("source_unavailable", sourceFailureMessage(err));
       }
       const current = await deps.sessions.resolve(req);
       if (

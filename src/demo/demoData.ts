@@ -482,6 +482,24 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     }
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
+  await db.withTenant(TENANT_ID, (c) =>
+    c.query(
+      `UPDATE projects.projects
+          SET st_status_id = '221978475',
+              st_status_name = 'Hold',
+              st_substatus_id = NULL,
+              st_substatus_name = NULL,
+              st_status_synced_at = now(),
+              st_status_modified_on = now(),
+              st_status_write_result = 'ok',
+              st_status_gate_warning = $2
+        WHERE id = $1`,
+      [
+        whitfield,
+        'ServiceTitan moved this project from precon to execution, outside the one-step stage sequence. Stage gates were not approved.',
+      ],
+    ),
+  );
 
   // Goals and milestones whose stored status is deliberately stale. The plan
   // screen calculates over those values: milestone status from linked tasks,
