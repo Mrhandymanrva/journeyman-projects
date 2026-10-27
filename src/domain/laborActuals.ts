@@ -21,6 +21,15 @@ import {
   type BurdenSlice,
 } from "./projectFinancials.js";
 import { newYorkDate } from "./fieldStart.js";
+import {
+  BURDEN_LINE_LABEL,
+  COMMISSION_LINE_LABEL,
+  NO_PAYROLL_LABOR_LABEL,
+  RECENT_PAYROLL_MISSING_WARNING,
+  type HoursPayrollSource,
+  type LaborCostSource,
+  type LaborEstimate,
+} from "./stLabor.js";
 
 /** Read batches match the schedule route. */
 export const LABOR_READ_BATCH = 4;
@@ -155,6 +164,8 @@ export interface PaidLaborRead {
    */
   grossPay: GrossPayItem[] | null;
   payroll: "gross-pay" | "timesheet" | "failed";
+  /** gross-pay when TimesheetTime paid hours were stamped. Null when nothing was stamped. */
+  hoursSource: HoursPayrollSource | null;
 }
 
 interface GrossPaySource {
@@ -251,7 +262,7 @@ export function grossPayLaborDollars(jobIds: readonly string[], items: readonly 
  */
 export async function readPaidLabor(
   jobIds: string[],
-  client: Partial<GrossPaySource> & Parameters<typeof readLaborJobs>[1],
+  client: Partial<GrossPaySource> & Partial<Parameters<typeof readLaborJobs>[1]>,
   options: { dateOnOrAfter: string },
 ): Promise<PaidLaborRead> {
   const keepAll = (warning: string): PaidLaborRead => ({
@@ -260,6 +271,7 @@ export async function readPaidLabor(
     stamp: false,
     grossPay: null,
     payroll: "failed",
+    hoursSource: null,
   });
   if (client.readGrossPayItems) {
     let read: { forbidden: boolean; items: GrossPayItem[]; skipped?: number; omitted?: number; capped?: boolean };
@@ -288,36 +300,41 @@ export async function readPaidLabor(
         stamp: false,
         grossPay: null,
         payroll: "failed",
+        hoursSource: null,
       };
     }
     const byJob = draftsFromGrossPay(jobIds, read.items);
     if (byJob.size === 0) {
       return {
-        ...keepAll("Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept."),
+        results: jobIds.map((jobId) => ({ jobId, outcome: "keep" as const, drafts: [] })),
         warnings: [
           "Payroll gross pay items: no paid timesheet hours for this project's jobs. Stored hours kept.",
           ...notes,
         ],
-        // The read succeeded. Burden is computed from these rows (often zero
-        // hours). A thrown or forbidden read leaves grossPay null instead.
+        // The read succeeded. A thrown or forbidden read leaves grossPay null instead.
+        stamp: false,
         grossPay: read.items,
         payroll: "gross-pay",
+        hoursSource: null,
       };
     }
     return {
       results: jobIds.map((jobId) => {
-        const drafts = byJob.get(jobId);
-        // A successful read replaces stored hours, including a 0 left behind
-        // by an earlier wipe. Jobs with no paid time stay as they are.
-        return drafts ? { jobId, outcome: "timesheet" as const, drafts } : { jobId, outcome: "keep" as const, drafts: [] };
+        const gross = byJob.get(jobId);
+        if (gross) return { jobId, outcome: "timesheet" as const, drafts: gross };
+        return { jobId, outcome: "keep" as const, drafts: [] };
       }),
       warnings: notes,
       stamp: true,
       grossPay: read.items,
       payroll: "gross-pay",
+      hoursSource: "gross-pay",
     };
   }
-  const results = await readLaborJobs(jobIds, client);
+  if (!client.readJobTimesheets) {
+    return keepAll("Payroll timesheets are not configured. Stored hours kept.");
+  }
+  const results = await readLaborJobs(jobIds, client as Parameters<typeof readLaborJobs>[1]);
   const warnings = results.flatMap((result) => (result.warning ? [result.warning] : []));
   const anyHours = results.some((result) => result.outcome === "timesheet");
   if (!anyHours && !results.some((result) => result.failed) && jobIds.length > 0) {
@@ -330,6 +347,7 @@ export async function readPaidLabor(
     stamp: anyHours && !failed,
     grossPay: null,
     payroll: failed || !anyHours ? "failed" : "timesheet",
+    hoursSource: null,
   };
 }
 
@@ -532,6 +550,17 @@ export interface PortfolioLabor {
   hours_source: "timesheet" | "appointment_window" | "mixed" | null;
   /** When the last refresh finished. Null until a refresh is recorded. */
   observed_at: string | null;
+  /** payroll, the 25% estimate, or a recent project with no payroll rows. */
+  labor_source: LaborCostSource | null;
+  labor_label: string | null;
+  labor_warning: string | null;
+  commission_label: string | null;
+  burden_label: string | null;
+  billed_labor: number | null;
+  billed_labor_plfe: number | null;
+  commission_plfe: number | null;
+  /** Arrived-to-done hours used for the estimate's burden. Not the labor hours above. */
+  burden_hours: number | null;
 }
 
 /** `alias` is a query alias we wrote, never request input. */
@@ -577,7 +606,9 @@ export function portfolioLaborColumns(alias = "p"): string {
                 GROUP BY a.external_technician_id
              ) g) AS labor_techs,
           ${alias}.labor_refreshed_at AS labor_refreshed_at,
-          ${alias}.labor_refresh_source AS labor_refresh_source`;
+          ${alias}.labor_refresh_source AS labor_refresh_source,
+          ${alias}.labor_cost_source AS labor_cost_source,
+          ${alias}.labor_estimate AS labor_estimate`;
 }
 
 export const PORTFOLIO_LABOR_KEYS = [
@@ -589,6 +620,8 @@ export const PORTFOLIO_LABOR_KEYS = [
   "labor_techs",
   "labor_refreshed_at",
   "labor_refresh_source",
+  "labor_cost_source",
+  "labor_estimate",
 ] as const;
 
 export function roundMoney(value: number): number {
@@ -773,12 +806,16 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     })
     .filter((tech) => !isPlaceholderTechnician(tech.technician_name))
     .sort((a, b) => a.technician_name.localeCompare(b.technician_name));
-  const labor_wage = roundMoney(
+  const summedWage = roundMoney(
     technicians.reduce((sum, tech) => sum + (tech.budget_wage ?? 0), 0),
   );
-  const labor_burden = roundMoney(
+  const summedBurden = roundMoney(
     technicians.reduce((sum, tech) => sum + (tech.budget_burden ?? 0), 0),
   );
+  const source = laborCostSourceOf(row.labor_cost_source);
+  const estimate = source === "billed_labor_25pct" ? laborEstimateOf(row.labor_estimate) : null;
+  const labor_wage = estimate ? estimate.commission : summedWage;
+  const labor_burden = estimate ? estimate.burden : summedBurden;
   return {
     labor_hours: hours,
     labor_wage,
@@ -791,6 +828,41 @@ export function presentPortfolioLabor(row: Record<string, unknown>): PortfolioLa
     source: refreshStamp(row.labor_refresh_source),
     hours_source,
     observed_at: isoStamp(row.labor_refreshed_at),
+    labor_source: source,
+    labor_label: estimate?.label ?? null,
+    labor_warning: source === "none_recent_payroll_missing" ? RECENT_PAYROLL_MISSING_WARNING : null,
+    commission_label: estimate?.commission_label ?? null,
+    burden_label: estimate?.burden_label ?? null,
+    billed_labor: estimate?.billed_labor ?? null,
+    billed_labor_plfe: estimate?.billed_labor_plfe ?? null,
+    commission_plfe: estimate?.commission_plfe ?? null,
+    burden_hours: estimate?.burden_hours ?? null,
+  };
+}
+
+function laborCostSourceOf(value: unknown): LaborCostSource | null {
+  if (value === "payroll" || value === "billed_labor_25pct" || value === "none_recent_payroll_missing") return value;
+  return null;
+}
+
+function laborEstimateOf(value: unknown): LaborEstimate | null {
+  const record = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  if (!record) return null;
+  const commission = Number(record.commission);
+  const burden = Number(record.burden);
+  if (!Number.isFinite(commission) || !Number.isFinite(burden)) return null;
+  return {
+    commission,
+    burden,
+    total: Number.isFinite(Number(record.total)) ? Number(record.total) : roundMoney(commission + burden),
+    billed_labor: Number(record.billed_labor ?? 0),
+    billed_labor_plfe: Number(record.billed_labor_plfe ?? 0),
+    commission_plfe: Number(record.commission_plfe ?? 0),
+    burden_hours: Number(record.burden_hours ?? 0),
+    burden_source: "payroll_job_timesheets_arrived_done",
+    label: NO_PAYROLL_LABOR_LABEL,
+    commission_label: COMMISSION_LINE_LABEL,
+    burden_label: BURDEN_LINE_LABEL,
   };
 }
 
@@ -1194,6 +1266,24 @@ export async function saveLaborRefresh(
             labor_refresh_source = $3
       WHERE id = $1`,
     [input.projectId, input.observedAt, input.source],
+  );
+}
+
+/** Records which labor-cost path this refresh took. Null estimate clears a previous 25% figure. */
+export async function saveLaborCostSource(
+  db: SqlClient,
+  input: {
+    projectId: string;
+    source: LaborCostSource;
+    estimate: LaborEstimate | null;
+  },
+): Promise<void> {
+  await db.query(
+    `UPDATE projects.projects
+        SET labor_cost_source = $2,
+            labor_estimate = $3::jsonb
+      WHERE id = $1`,
+    [input.projectId, input.source, input.estimate ? JSON.stringify(input.estimate) : null],
   );
 }
 

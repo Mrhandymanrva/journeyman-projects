@@ -27,6 +27,8 @@ export interface SourceConnections {
           | "projectNoteReceipt"
           | "publishProjectNote"
           | "readJobTimesheets"
+          | "readJobTimesheetsForJobs"
+          | "readPayrollAdjustments"
           | "readGrossPayItems"
           | "readProjectJobs"
           | "readJobInvoiceLines"

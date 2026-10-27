@@ -91,12 +91,31 @@ export interface ProjectMoney {
   marginPercent: number;
 }
 
+export type ReconciliationLaborStatus = "estimated" | "missing";
+
 export interface ReconciliationLine {
   key: keyof ProjectMoney;
   label: string;
   jp: number;
   st: number;
   delta: number;
+  /**
+   * Set on the labor line. `estimated` is the 25% commission plus timesheet
+   * burden, shown next to ServiceTitan's labor expense as a known difference.
+   * `missing` means a recent project had no payroll rows and was not estimated.
+   */
+  status?: ReconciliationLaborStatus;
+  commission?: number;
+  burden?: number;
+  billed_labor?: number;
+  billed_labor_plfe?: number;
+}
+
+/** Published Project Financials Expense > Labor, where ServiceTitan's figure is known. */
+export function publishedServiceTitanLabor(stProjectId: string | null | undefined): number | null {
+  if (stProjectId === DALTON_PROJECT_ID) return DALTON_FINANCIALS.laborBurden;
+  if (stProjectId === SEGRETO_PROJECT_ID) return SEGRETO_FINANCIALS.laborBurden;
+  return null;
 }
 
 const MONEY_LABELS: Record<keyof ProjectMoney, string> = {
@@ -222,14 +241,12 @@ export function financialsFromReads(input: {
   // Actual billed is the invoice total. Subcontractor revenue and miscellaneous
   // income are not labor or material labels, and they are still billed.
   const billed = roundMoney(billedLabor + billedMaterials + billedOther);
-  // Journeyman labor burden is paid timesheet hours times the technician
-  // burden rate. ServiceTitan does not return Project Financials > Expense >
-  // Labor on the project payload. Help articles "Calculate technician burden
-  // rates" and "Set up your account for project management" describe that
-  // hours × burdenRate line. Gross pay `amount` is wages. The reconciliation
-  // stores that amount as ServiceTitan's own labor figure so the two columns
-  // are not the same calculation. Whether $21,883.04 on Dalton is the wage
-  // sum or hours × burdenRate can only be confirmed with production payroll.
+  // Journeyman labor burden is worked hours times the technician burden rate
+  // when payroll gross pay has paid hours. An older project with no matching
+  // payroll rows stores 25% of billed labor plus arrived-to-done burden instead.
+  // ServiceTitan Project Financials > Expense > Labor is not on the project
+  // payload. The refresh stores a separate breakdown: burden, plus non-PTO
+  // gross pay on the project's jobs, plus payroll adjustments.
   const laborBurden = roundMoney(
     input.timesheets.reduce((sum, row) => {
       if (row.burdenRate == null || !(row.burdenRate > 0) || !(row.hours > 0)) return sum;

@@ -136,6 +136,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
         lines: stored?.lines ?? [],
         technicians: stored?.technicians ?? [],
         error: stored?.error ?? null,
+        st_labor: stored?.st_labor ?? null,
         note: reconciliationNote(stored),
       });
     }),
@@ -252,6 +253,15 @@ async function presentLabor(
     source: labor.source,
     hours_source: labor.hours_source,
     observed_at: labor.observed_at,
+    labor_source: labor.labor_source,
+    labor_label: labor.labor_label,
+    labor_warning: labor.labor_warning,
+    commission_label: labor.commission_label,
+    burden_label: labor.burden_label,
+    billed_labor: labor.billed_labor,
+    billed_labor_plfe: labor.billed_labor_plfe,
+    commission_plfe: labor.commission_plfe,
+    burden_hours: labor.burden_hours,
     missing: labor.missing,
     rates_forbidden: summary.rows[0]?.labor_rates_forbidden === true,
     ...(showMoney

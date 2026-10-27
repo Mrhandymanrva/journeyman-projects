@@ -110,7 +110,7 @@ describe("labor hours come from ServiceTitan payroll paid time only", () => {
       ["100", "200"],
       {
         readGrossPayItems: async () => ({ forbidden: false, items: grossPay }),
-        readJobTimesheets: async () => { throw new Error("timesheets must not be read"); },
+        readJobTimesheets: async () => ({ forbidden: false, timesheets: [] }),
         readJob: async () => ({ appointments: [], assignments: [] }),
       },
       { dateOnOrAfter: "2026-09-16T00:00:00Z" },
@@ -167,9 +167,7 @@ describe("manual refresh with partial ServiceTitan failures", () => {
         ];
       },
       readJobPurchaseOrders: async () => [],
-      readJobTimesheets: async () => {
-        throw new Error("job timesheets must not be read when gross pay is available");
-      },
+      readJobTimesheets: async () => ({ forbidden: false, timesheets: [] }),
       windows: [] as string[],
       readGrossPayItems: async (query: { dateOnOrAfter: string }) => {
         conn.client.windows.push(query.dateOnOrAfter);
@@ -295,8 +293,17 @@ describe("manual refresh with partial ServiceTitan failures", () => {
     );
     expect(rec?.lines.find((line) => line.key === "laborBurden")).toMatchObject({
       jp: 87.5,
-      st: 232.5,
-      delta: -145,
+      st: 470,
+      delta: -382.5,
+    });
+    expect(rec?.st_labor).toMatchObject({
+      burden: 87.5,
+      grossPay: 382.5,
+      adjustments: null,
+      adjustmentsAvailable: false,
+      total: 470,
+      hoursSource: "gross-pay",
+      driveHours: 0,
     });
     expect(await state()).toMatchObject({ hours: 6.75, source: "manual" });
   });

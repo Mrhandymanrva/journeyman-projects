@@ -10,6 +10,7 @@ import {
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import type { EstimateRead, InvoiceHeaderRead } from "../domain/stFinancialSummary.js";
 import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
+import type { PayrollAdjustmentRow } from "../domain/stLabor.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 import {
   scopeNamesFromAuthBody,
@@ -229,6 +230,7 @@ export interface GrossPayItem {
   activityCode?: string | null;
   employeeType?: string | null;
   jobNumber?: string | null;
+  amountAdjustment?: number | null;
 }
 
 export class ServiceTitanReadAdapter {
@@ -1529,9 +1531,10 @@ export class ServiceTitanReadAdapter {
   /**
    * Paid payroll time from GET payroll/v2/tenant/{tenant}/gross-pay-items
    * (scope Payroll -> Gross Pay Items (Read)). This is where ServiceTitan
-   * keeps paidDurationHours. jobs/{job}/timesheets carries only dispatch,
-   * arrive, done, and cancel stamps, which are never hours.
-   * The endpoint has no job filter, so it is read by date window and the
+   * keeps paidDurationHours. jobs/timesheets carries dispatch, arrive, and done
+   * stamps. Those stamps are not labor hours. When gross pay has no paid hours
+   * on an older project, arrived-to-done (14 hour cap, no drive) is used only
+   * to price labor burden. The endpoint has no job filter, so it is read by date window and the
    * caller keeps the rows whose jobId is on the project. GET only.
    */
   async readGrossPayItems(query: { dateOnOrAfter: string; dateOnOrBefore?: string }): Promise<{
@@ -1543,6 +1546,9 @@ export class ServiceTitanReadAdapter {
     omitted: number;
     /** True when the date window still had another page after 200. */
     capped: boolean;
+    pagesRead: number;
+    /** TimesheetTime rows in the window with no job id. Counted before the usable-row filter. */
+    timesheetTimeWithoutJob: { count: number; withPaidHours: number };
   }> {
     if (Number.isNaN(Date.parse(query.dateOnOrAfter)))
       throw new ServiceTitanReadError("Use an ISO date for the gross pay window.");
@@ -1621,6 +1627,8 @@ export class ServiceTitanReadAdapter {
     let skipped = 0;
     let omitted = 0;
     let capped = false;
+    let pagesRead = 0;
+    const timesheetTimeWithoutJob = { count: 0, withPaidHours: 0 };
     try {
       for (let page = 1; page <= 200; page += 1) {
         const params = new URLSearchParams({
@@ -1631,6 +1639,7 @@ export class ServiceTitanReadAdapter {
         });
         if (query.dateOnOrBefore) params.set("dateOnOrBefore", query.dateOnOrBefore);
         const raw = await this.get("payroll", "gross-pay-items", params);
+        pagesRead += 1;
         const parsed = z
           .object({ data: z.array(z.unknown()), hasMore: z.boolean().optional() })
           .passthrough()
@@ -1658,6 +1667,7 @@ export class ServiceTitanReadAdapter {
             date: row.date ?? null,
             activity: row.activity ?? row.activityCode ?? null,
             amount: row.amount ?? null,
+            amountAdjustment: row.amountAdjustment ?? null,
             type: row.grossPayItemType,
             paidDurationHours: row.paidDurationHours ?? null,
             paidTimeType: row.paidTimeType,
@@ -1676,6 +1686,12 @@ export class ServiceTitanReadAdapter {
             omitted += 1;
             continue;
           }
+          if ((item.type ?? "").toLowerCase() === "timesheettime" && !item.jobId) {
+            timesheetTimeWithoutJob.count += 1;
+            if (typeof item.paidDurationHours === "number" && item.paidDurationHours > 0) {
+              timesheetTimeWithoutJob.withPaidHours += 1;
+            }
+          }
           if (!grossPayItemUsable(item)) {
             skipped += 1;
             continue;
@@ -1688,7 +1704,15 @@ export class ServiceTitanReadAdapter {
       }
     } catch (err) {
       if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
-        return { forbidden: true, items: [], skipped: 0, omitted: 0, capped: false };
+        return {
+          forbidden: true,
+          items: [],
+          skipped: 0,
+          omitted: 0,
+          capped: false,
+          pagesRead: 0,
+          timesheetTimeWithoutJob: { count: 0, withPaidHours: 0 },
+        };
       }
       throw err;
     }
@@ -1698,7 +1722,188 @@ export class ServiceTitanReadAdapter {
       skipped,
       omitted,
       capped,
+      pagesRead,
+      timesheetTimeWithoutJob,
     };
+  }
+
+  /**
+   * Payroll job timesheets for many jobs. GET payroll/v2 jobs/timesheets?jobIds=
+   * in batches of 50. Wage fields are stripped. A 403 is forbidden.
+   */
+  async readJobTimesheetsForJobs(jobIds: readonly string[]): Promise<{
+    forbidden: boolean;
+    capped: boolean;
+    timesheets: Array<{
+      id: string;
+      jobId: string | null;
+      appointmentId: string | null;
+      technicianId: string | null;
+      technicianName: string | null;
+      arrivedOn: string | null;
+      dispatchedOn: string | null;
+      doneOn: string | null;
+      canceledOn: string | null;
+      paidDurationHours: number | null;
+    }>;
+  }> {
+    const ids = [...new Set(jobIds.map((id) => String(id)))].filter((id) => /^\d+$/.test(id));
+    const timesheetSchema = z
+      .object({
+        id: sourceId,
+        jobId: sourceId.nullish(),
+        appointmentId: sourceId.nullish(),
+        technicianId: sourceId.nullish(),
+        technicianName: z.string().nullish(),
+        arrivedOn: z.string().nullish(),
+        dispatchedOn: z.string().nullish(),
+        doneOn: z.string().nullish(),
+        canceledOn: z.string().nullish(),
+        paidDurationHours: z.coerce.number().finite().nullish(),
+        paidHours: z.coerce.number().finite().nullish(),
+        hours: z.coerce.number().finite().nullish(),
+      })
+      .strip();
+    const timesheets: Array<{
+      id: string;
+      jobId: string | null;
+      appointmentId: string | null;
+      technicianId: string | null;
+      technicianName: string | null;
+      arrivedOn: string | null;
+      dispatchedOn: string | null;
+      doneOn: string | null;
+      canceledOn: string | null;
+      paidDurationHours: number | null;
+    }> = [];
+    let capped = false;
+    try {
+      for (let offset = 0; offset < ids.length; offset += 50) {
+        const batch = ids.slice(offset, offset + 50);
+        const wanted = new Set(batch);
+        for (let page = 1; page <= 40; page += 1) {
+          const params = new URLSearchParams({ page: String(page), pageSize: "200" });
+          for (const id of batch) params.append("jobIds", id);
+          const raw = await this.get("payroll", "jobs/timesheets", params);
+          const parsed = z
+            .object({ data: z.array(timesheetSchema), hasMore: z.boolean().optional() })
+            .safeParse(raw);
+          if (!parsed.success) throw new ServiceTitanReadError("Unexpected timesheet response.");
+          for (const row of parsed.data.data) {
+            const jobId = row.jobId ?? null;
+            if (jobId && !wanted.has(jobId)) continue;
+            timesheets.push({
+              id: row.id,
+              jobId,
+              appointmentId: row.appointmentId ?? null,
+              technicianId: row.technicianId ?? null,
+              technicianName: row.technicianName ?? null,
+              arrivedOn: row.arrivedOn ?? null,
+              dispatchedOn: row.dispatchedOn ?? null,
+              doneOn: row.doneOn ?? null,
+              canceledOn: row.canceledOn ?? null,
+              paidDurationHours: row.paidDurationHours ?? row.paidHours ?? row.hours ?? null,
+            });
+          }
+          const more = parsed.data.hasMore === true || (parsed.data.hasMore == null && parsed.data.data.length >= 200);
+          if (!more) break;
+          if (page === 40) capped = true;
+        }
+      }
+    } catch (err) {
+      if (err instanceof ServiceTitanReadError && /HTTP 403\b/.test(err.message)) {
+        return { forbidden: true, capped: false, timesheets: [] };
+      }
+      throw err;
+    }
+    return { forbidden: false, capped, timesheets };
+  }
+
+  /**
+   * GET payroll/v2 payroll-adjustments. Memo text is dropped.
+   * A 403 is forbidden. A 404, or a 400 on the date filter, is unavailable.
+   */
+  async readPayrollAdjustments(query: { postedOnOrAfter?: string } = {}): Promise<{
+    forbidden: boolean;
+    unavailable: boolean;
+    capped: boolean;
+    items: PayrollAdjustmentRow[];
+  }> {
+    const empty = { forbidden: false, unavailable: true, capped: false, items: [] as PayrollAdjustmentRow[] };
+    try {
+      return await this.payrollAdjustmentPages(query.postedOnOrAfter);
+    } catch (err) {
+      if (!(err instanceof ServiceTitanReadError)) throw err;
+      if (/HTTP 403\b/.test(err.message)) return { forbidden: true, unavailable: false, capped: false, items: [] };
+      if (/HTTP 404\b/.test(err.message)) return empty;
+      if (/HTTP 400\b/.test(err.message) && query.postedOnOrAfter) {
+        try {
+          return await this.payrollAdjustmentPages(undefined);
+        } catch (retryErr) {
+          if (retryErr instanceof ServiceTitanReadError && /HTTP 40[04]\b/.test(retryErr.message)) return empty;
+          throw retryErr;
+        }
+      }
+      throw err;
+    }
+  }
+
+  private async payrollAdjustmentPages(postedOnOrAfter: string | undefined): Promise<{
+    forbidden: boolean;
+    unavailable: boolean;
+    capped: boolean;
+    items: PayrollAdjustmentRow[];
+  }> {
+    const looseId = z.union([z.string(), z.number(), z.null()]).optional();
+    const textId = (value: string | number | null | undefined): string | null => {
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      if (typeof value === "string" && value.trim()) return value.trim();
+      return null;
+    };
+    const rowSchema = z
+      .object({
+        id: looseId,
+        employeeId: looseId,
+        employeeType: z.string().nullish(),
+        postedOn: z.string().nullish(),
+        amount: z.coerce.number().finite().nullish(),
+        jobId: looseId,
+        invoiceId: looseId,
+      })
+      .strip();
+    const items: PayrollAdjustmentRow[] = [];
+    let capped = false;
+    for (let page = 1; page <= 40; page += 1) {
+      const params = new URLSearchParams({
+        page: String(page),
+        pageSize: "200",
+        employeeType: "Technician",
+      });
+      if (postedOnOrAfter) params.set("postedOnOrAfter", postedOnOrAfter);
+      const raw = await this.get("payroll", "payroll-adjustments", params);
+      const parsed = z
+        .object({ data: z.array(rowSchema), hasMore: z.boolean().optional() })
+        .safeParse(raw);
+      if (!parsed.success) throw new ServiceTitanReadError("Unexpected payroll adjustment response.");
+      for (const row of parsed.data.data) {
+        const employeeType = row.employeeType?.trim().toLowerCase();
+        if (employeeType && employeeType !== "technician") continue;
+        const postedOn = row.postedOn ?? null;
+        if (postedOn && isBeforeSourceFloor(postedOn)) continue;
+        items.push({
+          id: textId(row.id),
+          employeeId: textId(row.employeeId),
+          amount: row.amount ?? null,
+          jobId: textId(row.jobId),
+          invoiceId: textId(row.invoiceId),
+          postedOn,
+        });
+      }
+      const more = parsed.data.hasMore === true || (parsed.data.hasMore == null && parsed.data.data.length >= 200);
+      if (!more) break;
+      if (page === 40) capped = true;
+    }
+    return { forbidden: false, unavailable: false, capped, items };
   }
 
   /**

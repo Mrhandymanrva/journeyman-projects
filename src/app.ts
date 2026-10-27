@@ -19,6 +19,7 @@ import { portfolioVendorRoutes } from "./routes/portfolioVendors.js";
 import { portfolioProjectRoutes } from "./routes/portfolioProjects.js";
 import { ssoRoutes, type SsoConfig } from "./routes/sso.js";
 import { bearerMatchesToken, portfolioRoutes } from "./routes/portfolio.js";
+import { stLaborDiagnosticRoutes } from "./routes/stLaborDiagnostic.js";
 import type { PortfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import type { SourceConnections } from "./adapters/sourceConnections.js";
 import path from "node:path";
@@ -141,6 +142,7 @@ export function createApp(opts: AppOptions): Express {
   if (opts.portfolio) {
     const portfolio = opts.portfolio;
     app.use("/api/v1/portfolio", portfolioRoutes(opts.database, portfolio, opts.sources));
+    app.use("/api/v1/diagnostics", stLaborDiagnosticRoutes(portfolio, opts.sources));
     app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, portfolio));
     app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, portfolio, opts.sources));
     // This bearer already reads documents and writes vendors on /portfolio.

@@ -49,6 +49,15 @@ describe("portfolio project feed", () => {
       source: null,
       hours_source: null,
       observed_at: null,
+      labor_source: null,
+      labor_label: null,
+      labor_warning: null,
+      commission_label: null,
+      burden_label: null,
+      billed_labor: null,
+      billed_labor_plfe: null,
+      commission_plfe: null,
+      burden_hours: null,
     });
     expect(res.body.data.projects[0].labor_refresh).toEqual({
       status: null,
