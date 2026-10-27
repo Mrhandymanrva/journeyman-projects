@@ -18,11 +18,13 @@ export interface Figure {
 export interface DashboardActuals {
   /** Invoice lines, material expenses, labor, or a stored reconciliation exist. */
   observed: boolean;
-  /** Billed labor plus billed materials. This is actual revenue. */
+  /** Classified billed, including lines that are neither labor nor material. This is actual revenue. */
   billed: number;
   laborBurden: number;
-  materialsExpense: number;
-  expenses: number;
+  /** Null when purchase-order cost was not returned. Zero is a real zero. */
+  materialsExpense: number | null;
+  /** Null when materials expense was not returned. Labor alone is not the total. */
+  expenses: number | null;
 }
 
 export interface DashboardServiceTitan {
@@ -116,8 +118,12 @@ export function buildFinancialsDashboard(input: {
   const invoices = st?.invoicesRead ? st : null;
 
   const actualRevenue = actuals ? reported(actuals.billed, "actuals") : missing();
-  const actualExpense = actuals ? reported(actuals.expenses, "actuals") : missing();
-  const materialsExpense = actuals ? reported(actuals.materialsExpense, "actuals") : missing();
+  const actualExpense =
+    actuals && actuals.expenses != null ? reported(actuals.expenses, "actuals") : missing();
+  const materialsExpense =
+    actuals && actuals.materialsExpense != null
+      ? reported(actuals.materialsExpense, "actuals")
+      : missing();
   const laborExpense = actuals ? reported(actuals.laborBurden, "actuals") : missing();
 
   const contractValue = estimates ? reported(estimates.contractValue, "servicetitan") : missing();

@@ -27,6 +27,7 @@ export function stDetailSummary(
         billed?: number | null;
         expenses?: number | null;
         margin?: number | null;
+        materials_expense_read?: boolean;
       }
     | null
     | undefined,

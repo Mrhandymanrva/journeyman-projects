@@ -2424,12 +2424,15 @@ function renderStFinancials(money) {
       '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
     return;
   }
+  const materialsMissing = money.materials_expense_read === false;
   const pct = Number(money.marginPercent || 0).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
   const line = (label, value) =>
     `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
+  const missingLine = (label) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m"><span class="fin-dash" title="ServiceTitan did not return this figure. Nothing is estimated.">\u2014</span></div></div></div>`;
   const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
   const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
   const kept = problems.some((line) => /stored hours kept|left as they are|kept their last/i.test(line));
@@ -2441,8 +2444,12 @@ function renderStFinancials(money) {
     ${line("Billed materials", money.billedMaterials)}
     ${line("Billed", money.billed)}
     ${line("Labor burden", money.laborBurden)}
-    ${line("Materials expense", money.materialsExpense)}
-    <div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`;
+    ${materialsMissing ? missingLine("Materials expense") : line("Materials expense", money.materialsExpense)}
+    ${
+      materialsMissing
+        ? missingLine("Margin")
+        : `<div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`
+    }`;
 }
 
 function renderLabor(row) {

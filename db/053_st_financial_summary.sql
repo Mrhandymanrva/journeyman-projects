@@ -32,5 +32,15 @@ CREATE POLICY tenant_isolation ON st_project_summary
   USING (projects.tenant_enabled(tenant_id))
   WITH CHECK (projects.tenant_enabled(tenant_id));
 
+ALTER TABLE st_project_summary
+  ADD COLUMN IF NOT EXISTS materials_expense_read boolean NOT NULL DEFAULT true;
+
+ALTER TABLE st_project_summary
+  ADD COLUMN IF NOT EXISTS labor_burden numeric(14,2);
+
+COMMENT ON COLUMN st_project_summary.materials_expense_read IS
+  'False when purchase-order cost was not returned. The dashboard then dashes materials expense instead of showing zero. True uses the stored purchase-order sum, and zero is a real zero.';
+COMMENT ON COLUMN st_project_summary.labor_burden IS
+  'Project Financials labor burden when payroll did not return timesheets. Null uses the timesheet burden already stored on labor actuals.';
 COMMENT ON TABLE st_project_summary IS
   'ServiceTitan contract, budget, change orders, retainage, and open invoices for the project financials summary. Null is missing, not zero. Nothing is written back to ServiceTitan.';

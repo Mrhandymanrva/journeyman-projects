@@ -1,9 +1,11 @@
 import type { SqlClient } from "../db/database.js";
 import {
   buildFinancialsDashboard,
+  type DashboardActuals,
   type DashboardServiceTitan,
   type FinancialsDashboard,
 } from "./financialsDashboard.js";
+import { roundMoney, type ProjectMoney } from "./projectFinancials.js";
 import { readStoredProjectMoney, readStoredReconciliation } from "./projectSync.js";
 import type { ServiceTitanSummaryNumbers } from "./stFinancialSummary.js";
 
@@ -95,10 +97,21 @@ export async function writeProjectSummary(
   );
 }
 
-export async function readFinancialsDashboard(
+interface StoredSummary extends DashboardServiceTitan {
+  laborBurden: number | null;
+  materialsExpenseRead: boolean;
+}
+
+async function loadFinancialFacts(
   db: SqlClient,
   projectId: string,
-): Promise<FinancialsDashboard> {
+): Promise<{
+  money: ProjectMoney;
+  observed: boolean;
+  actuals: DashboardActuals;
+  serviceTitan: DashboardServiceTitan | null;
+  materialsExpenseRead: boolean;
+}> {
   const money = await readStoredProjectMoney(db, projectId);
   const reconciliation = await readStoredReconciliation(db, projectId);
   const counts = await db.query<{ lines: string; orders: string; labor: string }>(
@@ -117,6 +130,7 @@ export async function readFinancialsDashboard(
   const stored = await db.query<{
     estimates_read: boolean;
     invoices_read: boolean;
+    materials_expense_read: boolean;
     contract_value: string | null;
     total_budgeted_expense: string | null;
     change_orders: string | null;
@@ -127,17 +141,19 @@ export async function readFinancialsDashboard(
     invoice_billed: string | null;
     open_invoices: string | null;
     retainage: string | null;
+    labor_burden: string | null;
   }>(
-    `SELECT estimates_read, invoices_read,
+    `SELECT estimates_read, invoices_read, materials_expense_read,
             contract_value::text, total_budgeted_expense::text, change_orders::text,
             cost_adjustments::text, budgeted_labor_expense::text, budgeted_labor_hours::text,
-            budgeted_materials::text, invoice_billed::text, open_invoices::text, retainage::text
+            budgeted_materials::text, invoice_billed::text, open_invoices::text, retainage::text,
+            labor_burden::text
        FROM projects.st_project_summary
       WHERE project_id = $1`,
     [projectId],
   );
   const summary = stored.rows[0];
-  const serviceTitan: DashboardServiceTitan | null = summary
+  const serviceTitan: StoredSummary | null = summary
     ? {
         estimatesRead: summary.estimates_read,
         contractValue: num(summary.contract_value),
@@ -151,16 +167,75 @@ export async function readFinancialsDashboard(
         billed: num(summary.invoice_billed),
         openInvoices: num(summary.open_invoices),
         retainage: num(summary.retainage),
+        laborBurden: num(summary.labor_burden),
+        materialsExpenseRead: summary.materials_expense_read,
       }
     : null;
-  return buildFinancialsDashboard({
+  const materialsExpenseRead =
+    serviceTitan?.materialsExpenseRead !== false || Number(row?.orders ?? 0) > 0;
+  const laborBurden = serviceTitan?.laborBurden ?? money.laborBurden;
+  const materialsExpense = materialsExpenseRead ? money.materialsExpense : null;
+  const expenses =
+    materialsExpense == null ? null : roundMoney(laborBurden + materialsExpense);
+  return {
+    money,
+    observed,
+    materialsExpenseRead,
+    serviceTitan,
     actuals: {
       observed,
       billed: money.billed,
-      laborBurden: money.laborBurden,
-      materialsExpense: money.materialsExpense,
-      expenses: money.expenses,
+      laborBurden,
+      materialsExpense,
+      expenses,
     },
-    serviceTitan,
+  };
+}
+
+export async function readFinancialsDashboard(
+  db: SqlClient,
+  projectId: string,
+): Promise<FinancialsDashboard> {
+  const facts = await loadFinancialFacts(db, projectId);
+  return buildFinancialsDashboard({
+    actuals: facts.actuals,
+    serviceTitan: facts.serviceTitan,
   });
+}
+
+/** Detail card under the dashboard. A missing materials read stays null, not zero. */
+export async function readFinancialsDetail(
+  db: SqlClient,
+  projectId: string,
+): Promise<
+  Omit<ProjectMoney, "materialsExpense" | "expenses" | "margin" | "marginPercent"> & {
+    materialsExpense: number | null;
+    expenses: number | null;
+    margin: number | null;
+    marginPercent: number | null;
+    materials_expense_read: boolean;
+    observed_at: string | null;
+    error: string | null;
+  }
+> {
+  const facts = await loadFinancialFacts(db, projectId);
+  const stored = await readStoredReconciliation(db, projectId);
+  const expenses = facts.actuals.expenses;
+  const margin = expenses == null ? null : roundMoney(facts.money.billed - expenses);
+  return {
+    ...facts.money,
+    laborBurden: facts.actuals.laborBurden,
+    materialsExpense: facts.actuals.materialsExpense,
+    expenses,
+    margin,
+    marginPercent:
+      margin == null || !(facts.money.billed > 0)
+        ? margin == null
+          ? null
+          : 0
+        : roundMoney((margin / facts.money.billed) * 100),
+    materials_expense_read: facts.materialsExpenseRead,
+    observed_at: stored?.observed_at ?? null,
+    error: stored?.error ?? null,
+  };
 }

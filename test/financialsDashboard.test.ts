@@ -94,6 +94,21 @@ describe("financials dashboard tiles", () => {
     expect(dashboard.earnedRevenue.value).toBeNull();
   });
 
+  it("dashes actual expense and margin when materials expense was not returned", () => {
+    const dashboard = buildFinancialsDashboard({
+      actuals: { observed: true, billed: 28289.92, laborBurden: 2440.43, materialsExpense: null, expenses: null },
+      serviceTitan: { ...serviceTitan, estimatesRead: false, invoicesRead: true, billed: 28289.92, openInvoices: 3930.32, retainage: null },
+    });
+    expect(dashboard.laborExpense).toEqual({ value: 2440.43, source: "actuals" });
+    expect(dashboard.materialsExpense.value).toBeNull();
+    expect(dashboard.actualExpense.value).toBeNull();
+    expect(dashboard.actualMargin.value).toBeNull();
+    expect(dashboard.actualMarginPercent.value).toBeNull();
+    expect(dashboard.costToComplete.value).toBeNull();
+    expect(dashboard.openInvoices).toEqual({ value: 3930.32, source: "servicetitan" });
+    expect(dashboard.retainage.value).toBeNull();
+  });
+
   it("does not invent a margin percent when actual revenue is zero", () => {
     const dashboard = buildFinancialsDashboard({
       actuals: { observed: true, billed: 0, laborBurden: 10, materialsExpense: 0, expenses: 10 },

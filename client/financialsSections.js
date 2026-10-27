@@ -53,6 +53,9 @@ export function laborSummary(row) {
 
 export function stDetailSummary(money) {
   if (!money || !money.observed_at) return "Not read yet";
+  if (money.materials_expense_read === false) {
+    return `Billed ${cents(money.billed)} · Expenses not returned`;
+  }
   return `Billed ${cents(money.billed)} · Expenses ${cents(money.expenses)} · Margin ${cents(money.margin)}`;
 }
 

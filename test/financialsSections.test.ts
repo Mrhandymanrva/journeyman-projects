@@ -49,6 +49,13 @@ describe("financials sections", () => {
       stDetailSummary({ observed_at: "2026-10-27T12:00:00Z", billed: 1952, expenses: 448, margin: 1504 }),
     ).toBe("Billed $1,952.00 · Expenses $448.00 · Margin $1,504.00");
     expect(
+      stDetailSummary({
+        observed_at: "2026-10-27T12:00:00Z",
+        billed: 28289.92,
+        materials_expense_read: false,
+      }),
+    ).toBe("Billed $28,289.92 · Expenses not returned");
+    expect(
       reservesSummary([
         { active: true, data: { allocated: 1000, drawn: 250 } },
         { active: false, data: { allocated: 500, drawn: 0 } },
