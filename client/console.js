@@ -1457,9 +1457,22 @@ function renderStageBar(project, gates) {
           ? `blocked: gate ${blocking[0].gate_number} (${blocking[0].title}) is ${blocking[0].status}`
           : `ready to advance to ${next}`;
 
+  const st = project.st_status;
+  const badge = st?.badge
+    ? `<span class="st-status-badge" data-st-badge="${esc(st.badge)}">ServiceTitan ${esc(st.badge)}</span>`
+    : "";
+  const gateWarning = st?.gate_warning
+    ? `<p class="st-gate-warning" role="status">${esc(st.gate_warning)}</p>`
+    : "";
+  const writeError =
+    st && (st.write_result === "rejected" || st.write_result === "failed") && st.write_detail
+      ? `<p class="st-write-error" role="alert">${esc(st.write_detail)}</p>`
+      : "";
+
   el("stagebar").innerHTML = `
     <span class="lbl">Stage</span>
     <span class="now">${esc(String(project.stage).replace(/_/g, " "))}</span>
+    ${badge}
     <span class="why ${blocking.length ? "blocked" : ""}">${esc(why)}</span>
     ${
       next && project.stage !== "cancelled"
@@ -1467,15 +1480,20 @@ function renderStageBar(project, gates) {
             allowed ? "" : "disabled"
           }>Advance to ${esc(next)}</button>`
         : ""
-    }`;
+    }
+    ${gateWarning}
+    ${writeError}`;
 
   el("stage-advance")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      await api(`/projects/${current.id}/stage`, {
+      const updated = await api(`/projects/${current.id}/stage`, {
         method: "POST",
         body: JSON.stringify({ stage: next }),
       });
+      if (updated?.st_status_sync && updated.st_status_sync.ok === false) {
+        alert(updated.st_status_sync.message);
+      }
       await select(current.id);
     } catch (err) {
       e.target.disabled = false;

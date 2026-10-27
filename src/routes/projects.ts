@@ -14,9 +14,13 @@ import { ApiError, notFound } from "../http/errors.js";
 import { requireCapability, unitFilter } from "../http/capabilities.js";
 import {
   staffRoute,
+  withStaff,
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { isoTimestamp, presentStoredStatus } from "../domain/stStatusMap.js";
+import { pullProjectStatus, pushStageStatus, statusClientOf } from "../domain/stStatusSync.js";
 import {
   assertUnitWritable,
   loadVisibleProject,
@@ -108,7 +112,7 @@ const advanceStageSchema = z.object({
   ]),
 });
 
-export function projectRoutes(deps: StaffRouterDeps): Router {
+export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections = {}): Router {
   const router = Router();
 
   // ---------------------------------------------------------------- list ---
@@ -208,10 +212,51 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
   );
 
   // -------------------------------------------------------------- detail ---
-  router.get(
-    "/projects/:id",
-    staffRoute(deps, async (ctx) => {
-      const id = parseUuidParam(ctx.req.params.id, "Project");
+  router.get("/projects/:id", (req, res, next) => {
+    void (async () => {
+      const opened = await withStaff(deps, req, res, async (ctx) => {
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        await loadVisibleProject(ctx, id, "id");
+        const link = await ctx.db.query<{
+          external_project_id: string;
+          external_system_id: string;
+          connection_key: string;
+        }>(
+          `SELECT external_project_id, external_system_id, connection_key
+             FROM projects.st_project_connections WHERE project_id = $1`,
+          [id],
+        );
+        return { id, staff: ctx.staff, link: link.rows[0] ?? null };
+      });
+      const st = sources.serviceTitan;
+      const link = opened.link;
+      const readClient = st ? statusClientOf(st.client) : null;
+      if (
+        link &&
+        readClient &&
+        link.external_system_id === st?.externalSystemId &&
+        link.connection_key === st?.key
+      ) {
+        try {
+          await pullProjectStatus(deps.database, {
+            tenantId: opened.staff.tenantId,
+            projectId: opened.id,
+            externalProjectId: link.external_project_id,
+            actor: { type: "staff", id: opened.staff.staffId, name: opened.staff.fullName },
+            client: readClient,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "ServiceTitan status sync failed.";
+          console.error(
+            `ServiceTitan status was not read for project ${opened.id}. ${message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 300)}`,
+          );
+        }
+      }
+      await withStaff(deps, req, res, (ctx) => sendProjectDetail(ctx, opened.id));
+    })().catch(next);
+  });
+
+  async function sendProjectDetail(ctx: StaffContext, id: string) {
       const project = await loadVisibleProject<Record<string, unknown>>(
         ctx,
         id,
@@ -302,8 +347,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           overdue_milestones: Number(p.overdue_milestones),
         })),
       });
-    }),
-  );
+  }
 
   // --------------------------------------------------------------- patch ---
   router.patch(
@@ -575,34 +619,71 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
   );
 
   // --------------------------------------------------------------- stage ---
-  router.post(
-    "/projects/:id/stage",
-    staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, "advance_stage");
-      const id = parseUuidParam(ctx.req.params.id, "Project");
-      const { stage } = parseBody(advanceStageSchema, ctx.req.body);
-      const project = await loadVisibleProject<{
-        id: string;
-        stage: ProjectStage;
-      }>(ctx, id, "id, stage");
-
-      const gates = await ctx.db.query<GateState>(
-        `SELECT gate_number, title, status::text AS status
-           FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
-        [id],
-      );
-      assertStageAdvanceAllowed(project.stage, stage, gates.rows);
-
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `UPDATE projects.projects SET stage = $2 WHERE id = $1 RETURNING *`,
-        [id, stage],
-      );
-      sendData(ctx.res, {
-        ...(await projectPayload(ctx.db, id, rows[0]!)),
-        next_stage: nextStage(stage),
+  router.post("/projects/:id/stage", (req, res, next) => {
+    void (async () => {
+      const advanced = await withStaff(deps, req, res, async (ctx) => {
+        requireCapability(ctx.staff.role, "advance_stage");
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        const { stage } = parseBody(advanceStageSchema, ctx.req.body);
+        const project = await loadVisibleProject<{
+          id: string;
+          stage: ProjectStage;
+        }>(ctx, id, "id, stage");
+        const gates = await ctx.db.query<GateState>(
+          `SELECT gate_number, title, status::text AS status
+             FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
+          [id],
+        );
+        assertStageAdvanceAllowed(project.stage, stage, gates.rows);
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET stage = $2::projects.project_stage,
+                  stage_changed_at = now(),
+                  st_status_gate_warning = NULL
+            WHERE id = $1`,
+          [id, stage],
+        );
+        const link = await ctx.db.query<{
+          external_project_id: string;
+          external_system_id: string;
+          connection_key: string;
+        }>(
+          `SELECT external_project_id, external_system_id, connection_key
+             FROM projects.st_project_connections WHERE project_id = $1`,
+          [id],
+        );
+        return { id, stage, from: project.stage, staff: ctx.staff, link: link.rows[0] ?? null };
       });
-    }),
-  );
+      const st = sources.serviceTitan;
+      const link = advanced.link;
+      const writeClient = st ? statusClientOf(st.client) : null;
+      let stStatusSync = null;
+      if (
+        link &&
+        writeClient?.updateProjectStatus &&
+        link.external_system_id === st?.externalSystemId &&
+        link.connection_key === st?.key
+      ) {
+        stStatusSync = await pushStageStatus(deps.database, {
+          tenantId: advanced.staff.tenantId,
+          projectId: advanced.id,
+          externalProjectId: link.external_project_id,
+          stage: advanced.stage,
+          fromStage: advanced.from,
+          actor: { type: "staff", id: advanced.staff.staffId, name: advanced.staff.fullName },
+          client: writeClient,
+        });
+      }
+      await withStaff(deps, req, res, async (ctx) => {
+        const project = await loadVisibleProject<Record<string, unknown>>(ctx, advanced.id);
+        sendData(ctx.res, {
+          ...(await projectPayload(ctx.db, advanced.id, project)),
+          next_stage: nextStage(advanced.stage),
+          ...(stStatusSync ? { st_status_sync: stStatusSync } : {}),
+        });
+      });
+    })().catch(next);
+  });
 
   return router;
 }
@@ -810,8 +891,23 @@ function serialiseProject(row: Record<string, unknown>) {
   const precon = preconCountsFromRow(rest);
   delete rest.precon_open;
   delete rest.precon_overdue;
+  const stStatus = presentStoredStatus(rest);
+  delete rest.st_status_id;
+  delete rest.st_substatus_id;
+  delete rest.st_status_name;
+  delete rest.st_substatus_name;
+  delete rest.st_status_synced_at;
+  delete rest.st_status_modified_on;
+  delete rest.st_status_write_result;
+  delete rest.st_status_write_detail;
+  delete rest.st_status_gate_warning;
+  if (rest.stage_changed_at != null) {
+    const changedAt = isoTimestamp(rest.stage_changed_at);
+    if (changedAt) rest.stage_changed_at = changedAt;
+  }
   return {
     ...rest,
+    ...(stStatus ? { st_status: stStatus } : {}),
     contract_value: num(row.contract_value),
     target_margin: num(row.target_margin),
     field_release: presentFieldRelease({
