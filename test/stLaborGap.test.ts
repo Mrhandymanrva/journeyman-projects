@@ -384,6 +384,49 @@ describe("st labor diagnostic", () => {
     expect(body.payroll_adjustments).toMatchObject({ available: true, count: 2, sum: 15, tied_by: "job-or-invoice", untied: 1 });
     expect(body.timesheet_burden.note).toMatch(/not a match/);
     expect(body.timesheet_burden.included_in_labor_hours).toBe(false);
+    expect(body.commission_breakdown).toMatchObject({
+      rows: 1,
+      total: 85,
+      earliest: "2026-10-20T00:00:00Z",
+      latest: "2026-10-20T00:00:00Z",
+      by_month: [{ month: "2026-10", count: 1, total: 85 }],
+      payroll_status_available: false,
+    });
+    expect(body.commission_breakdown.by_payroll).toEqual([
+      expect.objectContaining({
+        payroll_id: null,
+        finalized: "unknown",
+        count: 1,
+        total: 85,
+        on_or_before_close: null,
+        after_close: null,
+      }),
+    ]);
+    expect(body.commission_breakdown.residuals.find((row) => row.subset === "all_posted")).toMatchObject({
+      commission_total: 85,
+      basis: "st_labor_minus_posted_commission",
+      burden_target: 21798.04,
+    });
+    expect(body.activity_burden).toMatchObject({
+      available: false,
+      hours: null,
+      amount: null,
+      drive_included: false,
+      included_in_burden: false,
+      cap_hours: 14,
+    });
+    expect(body.activity_burden.gaps.find((row) => row.subset === "all_posted")).toEqual({
+      subset: "all_posted",
+      burden_target: 21798.04,
+      delta: null,
+    });
+    expect(body.technician_adjustments).toMatchObject({
+      available: true,
+      tied_to_project_jobs: { count: 1, total: 12 },
+      untied_for_project_techs: { count: 1, total: 3 },
+    });
+    expect(body.live_burden.amount).toBeNull();
+    expect(body.labor_source).toBe("posted_commission");
   });
 
   it("reports a matching burden candidate without adopting it or leaking personal data", () => {
@@ -602,6 +645,10 @@ describe("st labor diagnostic", () => {
     );
     expect(ok.body.data.timesheet_burden.included_in_labor_hours).toBe(false);
     expect(ok.body.data.project_labor_expense.available).toBe(false);
+    expect(ok.body.data.commission_breakdown.total).toBe(85);
+    expect(ok.body.data.activity_burden).toMatchObject({ available: false, included_in_burden: false, drive_included: false });
+    expect(ok.body.data.technician_adjustments.tied_to_project_jobs).toEqual({ count: 1, total: 12 });
+    expect(ok.body.data.live_burden.amount).toBeNull();
     const report = await readStLaborDiagnostic(
       {
         readProjectJobs: async () => [],
