@@ -10,6 +10,12 @@ import {
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
+import {
+  scopeNamesFromAuthBody,
+  PROJECTS_WRITE_SCOPE,
+  type StProjectStatus,
+  type StStatusCatalog,
+} from "../domain/stStatusMap.js";
 
 const sourceId = z
   .union([z.string().regex(/^\d+$/), z.number().int().nonnegative().safe()])
@@ -78,6 +84,9 @@ const projectSchema = z.object({
   name: z.string().nullish(),
   summary: z.string().nullish(),
   status: z.string().nullish(),
+  statusId: sourceId.nullish(),
+  subStatus: z.string().nullish(),
+  subStatusId: sourceId.nullish(),
   customerId: sourceId,
   locationId: sourceId,
   jobIds: z.array(sourceId),
@@ -162,6 +171,34 @@ export function retryAfterMs(header: string | null, now = Date.now()): number {
 export class ServiceTitanReadError extends Error {}
 export class ServiceTitanWriteUncertainError extends ServiceTitanReadError {}
 
+/** A project-status PATCH that did not land. retryable is timeout or HTTP 5xx. */
+export class ServiceTitanStatusWriteError extends Error {
+  constructor(
+    readonly httpStatus: number | null,
+    message: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "ServiceTitanStatusWriteError";
+  }
+}
+
+function projectStatusOf(project: {
+  statusId?: string | null;
+  status?: string | null;
+  subStatusId?: string | null;
+  subStatus?: string | null;
+  modifiedOn?: string | null;
+}): StProjectStatus {
+  return {
+    statusId: project.statusId ?? null,
+    statusName: project.status ?? null,
+    subStatusId: project.subStatusId ?? null,
+    subStatusName: project.subStatus ?? null,
+    modifiedOn: project.modifiedOn ?? null,
+  };
+}
+
 /** An explicitly configured ServiceTitan client. It does not use a process-global
  * token or default tenant: callers must supply the connection for their tenant.
  * It reads projects, jobs, appointments, and assignments. The writes it already
@@ -196,6 +233,9 @@ export interface GrossPayItem {
 export class ServiceTitanReadAdapter {
   private token?: { value: string; expiresAt: number };
   private tokenPending?: Promise<string>;
+  /** Scope names from the last token response. The token itself is never copied here. */
+  private scopeNames: string[] = [];
+  private statusCatalog?: { expiresAt: number; catalog: StStatusCatalog };
   private readonly apiHost: string;
   private readonly authHost: string;
   constructor(
@@ -230,6 +270,17 @@ export class ServiceTitanReadAdapter {
   get sourceTenantId(): string {
     return this.config.tenantId;
   }
+
+  /**
+   * OAuth scope names granted to this app. Reads the token response `scope`
+   * field, or the JWT `scope` claim when that field is absent. The access
+   * token is not returned.
+   */
+  async grantedScopes(): Promise<{ scopes: string[]; hasProjectsWrite: boolean }> {
+    await this.accessToken();
+    const scopes = [...this.scopeNames];
+    return { scopes, hasProjectsWrite: scopes.includes(PROJECTS_WRITE_SCOPE) };
+  }
   private async accessToken(): Promise<string> {
     if (this.token && this.token.expiresAt > Date.now() + 60000)
       return this.token.value;
@@ -250,16 +301,19 @@ export class ServiceTitanReadAdapter {
         throw new ServiceTitanReadError(
           `ServiceTitan authentication failed (HTTP ${r.status}).`,
         );
+      const body: unknown = await r.json();
       const parsed = z
         .object({
           access_token: z.string().min(1),
           expires_in: z.number().positive(),
+          scope: z.union([z.string(), z.array(z.string())]).optional(),
         })
-        .safeParse(await r.json());
+        .safeParse(body);
       if (!parsed.success)
         throw new ServiceTitanReadError(
           "ServiceTitan returned an invalid authentication response.",
         );
+      this.scopeNames = scopeNamesFromAuthBody(body);
       this.token = {
         value: parsed.data.access_token,
         expiresAt: Date.now() + parsed.data.expires_in * 1000,
@@ -919,6 +973,125 @@ export class ServiceTitanReadAdapter {
     if (new Set(result.data.jobIds).size !== result.data.jobIds.length)
       throw new ServiceTitanReadError("Duplicate ST project job IDs.");
     return { project: result.data, observedAt: new Date().toISOString() };
+  }
+
+  async readProjectStatus(id: string): Promise<StProjectStatus> {
+    const { project } = await this.readProject(id);
+    return projectStatusOf(project);
+  }
+
+  /**
+   * Status names from ServiceTitan, cached for an hour. A failed catalog read
+   * returns an empty catalog so callers fall back to the known ids.
+   */
+  async readStatusCatalog(): Promise<StStatusCatalog> {
+    if (this.statusCatalog && this.statusCatalog.expiresAt > Date.now()) {
+      return this.statusCatalog.catalog;
+    }
+    try {
+      const [statuses, substatuses] = await Promise.all([
+        this.listNamedStatuses("project-statuses"),
+        this.listNamedStatuses("project-substatuses"),
+      ]);
+      const catalog = { statuses, substatuses };
+      this.statusCatalog = { expiresAt: Date.now() + 60 * 60 * 1000, catalog };
+      return catalog;
+    } catch (err) {
+      console.error(
+        `ServiceTitan status catalog was not read. ${err instanceof Error ? err.message : "Catalog read failed."}`,
+      );
+      return { statuses: [], substatuses: [] };
+    }
+  }
+
+  private async listNamedStatuses(
+    resource: "project-statuses" | "project-substatuses",
+  ): Promise<StStatusCatalog["statuses"]> {
+    const out: StStatusCatalog["statuses"] = [];
+    const row = z.object({
+      id: sourceId,
+      name: z.string(),
+      statusId: sourceId.nullish(),
+      projectStatusId: sourceId.nullish(),
+      parentId: sourceId.nullish(),
+    });
+    for (let page = 1; page <= 20; page += 1) {
+      const parsed = z
+        .object({ data: z.array(row), hasMore: z.boolean().optional() })
+        .parse(
+          await this.get(
+            "jpm",
+            resource,
+            new URLSearchParams({ page: String(page), pageSize: "200" }),
+          ),
+        );
+      for (const item of parsed.data) {
+        out.push({
+          id: item.id,
+          name: item.name,
+          statusId: item.statusId ?? item.projectStatusId ?? item.parentId ?? null,
+        });
+      }
+      if (!parsed.hasMore) return out;
+    }
+    return out;
+  }
+
+  /**
+   * PATCH the project status. Sends statusId and subStatusId only.
+   * HTTP 408 and 5xx are retryable. Other 4xx, including 403, are not.
+   */
+  async updateProjectStatus(
+    projectId: string,
+    patch: { statusId: string; subStatusId: string | null },
+  ): Promise<StProjectStatus> {
+    if (!/^\d+$/.test(projectId) || !/^\d+$/.test(patch.statusId)) {
+      throw new ServiceTitanStatusWriteError(null, "ServiceTitan project status id is not numeric.", false);
+    }
+    if (patch.subStatusId != null && !/^\d+$/.test(patch.subStatusId)) {
+      throw new ServiceTitanStatusWriteError(null, "ServiceTitan project sub-status id is not numeric.", false);
+    }
+    const token = await this.accessToken();
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        `${this.apiHost}/jpm/v2/tenant/${this.config.tenantId}/projects/${projectId}`,
+        {
+          method: "PATCH",
+          redirect: "error",
+          signal: AbortSignal.timeout(30000),
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+            "ST-App-Key": this.config.appKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            statusId: Number(patch.statusId),
+            subStatusId: patch.subStatusId == null ? null : Number(patch.subStatusId),
+          }),
+        },
+      );
+    } catch {
+      throw new ServiceTitanStatusWriteError(null, "ServiceTitan project status update timed out.", true);
+    }
+    if (response.status === 401) this.token = undefined;
+    if (response.status === 408 || response.status >= 500) {
+      throw new ServiceTitanStatusWriteError(response.status, `HTTP ${response.status}`, true);
+    }
+    if (!response.ok) {
+      throw new ServiceTitanStatusWriteError(response.status, `HTTP ${response.status}`, false);
+    }
+    const text = await response.text();
+    if (text) {
+      try {
+        const parsed = projectSchema.safeParse(JSON.parse(text) as unknown);
+        if (parsed.success) return projectStatusOf(parsed.data);
+      } catch {
+        // The receipt was not the project document. Read it back.
+      }
+    }
+    return this.readProjectStatus(projectId);
   }
   async readProjectDetails(id: string) {
     const { project } = await this.readProject(id);

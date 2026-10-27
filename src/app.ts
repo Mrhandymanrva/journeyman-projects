@@ -140,9 +140,9 @@ export function createApp(opts: AppOptions): Express {
 
   if (opts.portfolio) {
     const portfolio = opts.portfolio;
-    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, portfolio));
+    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, portfolio, opts.sources));
     app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, portfolio));
-    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, portfolio));
+    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, portfolio, opts.sources));
     // This bearer already reads documents and writes vendors on /portfolio.
     // It may upload a vendor document here and nowhere else under /projects.
     // Any other Authorization value falls through to staff login, unchanged.
@@ -219,7 +219,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(userRoutes(deps, opts.sources));
   staff.use(referenceRoutes(deps));
   staff.use(homeRoutes(deps));
-  staff.use(projectRoutes(deps));
+  staff.use(projectRoutes(deps, opts.sources ?? {}));
   staff.use(projectControlRoutes(deps));
   staff.use(recordExportRoutes(deps, opts.sources));
   staff.use(gateRoutes(deps));

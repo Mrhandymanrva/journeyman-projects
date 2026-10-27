@@ -37,6 +37,8 @@ import {
 import { applyResolvedLaborCode, resolveStLaborCode, type StLaborResolve } from "../domain/stLaborCode.js";
 import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
+import { applyInboundStatus } from "../domain/stStatusSync.js";
+import { statusSnapshotFromProject, type StStatusCatalog } from "../domain/stStatusMap.js";
 import {
   pickFieldStart,
   presentFieldStart,
@@ -71,11 +73,22 @@ export function stProjectRoutes(
       throw new ApiError("conflict", "ServiceTitan source is inactive.");
     return c;
   }
+  async function statusCatalog(client: {
+    readStatusCatalog?: () => Promise<StStatusCatalog>;
+  }): Promise<StStatusCatalog | null> {
+    if (!client.readStatusCatalog) return null;
+    try {
+      return await client.readStatusCatalog();
+    } catch {
+      return null;
+    }
+  }
   async function applySource(
     ctx: StaffContext,
     id: string,
     c: NonNullable<SourceConnections["serviceTitan"]>,
     result: Details,
+    catalog: StStatusCatalog | null = null,
   ) {
     await ctx.db.query(
       "SELECT id FROM projects.projects WHERE id=$1 FOR UPDATE",
@@ -186,6 +199,13 @@ export function stProjectRoutes(
           "An ST job was linked elsewhere during refresh. No changes were saved.",
         );
     }
+    await applyInboundStatus(ctx.db, {
+      tenantId: ctx.staff.tenantId,
+      projectId: id,
+      actor: { type: "staff", id: ctx.staff.staffId, name: ctx.staff.fullName },
+      snapshot: statusSnapshotFromProject(result.project),
+      catalog,
+    });
   }
   router.post(
     "/servicetitan/projects/import",
@@ -236,7 +256,15 @@ export function stProjectRoutes(
           modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
-      async (p) => readOptionalSources(p.c.client, p.b.external_project_id, p.manual, p.modifiedSince),
+      async (p) => {
+        const read = await readOptionalSources(
+          p.c.client,
+          p.b.external_project_id,
+          p.manual,
+          p.modifiedSince,
+        );
+        return { ...read, catalog: await statusCatalog(p.c.client) };
+      },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
         if(ctx.settings.enforceBusinessUnitScoping&&!p.b.business_unit_id)throw new ApiError("validation_failed","Choose a business unit for this project.");
@@ -280,7 +308,7 @@ export function stProjectRoutes(
           });
           id = created.id as string;
         }
-        await applySource(ctx, id, c, result.details);
+        await applySource(ctx, id, c, result.details, result.catalog);
         await storeReadLabor(ctx, id, result.labor, result.directory, result.laborCode);
         await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
         if (!p.manual && result.fieldStartRead !== "failed") {
@@ -378,7 +406,15 @@ export function stProjectRoutes(
           modifiedSince: since.rows[0]?.observed_at?.toISOString() ?? null,
         };
       },
-      async (p) => readOptionalSources(p.c.client, p.b.external_project_id, p.manual, p.modifiedSince),
+      async (p) => {
+        const read = await readOptionalSources(
+          p.c.client,
+          p.b.external_project_id,
+          p.manual,
+          p.modifiedSince,
+        );
+        return { ...read, catalog: await statusCatalog(p.c.client) };
+      },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
         await loadVisibleProject(ctx, p.id, "id");
@@ -388,7 +424,7 @@ export function stProjectRoutes(
             "conflict",
             "ServiceTitan connection changed; refresh before linking.",
           );
-        await applySource(ctx, p.id, c, result.details);
+        await applySource(ctx, p.id, c, result.details, result.catalog);
         await storeReadLabor(ctx, p.id, result.labor, result.directory, result.laborCode);
         await storeReadAr(
           ctx,

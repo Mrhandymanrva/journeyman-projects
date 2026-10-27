@@ -49,6 +49,7 @@ import {
   resolveStLaborCode,
   type StLaborResolve,
 } from "../domain/stLaborCode.js";
+import { syncLinkedProjectStatuses } from "../domain/stStatusSync.js";
 
 const GAP_MS = 250;
 export const LABOR_REFRESH_LOCK_KEY = "journeyman.labor_auto_refresh";
@@ -221,6 +222,11 @@ export async function runHourlyLaborRefresh(
       }
       await writeRun("started", null);
       if (gapMs > 0 && index < projects.rows.length - 1) await sleep(gapMs);
+    }
+    try {
+      await syncLinkedProjectStatuses(db, connection, tenantId);
+    } catch (err) {
+      console.error(`ServiceTitan status sync did not finish. ${errorText(err)}`);
     }
     await writeRun("finished", null);
     return { skipped: null, projects: projects.rows.length, refreshed, failed, laborCode };

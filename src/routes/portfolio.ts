@@ -9,6 +9,8 @@ import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/proje
 import { loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { presentFeedStatus, readServiceTitanAccess } from "../domain/stStatusMap.js";
 
 /**
  * GET /api/v1/portfolio/summary — one read-only document describing the state
@@ -41,6 +43,7 @@ export function bearerMatchesToken(
 export function portfolioRoutes(
   database: Database,
   config: PortfolioFeedConfig,
+  sources?: SourceConnections,
 ): Router {
   const router = Router();
 
@@ -54,9 +57,11 @@ export function portfolioRoutes(
   });
 
   router.get("/summary", (_req, res, next) => {
-    database
-      .withTenant(config.tenantId, (db) => buildSummary(db, config.tenantId))
-      .then((summary) => sendData(res, summary))
+    Promise.all([
+      database.withTenant(config.tenantId, (db) => buildSummary(db, config.tenantId)),
+      readServiceTitanAccess(sources?.serviceTitan?.client),
+    ])
+      .then(([summary, serviceTitan]) => sendData(res, { ...summary, service_titan: serviceTitan }))
       .catch(next);
   });
 
@@ -83,6 +88,8 @@ async function buildSummary(db: SqlClient, tenantId: string) {
     field_released_at: unknown; field_release_note: string | null; field_released_by_name: string | null;
     field_start: string | null; field_start_source: string | null; field_start_observed_at: unknown;
     precon_open: string; precon_overdue: string;
+    st_status_name: string | null; st_substatus_name: string | null;
+    st_status_synced_at: unknown; st_status_write_result: string | null;
   }>(
     `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.city, p.region,
             p.contract_value::text, p.target_margin::text,
@@ -93,6 +100,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
             m.revised_contract::text, m.committed_cost::text, m.projected_cost::text,
             (SELECT count(*) FROM projects.stage_gates g WHERE g.project_id = p.id AND g.status = 'submitted')::text AS gates_awaiting,
             (SELECT count(*) FROM projects.draws d WHERE d.project_id = p.id AND d.status IN ('earned','approved'))::text AS draws_waiting,
+            p.st_status_name, p.st_substatus_name, p.st_status_synced_at, p.st_status_write_result,
             p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
        FROM projects.projects p
        LEFT JOIN projects.staff s ON s.id = p.pm_id
@@ -231,6 +239,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
           note: p.field_release_note,
         }),
         gates_awaiting_approval: num(p.gates_awaiting), draws_waiting: num(p.draws_waiting),
+        service_titan_status: presentFeedStatus(p),
         updated_at: p.updated_at,
       };
     }),
