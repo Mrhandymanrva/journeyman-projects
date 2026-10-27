@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { MemoryStaffSessions } from "../src/http/memoryStaffSessions.js";
 import {
   LABOR_REFRESH_LOCK_KEY,
+  OVERNIGHT_LOCK_RETRY_MS,
   laborRefreshTenantId,
   runHourlyLaborRefresh,
   startLaborRefreshScheduler,
@@ -277,6 +278,73 @@ describe("hourly labor refresh", () => {
     });
     expect(laborOf("A-200")).toMatchObject({ source: null, observed_at: null });
     expect(laborOf("A-900")).toMatchObject({ source: null, observed_at: null, labor_hours: 0 });
+    const projectFeed = (number: string) =>
+      (feed.body.data.projects as Array<{
+        project_number: string;
+        labor_refresh: { status: string; ok: number; failed: number; error: string | null };
+        reconciliation: {
+          lines: Array<{ key: string; jp: number; st: number; delta: number }>;
+          technicians: Array<{ technician_name: string; hours: number; burden: number | null; commission_percent: number | null }>;
+        } | null;
+      }>).find((project) => project.project_number === number);
+    expect(projectFeed("A-100")?.labor_refresh).toMatchObject({
+      status: "finished",
+      ok: 2,
+      failed: 1,
+      error: null,
+    });
+    expect(projectFeed("A-200")?.labor_refresh.error).toContain("HTTP 500");
+    expect(projectFeed("A-100")?.reconciliation?.technicians).toEqual([
+      expect.objectContaining({
+        technician_name: "Casey Nguyen",
+        hours: 2,
+        commission_percent: null,
+        burden: 24,
+      }),
+    ]);
+    const burdenLine = projectFeed("A-100")?.reconciliation?.lines.find((line) => line.key === "laborBurden");
+    expect(burdenLine).toMatchObject({ jp: 24, st: 24, delta: 0 });
+
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.labor_actuals SET burden_amount = burden_amount + 0.01 WHERE project_id = $1`,
+        [ids.get("A-100")],
+      ),
+    );
+    const stored = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-100")}/financials/reconciliation`,
+    );
+    expect(stored.status, JSON.stringify(stored.body)).toBe(200);
+    expect(stored.body.data.lines.find((line: { key: string }) => line.key === "laborBurden")).toMatchObject({
+      jp: 24,
+      st: 24,
+      delta: 0,
+    });
+    expect(stored.body.data.note).toBeNull();
+    const untouched = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-900")}/financials/reconciliation`,
+    );
+    expect(untouched.body.data.observed_at).toBeNull();
+    expect(untouched.body.data.lines).toEqual([]);
+    expect(untouched.body.data.note).toBe("No reconciliation has been stored. Refresh will write one.");
+
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.st_financial_reconciliation
+            SET lines = $2::jsonb
+          WHERE project_id = $1`,
+        [
+          ids.get("A-300"),
+          JSON.stringify([{ key: "billedLabor", label: "Billed labor", jp: 1.01, st: 1, delta: 0.01 }]),
+        ],
+      ),
+    );
+    const drifted = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-300")}/financials/reconciliation`,
+    );
+    expect(drifted.body.data.lines).toEqual([
+      expect.objectContaining({ key: "billedLabor", jp: 1.01, st: 1, delta: 0.01 }),
+    ]);
   });
 
   it("skips the whole run when the advisory lock is already held", async () => {
@@ -343,6 +411,43 @@ describe("hourly labor refresh", () => {
     });
     expect(delays[0]).toBe(60_000);
     timer?.cancel();
+  });
+
+  it("catch-up runs a morning restart that has no finish stamp, and a lock retries without finishing the night", async () => {
+    const now = new Date("2026-10-27T09:43:00.000Z");
+    const lines: string[] = [];
+    const delays: number[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((message) => {
+      lines.push(String(message));
+    });
+    const timer = startLaborRefreshScheduler(h.db, { serviceTitan: connection }, {
+      env: {},
+      now: () => now,
+      gapMs: 0,
+      tryLock: async () => null,
+      schedule: (_run, delayMs) => {
+        delays.push(delayMs);
+        return { cancel() {} };
+      },
+    });
+    try {
+      await vi.waitFor(() => {
+        expect(lines.some((line) => line.includes("Missed the 2 AM America/New_York refresh. Running one catch-up."))).toBe(true);
+      });
+      expect(lines.some((line) => line.includes("Retrying in 15 minutes."))).toBe(true);
+      expect(delays).toEqual([OVERNIGHT_LOCK_RETRY_MS]);
+      const finished = await h.db.withTenant(tenant.id, (db) =>
+        db.query<{ finished: Date | null }>(
+          `SELECT overnight_refresh_finished_at AS finished
+             FROM projects.tenant_settings WHERE tenant_id = $1`,
+          [tenant.id],
+        ),
+      );
+      expect(finished.rows[0]?.finished).toBeNull();
+    } finally {
+      timer?.cancel();
+      spy.mockRestore();
+    }
   });
 });
 

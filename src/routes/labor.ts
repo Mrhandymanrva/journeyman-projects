@@ -11,8 +11,7 @@ import {
   updateBillableRate,
   type PricedTechnician,
 } from "../domain/laborActuals.js";
-import { reconcileFinancials } from "../domain/projectFinancials.js";
-import { readStoredProjectMoney } from "../domain/projectSync.js";
+import { readStoredProjectMoney, readStoredReconciliation, reconciliationNote } from "../domain/projectSync.js";
 import {
   presentStLaborCode,
   readStLaborCode,
@@ -113,7 +112,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       requireCapability(ctx.staff.role, "manage_company_settings");
       const projectId = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, projectId, "id");
-      const money = await readStoredProjectMoney(ctx.db, projectId);
+      const stored = await readStoredReconciliation(ctx.db, projectId);
       const jobs = await ctx.db.query<{ n: string }>(
         `SELECT count(*)::text AS n
            FROM projects.project_job_links
@@ -123,7 +122,11 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       sendData(ctx.res, {
         project_id: projectId,
         job_count: Number(jobs.rows[0]?.n ?? 0),
-        lines: reconcileFinancials(money, money),
+        observed_at: stored?.observed_at ?? null,
+        lines: stored?.lines ?? [],
+        technicians: stored?.technicians ?? [],
+        error: stored?.error ?? null,
+        note: reconciliationNote(stored),
       });
     }),
   );

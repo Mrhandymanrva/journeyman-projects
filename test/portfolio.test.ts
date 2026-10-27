@@ -57,6 +57,15 @@ describe("portfolio feed", () => {
     expect(d.totals.active_projects).toBe(1);
     expect(d.totals.health).toEqual({ red: 0, yellow: 0, green: 1 });
     expect(d.projects.map((p: { project_number: string }) => p.project_number)).toEqual(["P-100"]);
+    expect(d.projects[0].labor_refresh).toEqual({
+      status: null,
+      started_at: null,
+      finished_at: null,
+      ok: 0,
+      failed: 0,
+      error: null,
+    });
+    expect(d.projects[0].reconciliation).toBeNull();
     expect(d.totals.backlog_contract).toBe(50_000);
     expect(d.draws.approved_not_invoiced).toEqual([]);
     expect(d.exceptions.budget).toEqual([]);

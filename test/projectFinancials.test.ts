@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { classifyTechnician } from "../src/domain/commissionLabor.js";
 import {
@@ -9,6 +10,7 @@ import {
   SEGRETO_JOB_COUNT,
   SEGRETO_LINKED_JOB,
   SEGRETO_PROJECT_ID,
+  classifyInvoiceItem,
   commissionDollars,
   financialsFromReads,
   otherProjectJobList,
@@ -22,6 +24,7 @@ import {
   missedOvernightCatchUp,
   mostRecentOvernight,
   nextOvernight,
+  refreshBootAction,
   zonedClock,
 } from "../src/domain/overnightSchedule.js";
 
@@ -83,6 +86,83 @@ describe("Segreto project financials", () => {
       st: 2440.43,
       delta: 0,
     });
+    const drifted = { ...money, billedLabor: 15096.41 };
+    expect(reconcileFinancials(drifted, money).find((line) => line.key === "billedLabor")).toMatchObject({
+      jp: 15096.41,
+      st: 15096.4,
+      delta: 0.01,
+    });
+  });
+
+  it("classifies Segreto and Willard invoice items from the general ledger account", () => {
+    const segreto = billedFromFixture("segreto-321586598.json");
+    expect(segreto.fixture.projectId).toBe(SEGRETO_PROJECT_ID);
+    expect(segreto.fixture.invoiceCount).toBe(33);
+    const laborLines = segreto.lines.filter((line) => line.kind === "labor" && line.total !== 0);
+    expect(laborLines).toHaveLength(10);
+    expect(laborLines.every((line) => line.sku === "MHM.25PLFE")).toBe(true);
+    expect(laborLines.map((line) => line.invoice).sort()).toEqual([
+      "145409",
+      "145411",
+      "145412",
+      "145413",
+      "145414",
+      "145415",
+      "145416",
+      "145417",
+      "145419",
+      "145420",
+    ]);
+    expect(segreto.lines.filter((line) => line.sku === "MH.VS.700.002").every((line) => line.kind === "material")).toBe(true);
+    expect(segreto.lines.filter((line) => line.sku === "MH.PO.700.003").reduce((sum, line) => sum + line.total, 0)).toBe(8382.73);
+    expect(segreto.lines.filter((line) => line.sku === "MH.VS.700.002").reduce((sum, line) => roundCheck(sum + line.total), 0)).toBe(880.47);
+    const money = financialsFromReads({
+      invoiceLines: segreto.lines,
+      timesheets: [
+        { technicianId: "a", hours: 40, burdenRate: 30 },
+        { technicianId: "b", hours: 40.3, burdenRate: 30.78 },
+      ],
+      purchaseOrders: [{ total: 5239.21 }, { total: 100, canceled: true }],
+    });
+    expect(money).toEqual(SEGRETO_FINANCIALS);
+
+    const willard = billedFromFixture("willard-321293715.json");
+    expect(willard.fixture.projectId).toBe(OTHER_PROJECT_ID);
+    expect(willard.fixture.invoiceCount).toBe(13);
+    const willardMoney = financialsFromReads({
+      invoiceLines: willard.lines,
+      timesheets: [],
+      purchaseOrders: [],
+    });
+    expect(willardMoney.billedLabor).toBe(14614.52);
+    expect(willardMoney.billedMaterials).toBe(4411.62);
+    expect(willard.lines.filter((line) => line.sku === "MHM 250.Labor").every((line) => line.kind === "labor")).toBe(true);
+    expect(willard.lines.filter((line) => line.sku === "MHM.25LFCO").every((line) => line.kind === "labor")).toBe(true);
+    expect(willard.lines.filter((line) => line.sku === "MH.VS.700.002").every((line) => line.kind === "material")).toBe(true);
+  });
+
+  it("uses the account prefix, and type only when the account is missing", () => {
+    expect(classifyInvoiceItem({
+      type: "PriceModifier",
+      accountName: "Material Revenue:Material Billed",
+    })).toBe("material");
+    expect(classifyInvoiceItem({
+      type: "Service",
+      accountName: "Labor Revenue:Labor Revenue",
+    })).toBe("labor");
+    expect(classifyInvoiceItem({
+      type: "Material",
+      accountName: "Labor Revenue:Labor Revenue",
+    })).toBe("labor");
+    expect(classifyInvoiceItem({
+      type: "Service",
+      accountName: "Material Revenue:Material Billed",
+    })).toBe("material");
+    expect(classifyInvoiceItem({ type: "Service", accountName: "Expense:Labor" })).toBe("other");
+    expect(classifyInvoiceItem({ type: "Service", accountName: null })).toBe("labor");
+    expect(classifyInvoiceItem({ type: "Material", accountName: null })).toBe("material");
+    expect(classifyInvoiceItem({ type: "PriceModifier", accountName: null })).toBe("material");
+    expect(classifyInvoiceItem({ type: "Equipment", accountName: null })).toBe("other");
   });
 
   it("ignores dispatch and arrive clocks and keeps a payroll duration", () => {
@@ -183,8 +263,54 @@ describe("overnight schedule", () => {
     expect(missedOvernightCatchUp(after, null)).toBe(false);
     expect(missedOvernightCatchUp(after, new Date("2026-01-14T07:05:00.000Z"))).toBe(true);
     expect(missedOvernightCatchUp(after, new Date("2026-01-15T07:05:00.000Z"))).toBe(false);
+    expect(refreshBootAction(new Date("2026-01-15T06:59:00.000Z"), null, null)).toBe("wait");
+    expect(refreshBootAction(new Date("2026-10-26T23:05:00.000Z"), null, null)).toBe("wait");
+    expect(refreshBootAction(new Date("2026-10-27T09:43:00.000Z"), null, null)).toBe("catch-up");
+    expect(refreshBootAction(
+      new Date("2026-10-27T18:00:00.000Z"),
+      new Date("2026-10-27T06:00:00.000Z"),
+      null,
+    )).toBe("catch-up");
+    expect(refreshBootAction(
+      new Date("2026-10-27T18:00:00.000Z"),
+      new Date("2026-10-27T06:00:00.000Z"),
+      new Date("2026-10-27T06:10:00.000Z"),
+    )).toBe("wait");
+    expect(refreshBootAction(
+      after,
+      null,
+      new Date("2026-01-14T07:05:00.000Z"),
+    )).toBe("catch-up");
   });
 });
+
+function billedFromFixture(name: string) {
+  const fixture = JSON.parse(readFileSync(`test/fixtures/st-invoices/${name}`, "utf8")) as {
+    projectId: string;
+    invoiceCount: number;
+    invoices: Array<{
+      referenceNumber: string;
+      items: Array<{
+        skuName: string | null;
+        type: string | null;
+        total: string;
+        generalLedgerAccount: { name: string } | null;
+      }>;
+    }>;
+  };
+  const lines = fixture.invoices.flatMap((invoice) =>
+    invoice.items.map((item) => ({
+      invoice: invoice.referenceNumber,
+      sku: item.skuName,
+      total: Number(item.total),
+      kind: classifyInvoiceItem({
+        type: item.type,
+        accountName: item.generalLedgerAccount?.name ?? null,
+      }),
+    })),
+  );
+  return { fixture, lines };
+}
 
 function roundCheck(value: number): number {
   return Math.round(value * 100) / 100;

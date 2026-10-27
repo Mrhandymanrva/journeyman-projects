@@ -15,6 +15,7 @@ import {
   presentPortfolioCloseout,
 } from "../domain/closeout.js";
 import { feedHealth, loadProjectHealth } from "../domain/projectHealth.js";
+import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/projectSync.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
 
@@ -47,9 +48,10 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
         const health = new Map(
           (await loadProjectHealth(db, newYorkDate(new Date().toISOString()))).map((row) => [row.project_id, row]),
         );
-        return { rows, health };
+        const financials = await readPortfolioFinancialFeed(db);
+        return { rows, health, financials };
       })
-      .then(({ rows, health }) => sendData(res, {
+      .then(({ rows, health, financials }) => sendData(res, {
         generated_at: new Date().toISOString(),
         projects: rows.map((row) => {
           const releasedAt = row.field_released_at;
@@ -89,6 +91,8 @@ export function portfolioProjectRoutes(database: Database, config: PortfolioFeed
             change_orders: changeOrders,
             closeout,
             labor,
+            labor_refresh: presentLaborRefresh(financials.run, String(row.id)),
+            reconciliation: financials.reconciliation.get(String(row.id)) ?? null,
             ar,
             projected_margin_pct: assessed.projected_margin_pct,
             billing: assessed.billing,

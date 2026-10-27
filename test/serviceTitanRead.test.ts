@@ -663,6 +663,67 @@ describe("accounting and sales reads", () => {
   });
 });
 
+describe("job invoice lines", () => {
+  it("reads each job, follows the general ledger account, and loads a list row that omitted items", async () => {
+    const { client, fetcher } = setup([
+      {
+        data: [
+          { id: 10, referenceNumber: "145409", job: { id: 500 } },
+          {
+            id: 11,
+            job: { id: 999 },
+            items: [
+              {
+                id: 1,
+                type: "Service",
+                skuName: "MHM.25PLFE",
+                total: "50.00",
+                generalLedgerAccount: { name: "Labor Revenue:Labor Revenue" },
+              },
+            ],
+          },
+          {
+            id: 12,
+            job: { id: 500 },
+            items: [
+              {
+                id: 2,
+                type: "PriceModifier",
+                skuName: "MH.VS.700.002",
+                total: "12.50",
+                generalLedgerAccount: { name: "Material Revenue:Material Billed" },
+              },
+            ],
+          },
+        ],
+        hasMore: false,
+      },
+      {
+        id: 10,
+        job: { id: 500 },
+        items: [
+          {
+            id: 3,
+            type: "Service",
+            skuName: "MHM 250.Labor",
+            total: "80.00",
+            generalLedgerAccount: { name: "Labor Revenue:Labor Revenue" },
+          },
+        ],
+      },
+    ]);
+    const lines = await client.readJobInvoiceLines("500");
+    expect(lines).toEqual([
+      expect.objectContaining({ invoiceId: "10", sku: "MHM 250.Labor", kind: "labor", total: 80 }),
+      expect.objectContaining({ invoiceId: "12", sku: "MH.VS.700.002", kind: "material", total: 12.5 }),
+    ]);
+    const urls = fetcher.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes("/invoices?") && url.includes("jobId=500") && !url.includes("projectId="))).toBe(true);
+    expect(urls.some((url) => url.includes("/invoices/10"))).toBe(true);
+    expect(fetcher.mock.calls.every((call) => (call[1]?.method ?? "GET") === "GET" || String(call[0]).includes("/connect/token"))).toBe(true);
+  });
+});
+
 describe("ServiceTitan 429 backoff", () => {
   const technicianPage = {
     data: [{ id: 6, name: "Alex", active: true, hourlyRate: 40, burdenRate: 12 }],

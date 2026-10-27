@@ -5,6 +5,7 @@ import type { Database, SqlClient } from "../db/database.js";
 import { presentFieldRelease } from "../domain/fieldRelease.js";
 import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
 import { portfolioFeedLabor, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/projectSync.js";
 import { loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
@@ -193,6 +194,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
   const budgetedProjected = budgeted.reduce((t, p) => t + num(p.projected_cost), 0);
 
   const money = (r: { n: string; amount: string } | undefined) => ({ count: num(r?.n), amount: num(r?.amount) });
+  const financials = await readPortfolioFinancialFeed(db);
   return {
     generated_at: new Date().toISOString(),
     tenant: { id: tenantId, name: tenant?.display_name ?? null },
@@ -220,6 +222,8 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
         field_start: presentFieldStart(p),
         labor: portfolioFeedLabor(presentPortfolioLabor(p as unknown as Record<string, unknown>)),
+        labor_refresh: presentLaborRefresh(financials.run, p.id),
+        reconciliation: financials.reconciliation.get(p.id) ?? null,
         precon: { open: Number(p.precon_open ?? 0), overdue: Number(p.precon_overdue ?? 0) },
         field_release: presentFieldRelease({
           released_at: p.field_released_at,

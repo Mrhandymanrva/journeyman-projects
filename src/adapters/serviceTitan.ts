@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { technicianIdKey } from "../domain/commissionLabor.js";
 import { allowlistedGet } from "../domain/commissionProbe.js";
-import { classifySku, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
+import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
 
 const sourceId = z
@@ -1301,7 +1301,13 @@ export class ServiceTitanReadAdapter {
     }));
   }
 
-  /** Invoice lines for one job. GET only. Labor is MHM.25PLFE. */
+  /**
+   * Invoice lines for one job. GET only.
+   * A projectId filter on this list was observed to be ignored, so the read
+   * is by job id and a row for a different job is dropped.
+   * Billed labor and materials follow generalLedgerAccount.name. Items have
+   * no skuType. A list row with no items array is read again by invoice id.
+   */
   async readJobInvoiceLines(jobId: string): Promise<
     Array<{
       invoiceId: string;
@@ -1321,13 +1327,15 @@ export class ServiceTitanReadAdapter {
       code: z.string().nullish(),
       displayName: z.string().nullish(),
       description: z.string().nullish(),
-      skuType: z.string().nullish(),
+      type: z.string().nullish(),
       quantity: z.coerce.number().nullish(),
       total: z.coerce.number().nullish(),
       technicianId: sourceId.nullish(),
+      generalLedgerAccount: z.object({ name: z.string().nullish() }).nullish(),
     }).passthrough();
     const invoiceSchema = z.object({
       id: sourceId,
+      job: z.object({ id: sourceId }).nullish(),
       items: z.array(itemSchema).optional(),
     });
     const lines: Array<{
@@ -1339,6 +1347,24 @@ export class ServiceTitanReadAdapter {
       total: number;
       technicianId: string | null;
     }> = [];
+    const pushInvoice = (invoice: z.infer<typeof invoiceSchema>) => {
+      if (invoice.job?.id != null && invoice.job.id !== jobId) return;
+      (invoice.items ?? []).forEach((item, index) => {
+        const sku = String(item.skuName || item.code || item.displayName || item.description || "");
+        lines.push({
+          invoiceId: invoice.id,
+          lineKey: item.id ?? String(index),
+          sku,
+          kind: classifyInvoiceItem({
+            type: item.type ?? null,
+            accountName: item.generalLedgerAccount?.name ?? null,
+          }),
+          quantity: item.quantity ?? null,
+          total: item.total ?? 0,
+          technicianId: item.technicianId ?? null,
+        });
+      });
+    };
     for (let page = 1; page <= 100; page += 1) {
       const raw = await this.get(
         "accounting",
@@ -1352,18 +1378,16 @@ export class ServiceTitanReadAdapter {
       if (!parsed.success)
         throw new ServiceTitanReadError("Unexpected ServiceTitan invoice items.");
       for (const invoice of parsed.data.data) {
-        (invoice.items ?? []).forEach((item, index) => {
-          const sku = String(item.skuName || item.code || item.displayName || item.description || "");
-          lines.push({
-            invoiceId: invoice.id,
-            lineKey: item.id ?? String(index),
-            sku,
-            kind: classifySku(sku, item.skuType),
-            quantity: item.quantity ?? null,
-            total: item.total ?? 0,
-            technicianId: item.technicianId ?? null,
-          });
-        });
+        if (invoice.items != null) {
+          pushInvoice(invoice);
+          continue;
+        }
+        const detail = await this.get("accounting", `invoices/${invoice.id}`);
+        const direct = invoiceSchema.safeParse(detail);
+        const wrapped = z.object({ data: invoiceSchema }).safeParse(detail);
+        if (direct.success) pushInvoice(direct.data);
+        else if (wrapped.success) pushInvoice(wrapped.data.data);
+        else throw new ServiceTitanReadError("Unexpected ServiceTitan invoice.");
       }
       if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
     }
