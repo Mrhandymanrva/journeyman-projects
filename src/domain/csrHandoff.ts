@@ -29,34 +29,19 @@ export type PermitsLikely = (typeof PERMITS)[number];
 const emptyOrOffice = z.union([z.literal(""), z.enum(OFFICES)]);
 const emptyOrPermits = z.union([z.literal(""), z.enum(PERMITS)]);
 
-const money = z.number().finite().nonnegative().max(9_999_999_999_999.99).nullable();
+export const NOT_IN_SERVICETITAN = "Not in ServiceTitan";
 
+/**
+ * What the CSR may type. Customer, phone, email, address, estimate, and sold
+ * amount are not here: they are read from ServiceTitan data already stored
+ * on the project, and a missing value is not an editable box.
+ */
 export const handoffWriteSchema = z
   .object({
-    customer_name: z.string().trim().max(200),
-    phone: z
-      .string()
-      .trim()
-      .max(40)
-      .refine(
-        (value) => value === "" || (value.match(/\d/g)?.length ?? 0) >= 7,
-        "Enter a phone number with at least 7 digits.",
-      ),
-    email: z
-      .string()
-      .trim()
-      .max(200)
-      .refine(
-        (value) => value === "" || z.string().email().safeParse(value).success,
-        "Enter a valid email.",
-      ),
-    service_address: z.string().trim().max(500),
     office: emptyOrOffice,
     lead_source: z.string().trim().max(200),
     scope_summary: z.string().trim().max(8000),
     handoff_project_ref: z.string().trim().max(200),
-    handoff_estimate_amount: money,
-    sold_amount: money,
     target_start_window: z.string().trim().max(200),
     access_notes: z.string().trim().max(4000),
     decision_maker_notes: z.string().trim().max(4000),
@@ -112,9 +97,9 @@ const REQUIRED_GAPS = [
 export type RequiredGap = (typeof REQUIRED_GAPS)[number];
 
 const GAP_MESSAGE: Record<RequiredGap, string> = {
-  customer_name: "Customer name is required.",
-  phone_or_email: "A phone number or an email is required.",
-  service_address: "Service address is required.",
+  customer_name: "Customer name is not in ServiceTitan.",
+  phone_or_email: "A phone number or an email is not in ServiceTitan.",
+  service_address: "Service address is not in ServiceTitan.",
   office: "Office is required.",
   scope_summary: "Scope summary is required.",
 };
@@ -193,6 +178,15 @@ function windowText(start: string | null, end: string | null): string {
   return from || to || "";
 }
 
+export interface ServiceTitanHandoff {
+  customer_name: string | null;
+  phone: string | null;
+  email: string | null;
+  service_address: string | null;
+  estimate_amount: number | null;
+  sold_amount: number | null;
+}
+
 export interface SuggestInput {
   sourceCustomerName: string | null;
   addressLine1: string | null;
@@ -203,25 +197,49 @@ export interface SuggestInput {
   sourceProjectSummary: string | null;
   scheduledStart: string | null;
   scheduledEnd: string | null;
-  contractValue: number | null;
   externalProjectId: string | null;
   snapshot: unknown;
+  /** True when a ServiceTitan project connection is already stored. */
+  linked: boolean;
   estimateAmount: number | null;
+  /** Sold estimate total from a ServiceTitan read. Not the Journeyman contract. */
+  soldAmount: number | null;
+}
+
+function snapshotCustomer(snapshot: Record<string, unknown>): Record<string, unknown> {
+  return asRecord(snapshot.customer);
+}
+
+function snapshotContact(customer: Record<string, unknown>): Record<string, unknown> | undefined {
+  const contacts = Array.isArray(customer.contacts) ? customer.contacts : [];
+  return contacts.map(asRecord).find((row) => textOf(row.phone, row.phoneNumber, row.email));
+}
+
+function snapshotServiceAddress(snapshot: Record<string, unknown>): string {
+  const location = asRecord(snapshot.location);
+  const address = asRecord(location.address);
+  return joinAddress(
+    textOf(address.street, address.line1, address.address_line1),
+    textOf(address.unit),
+    textOf(address.city),
+    textOf(address.state, address.region),
+    textOf(address.zip, address.postal_code, address.postalCode),
+  );
+}
+
+function orNull(value: string): string | null {
+  return value.trim() ? value.trim() : null;
 }
 
 /**
- * What Journeyman already stored from the linked project and customer.
- * Blank when nothing was stored. This does not call ServiceTitan.
+ * Customer, contact, address, estimate, and sold amount from ServiceTitan
+ * data Journeyman already stored. Null when that read did not include the
+ * value. This does not call ServiceTitan.
  */
-export function suggestHandoff(input: SuggestInput): HandoffFields {
+export function serviceTitanHandoff(input: SuggestInput): ServiceTitanHandoff {
   const snapshot = asRecord(input.snapshot);
-  const customer = asRecord(snapshot.customer);
-  const contacts = Array.isArray(customer.contacts) ? customer.contacts : [];
-  const contact = contacts.map(asRecord).find((row) =>
-    textOf(row.phone, row.phoneNumber, row.email),
-  );
-  const location = asRecord(snapshot.location);
-  const address = asRecord(location.address);
+  const customer = snapshotCustomer(snapshot);
+  const contact = snapshotContact(customer);
   const projectAddress = joinAddress(
     textOf(input.addressLine1),
     "",
@@ -229,27 +247,32 @@ export function suggestHandoff(input: SuggestInput): HandoffFields {
     textOf(input.region),
     textOf(input.postalCode),
   );
-  const snapshotAddress = joinAddress(
-    textOf(address.street, address.line1, address.address_line1),
-    textOf(address.unit),
-    textOf(address.city),
-    textOf(address.state, address.region),
-    textOf(address.zip, address.postal_code, address.postalCode),
-  );
-  const sold =
-    input.contractValue != null && input.contractValue > 0
-      ? input.contractValue
-      : null;
+  const address = snapshotServiceAddress(snapshot) || (input.linked ? projectAddress : "");
   return {
-    customer_name: textOf(input.sourceCustomerName, customer.name),
-    phone: textOf(
-      customer.phone,
-      customer.phoneNumber,
-      contact?.phone,
-      contact?.phoneNumber,
+    customer_name: orNull(textOf(input.sourceCustomerName, customer.name)),
+    phone: orNull(
+      textOf(customer.phone, customer.phoneNumber, contact?.phone, contact?.phoneNumber),
     ),
-    email: textOf(customer.email, contact?.email),
-    service_address: projectAddress || snapshotAddress,
+    email: orNull(textOf(customer.email, contact?.email)),
+    service_address: orNull(address),
+    estimate_amount: input.estimateAmount,
+    sold_amount: input.soldAmount,
+  };
+}
+
+/**
+ * Fields ServiceTitan does not hold, prefilled from the project when a value
+ * is already stored. The CSR can still edit these. This does not call ServiceTitan.
+ */
+export function suggestHandoff(input: SuggestInput): HandoffFields {
+  const snapshot = asRecord(input.snapshot);
+  const customer = snapshotCustomer(snapshot);
+  const st = serviceTitanHandoff(input);
+  return {
+    customer_name: st.customer_name ?? "",
+    phone: st.phone ?? "",
+    email: st.email ?? "",
+    service_address: st.service_address ?? "",
     office: officeFromBusinessUnit(input.businessUnitName),
     lead_source: textOf(
       snapshot.leadSource,
@@ -263,8 +286,8 @@ export function suggestHandoff(input: SuggestInput): HandoffFields {
       asRecord(snapshot.project).summary,
     ),
     handoff_project_ref: textOf(input.externalProjectId, snapshot.id, snapshot.number),
-    handoff_estimate_amount: input.estimateAmount,
-    sold_amount: sold,
+    handoff_estimate_amount: st.estimate_amount,
+    sold_amount: st.sold_amount,
     target_start_window: windowText(input.scheduledStart, input.scheduledEnd),
     access_notes: "",
     decision_maker_notes: "",
@@ -333,6 +356,7 @@ export interface HandoffView {
   acknowledged_by_name: string | null;
   fields: HandoffFields;
   suggestions: HandoffFields;
+  service_titan: ServiceTitanHandoff;
   gate: { gate_number: number; title: string; status: string } | null;
 }
 
@@ -351,7 +375,7 @@ export interface NewHandoffItem {
 async function loadSuggestions(
   db: SqlClient,
   projectId: string,
-): Promise<{ stage: string; suggestions: HandoffFields }> {
+): Promise<{ stage: string; suggestions: HandoffFields; serviceTitan: ServiceTitanHandoff }> {
   const project = await db.query<{
     stage: string;
     source_customer_name: string | null;
@@ -363,9 +387,11 @@ async function loadSuggestions(
     source_project_summary: string | null;
     scheduled_start: string | null;
     scheduled_end: string | null;
-    contract_value: string | number | null;
     external_project_id: string | null;
     snapshot: unknown;
+    linked: boolean;
+    estimates_read: boolean | null;
+    st_sold: string | number | null;
   }>(
     `SELECT p.stage::text AS stage,
             p.source_customer_name,
@@ -374,12 +400,15 @@ async function loadSuggestions(
             p.source_project_summary,
             p.scheduled_start::text AS scheduled_start,
             p.scheduled_end::text AS scheduled_end,
-            p.contract_value,
             c.external_project_id,
-            c.snapshot
+            c.snapshot,
+            c.project_id IS NOT NULL AS linked,
+            s.estimates_read,
+            s.contract_value AS st_sold
        FROM projects.projects p
        LEFT JOIN projects.business_units bu ON bu.id = p.business_unit_id
        LEFT JOIN projects.st_project_connections c ON c.project_id = p.id
+       LEFT JOIN projects.st_project_summary s ON s.project_id = p.id
       WHERE p.id = $1`,
     [projectId],
   );
@@ -393,23 +422,40 @@ async function loadSuggestions(
       LIMIT 1`,
     [projectId],
   );
+  const soldEstimates = await db.query<{ n: string; amount: string | number | null }>(
+    `SELECT count(*)::text AS n, COALESCE(sum(customer_amount), 0) AS amount
+       FROM projects.st_estimate_observations
+      WHERE project_id = $1
+        AND lower(btrim(COALESCE(status, ''))) = 'sold'`,
+    [projectId],
+  );
+  let soldAmount: number | null = null;
+  if (row.estimates_read) {
+    soldAmount = num(row.st_sold);
+  }
+  if (soldAmount == null && Number(soldEstimates.rows[0]?.n ?? 0) > 0) {
+    soldAmount = num(soldEstimates.rows[0]?.amount);
+  }
+  const input: SuggestInput = {
+    sourceCustomerName: row.source_customer_name,
+    addressLine1: row.address_line1,
+    city: row.city,
+    region: row.region,
+    postalCode: row.postal_code,
+    businessUnitName: row.business_unit_name,
+    sourceProjectSummary: row.source_project_summary,
+    scheduledStart: row.scheduled_start,
+    scheduledEnd: row.scheduled_end,
+    externalProjectId: row.external_project_id,
+    snapshot: row.snapshot,
+    linked: row.linked,
+    estimateAmount: estimate.rows[0] ? num(estimate.rows[0].customer_amount) : null,
+    soldAmount,
+  };
   return {
     stage: row.stage,
-    suggestions: suggestHandoff({
-      sourceCustomerName: row.source_customer_name,
-      addressLine1: row.address_line1,
-      city: row.city,
-      region: row.region,
-      postalCode: row.postal_code,
-      businessUnitName: row.business_unit_name,
-      sourceProjectSummary: row.source_project_summary,
-      scheduledStart: row.scheduled_start,
-      scheduledEnd: row.scheduled_end,
-      contractValue: num(row.contract_value),
-      externalProjectId: row.external_project_id,
-      snapshot: row.snapshot,
-      estimateAmount: num(estimate.rows[0]?.customer_amount),
-    }),
+    suggestions: suggestHandoff(input),
+    serviceTitan: serviceTitanHandoff(input),
   };
 }
 
@@ -450,12 +496,12 @@ export async function presentHandoff(
   db: SqlClient,
   projectId: string,
 ): Promise<HandoffView> {
-  const [{ stage, suggestions }, stored, gate] = await Promise.all([
+  const [{ stage, suggestions, serviceTitan }, stored, gate] = await Promise.all([
     loadSuggestions(db, projectId),
     loadStored(db, projectId),
     loadGate(db, projectId),
   ]);
-  const fields = stored ? storedFields(stored) : suggestions;
+  const editable = stored ? storedFields(stored) : suggestions;
   return {
     project_id: projectId,
     stage,
@@ -465,29 +511,45 @@ export async function presentHandoff(
     submitted_by_name: stored?.submitted_by_name ?? null,
     acknowledged_at: stored?.acknowledged_at ?? null,
     acknowledged_by_name: stored?.acknowledged_by_name ?? null,
-    fields,
+    fields: applyServiceTitan(editable, serviceTitan),
     suggestions,
+    service_titan: serviceTitan,
     gate,
   };
 }
 
-function fieldsOf(body: HandoffWrite): HandoffFields {
+function applyServiceTitan(fields: HandoffFields, st: ServiceTitanHandoff): HandoffFields {
   return {
-    customer_name: body.customer_name,
-    phone: body.phone,
-    email: body.email,
-    service_address: body.service_address,
-    office: body.office,
-    lead_source: body.lead_source,
-    scope_summary: body.scope_summary,
-    handoff_project_ref: body.handoff_project_ref,
-    handoff_estimate_amount: body.handoff_estimate_amount,
-    sold_amount: body.sold_amount,
-    target_start_window: body.target_start_window,
-    access_notes: body.access_notes,
-    decision_maker_notes: body.decision_maker_notes,
-    permits_likely: body.permits_likely,
+    ...fields,
+    customer_name: st.customer_name ?? "",
+    phone: st.phone ?? "",
+    email: st.email ?? "",
+    service_address: st.service_address ?? "",
+    handoff_estimate_amount: st.estimate_amount,
+    sold_amount: st.sold_amount,
   };
+}
+
+function fieldsOf(body: HandoffWrite, st: ServiceTitanHandoff): HandoffFields {
+  return applyServiceTitan(
+    {
+      customer_name: "",
+      phone: "",
+      email: "",
+      service_address: "",
+      office: body.office,
+      lead_source: body.lead_source,
+      scope_summary: body.scope_summary,
+      handoff_project_ref: body.handoff_project_ref,
+      handoff_estimate_amount: null,
+      sold_amount: null,
+      target_start_window: body.target_start_window,
+      access_notes: body.access_notes,
+      decision_maker_notes: body.decision_maker_notes,
+      permits_likely: body.permits_likely,
+    },
+    st,
+  );
 }
 
 export async function saveHandoff(
@@ -498,7 +560,8 @@ export async function saveHandoff(
   body: HandoffWrite,
 ): Promise<HandoffView> {
   const existing = await loadStored(db, projectId);
-  const fields = fieldsOf(body);
+  const { serviceTitan } = await loadSuggestions(db, projectId);
+  const fields = fieldsOf(body, serviceTitan);
   const submitting = body.submit || existing?.status === "submitted";
   if (submitting) assertSubmittable(fields);
   const status = submitting ? "submitted" : "draft";
@@ -622,10 +685,17 @@ export async function loadNewHandoffs(
     submitted_at: string;
   }>(
     `SELECT p.id AS project_id, p.project_number, p.name AS project_name,
-            h.customer_name, h.office, h.scope_summary,
+            COALESCE(
+              NULLIF(btrim(p.source_customer_name), ''),
+              NULLIF(btrim(c.snapshot #>> '{customer,name}'), ''),
+              NULLIF(btrim(h.customer_name), ''),
+              ''
+            ) AS customer_name,
+            h.office, h.scope_summary,
             h.submitted_at::text AS submitted_at
        FROM projects.csr_handoffs h
        JOIN projects.projects p ON p.id = h.project_id
+       LEFT JOIN projects.st_project_connections c ON c.project_id = p.id
       WHERE h.status = 'submitted'
         AND h.acknowledged_at IS NULL
         AND ($1::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id = $1::uuid)

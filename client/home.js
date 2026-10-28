@@ -165,7 +165,8 @@ export function handoffListHtml(items, esc, canAcknowledge) {
       const office =
         OFFICE_LABELS[item.office] || item.office_label || item.office || "";
       const when = handoffWhen(item.submitted_at);
-      const meta = [item.customer_name, office, when].filter(Boolean).join(" · ");
+      const customer = String(item.customer_name || "").trim() || "Not in ServiceTitan";
+      const meta = [customer, office, when].filter(Boolean).join(" · ");
       const action = canAcknowledge
         ? `<button class="btn sm" type="button" data-handoff-acknowledge="${esc(item.project_id)}">Acknowledge</button>`
         : "";

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { csrHandoffHtml } from "../client/handoff.js";
 import { handoffListHtml } from "../client/home.js";
@@ -6,6 +7,7 @@ import { CAPABILITIES } from "../src/http/capabilities.js";
 import {
   handoffWriteSchema,
   officeFromBusinessUnit,
+  serviceTitanHandoff,
   submitGaps,
   suggestHandoff,
   type HandoffFields,
@@ -15,6 +17,7 @@ import {
   addBusinessUnit,
   createTenant,
   projectBody,
+  SCHEMA_FILES,
   startHarness,
   type Harness,
   type TenantFixture,
@@ -31,6 +34,21 @@ const esc = (value: unknown) =>
 
 function form(overrides: Record<string, unknown> = {}, submit = true) {
   return {
+    office: "richmond",
+    lead_source: "Referral",
+    scope_summary: "Replace the tub with a tiled shower.",
+    handoff_project_ref: "44821",
+    target_start_window: "2026-11-16 to 2026-11-30",
+    access_notes: "Lockbox on the side door.",
+    decision_maker_notes: "Ada decides.",
+    permits_likely: "unknown",
+    submit,
+    ...overrides,
+  };
+}
+
+function fields(overrides: Partial<HandoffFields> = {}): HandoffFields {
+  return {
     customer_name: "Ada Whitfield",
     phone: "804-555-0100",
     email: "",
@@ -45,51 +63,55 @@ function form(overrides: Record<string, unknown> = {}, submit = true) {
     access_notes: "Lockbox on the side door.",
     decision_maker_notes: "Ada decides.",
     permits_likely: "unknown",
-    submit,
     ...overrides,
-  } as HandoffFields & { submit: boolean };
+  };
+}
+
+function serviceTitan(overrides: Record<string, unknown> = {}) {
+  return {
+    customer_name: "Ada Whitfield",
+    phone: "804-555-0100",
+    email: null,
+    service_address: "4412 Grove Avenue, Richmond, VA 23221",
+    estimate_amount: 17250,
+    sold_amount: 18640,
+    ...overrides,
+  };
 }
 
 describe("CSR hand-off validation", () => {
   it("requires name, phone or email, address, office, and scope", () => {
-    expect(submitGaps({
+    expect(submitGaps(fields({
       customer_name: "",
       phone: "",
       email: "",
       service_address: "",
       office: "",
-      lead_source: "",
       scope_summary: "",
-      handoff_project_ref: "",
-      handoff_estimate_amount: null,
-      sold_amount: null,
-      target_start_window: "",
-      access_notes: "",
-      decision_maker_notes: "",
-      permits_likely: "",
-    })).toEqual([
+    }))).toEqual([
       "customer_name",
       "phone_or_email",
       "service_address",
       "office",
       "scope_summary",
     ]);
-    const phoneOnly = form({ email: "" });
-    expect(submitGaps(phoneOnly)).toEqual([]);
-    const emailOnly = form({ phone: "", email: "ada@example.test" });
-    expect(submitGaps(emailOnly)).toEqual([]);
+    expect(submitGaps(fields({ email: "" }))).toEqual([]);
+    expect(submitGaps(fields({ phone: "", email: "ada@example.test" }))).toEqual([]);
     expect(handoffWriteSchema.safeParse(form({ office: "norfolk" })).success).toBe(false);
     expect(handoffWriteSchema.safeParse(form({ permits_likely: "maybe" })).success).toBe(false);
-    expect(handoffWriteSchema.safeParse(form({ email: "not-an-email" })).success).toBe(false);
-    expect(handoffWriteSchema.safeParse(form({ phone: "555" })).success).toBe(false);
-    expect(handoffWriteSchema.safeParse(form({ sold_amount: -1 })).success).toBe(false);
     expect(handoffWriteSchema.safeParse(form({ extra: true })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ customer_name: "Ada Whitfield" })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ phone: "804-555-0100" })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ email: "ada@example.test" })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ service_address: "4412 Grove Avenue" })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ handoff_estimate_amount: 17250 })).success).toBe(false);
+    expect(handoffWriteSchema.safeParse(form({ sold_amount: 18640 })).success).toBe(false);
   });
 
   it("prefills from the stored project and the linked customer snapshot", () => {
     expect(officeFromBusinessUnit("Hampton–Newport News")).toBe("hampton_newport_news");
     expect(officeFromBusinessUnit("Richmond")).toBe("richmond");
-    const fields = suggestHandoff({
+    const input = {
       sourceCustomerName: "Linh Nguyen",
       addressLine1: "3102 Parkwood Avenue",
       city: "Richmond",
@@ -99,25 +121,45 @@ describe("CSR hand-off validation", () => {
       sourceProjectSummary: "Replace the hall bath tub with a tiled shower.",
       scheduledStart: "2026-11-16",
       scheduledEnd: "2026-11-30",
-      contractValue: 18640,
       externalProjectId: "44821",
       estimateAmount: 17250,
+      soldAmount: 18640,
+      linked: true,
       snapshot: {
         leadSource: "Referral",
         customer: { name: "Someone Else", phone: "804-555-0142", email: "linh.nguyen@example.test" },
       },
+    };
+    const read = serviceTitanHandoff(input);
+    expect(read.customer_name).toBe("Linh Nguyen");
+    expect(read.phone).toBe("804-555-0142");
+    expect(read.email).toBe("linh.nguyen@example.test");
+    expect(read.service_address).toBe("3102 Parkwood Avenue, Richmond, VA 23221");
+    expect(read.estimate_amount).toBe(17250);
+    expect(read.sold_amount).toBe(18640);
+    const suggested = suggestHandoff(input);
+    expect(suggested.office).toBe("richmond");
+    expect(suggested.lead_source).toBe("Referral");
+    expect(suggested.scope_summary).toContain("tiled shower");
+    expect(suggested.handoff_project_ref).toBe("44821");
+    expect(suggested.target_start_window).toBe("2026-11-16 to 2026-11-30");
+    const missing = serviceTitanHandoff({
+      ...input,
+      sourceCustomerName: null,
+      linked: false,
+      estimateAmount: null,
+      soldAmount: null,
+      snapshot: {},
     });
-    expect(fields.customer_name).toBe("Linh Nguyen");
-    expect(fields.phone).toBe("804-555-0142");
-    expect(fields.email).toBe("linh.nguyen@example.test");
-    expect(fields.service_address).toBe("3102 Parkwood Avenue, Richmond, VA 23221");
-    expect(fields.office).toBe("richmond");
-    expect(fields.lead_source).toBe("Referral");
-    expect(fields.scope_summary).toContain("tiled shower");
-    expect(fields.handoff_project_ref).toBe("44821");
-    expect(fields.handoff_estimate_amount).toBe(17250);
-    expect(fields.sold_amount).toBe(18640);
-    expect(fields.target_start_window).toBe("2026-11-16 to 2026-11-30");
+    expect(missing).toEqual({
+      customer_name: null,
+      phone: null,
+      email: null,
+      service_address: null,
+      estimate_amount: null,
+      sold_amount: null,
+    });
+    expect(serviceTitanHandoff({ ...input, soldAmount: null, estimateAmount: null }).sold_amount).toBeNull();
   });
 
   it("renders the form, the waiting list, and an acknowledge action", () => {
@@ -125,15 +167,27 @@ describe("CSR hand-off validation", () => {
       {
         saved: false,
         status: null,
-        fields: form(),
+        fields: fields(),
+        service_titan: serviceTitan({ sold_amount: null }),
         gate: { gate_number: 0, title: "Qualification and handoff", status: "open" },
       },
       { esc, canSave: true },
     );
     expect(html).toContain("Customer name");
+    expect(html).toContain("Ada Whitfield");
     expect(html).toContain("Scope summary");
     expect(html).toContain("ServiceTitan project #");
     expect(html).toContain("Estimate amount (ServiceTitan)");
+    expect(html).toContain("$17,250.00");
+    expect(html).toContain("Not in ServiceTitan");
+    expect(html).toContain('data-st-field="sold_amount"');
+    expect(html).toContain('data-missing="true"');
+    expect(html).not.toContain('id="csr-customer_name"');
+    expect(html).not.toContain('id="csr-phone"');
+    expect(html).not.toContain('id="csr-email"');
+    expect(html).not.toContain('id="csr-service_address"');
+    expect(html).not.toContain('id="csr-handoff_estimate_amount"');
+    expect(html).not.toContain('id="csr-sold_amount"');
     expect(html).toContain(
       "Internal handover of a sold job to the Project Coordinator. Doesn't send anything to ServiceTitan or Handoff.",
     );
@@ -147,7 +201,8 @@ describe("CSR hand-off validation", () => {
       {
         saved: true,
         status: "submitted",
-        fields: form(),
+        fields: fields(),
+        service_titan: serviceTitan(),
         gate: { gate_number: 0, title: "Qualification and handoff", status: "approved" },
       },
       { esc, canSave: false },
@@ -173,6 +228,13 @@ describe("CSR hand-off validation", () => {
     expect(list).toContain("Richmond");
     expect(list).toContain("Brooks — Powder Room");
     expect(handoffListHtml([], esc, true)).toContain("No hand-offs are waiting.");
+    expect(
+      handoffListHtml(
+        [{ project_id: "p2", project_name: "No name", customer_name: "", href: "/?project=p2#dashboard" }],
+        esc,
+        false,
+      ),
+    ).toContain("Not in ServiceTitan");
     expect(handoffListHtml([{ project_id: "p1", project_name: "Brooks", href: "/?project=p1#dashboard" }], esc, false)).not.toContain("Acknowledge");
   });
 });
@@ -205,6 +267,96 @@ describe("CSR hand-off flow", () => {
     );
   }
 
+  async function seedReads(
+    t: TenantFixture,
+    id: string,
+    facts: {
+      customer_name?: string | null;
+      phone?: string | null;
+      email?: string | null;
+      street?: string | null;
+      city?: string | null;
+      region?: string | null;
+      postal?: string | null;
+      estimate?: number | null;
+      sold?: number | null;
+    } = {},
+  ) {
+    const customer = facts.customer_name === undefined ? "Ada Whitfield" : facts.customer_name;
+    const phone = facts.phone === undefined ? "804-555-0100" : facts.phone;
+    const email = facts.email === undefined ? "" : facts.email;
+    const street = facts.street === undefined ? "4412 Grove Avenue" : facts.street;
+    const city = facts.city === undefined ? "Richmond" : facts.city;
+    const region = facts.region === undefined ? "VA" : facts.region;
+    const postal = facts.postal === undefined ? "23221" : facts.postal;
+    const estimate = facts.estimate === undefined ? 17250 : facts.estimate;
+    const sold = "sold" in facts ? facts.sold : 18640;
+    await h.db.withTenant(t.id, async (db) => {
+      await db.query(
+        `UPDATE projects.projects
+            SET source_customer_name = $2,
+                address_line1 = $3,
+                city = $4,
+                region = $5,
+                postal_code = $6
+          WHERE id = $1`,
+        [id, customer, street, city, region, postal],
+      );
+      const system = await db.query<{ id: string }>(
+        `SELECT id FROM projects.external_systems WHERE tenant_id = $1 LIMIT 1`,
+        [t.id],
+      );
+      const systemId = system.rows[0]!.id;
+      await db.query(
+        `INSERT INTO projects.st_project_connections
+           (project_id, tenant_id, external_system_id, external_project_id, connection_key,
+            snapshot, observed_at, linked_by)
+         VALUES ($1,$2,$3,$4,'test',$5::jsonb, now(), $6)
+         ON CONFLICT (project_id) DO UPDATE
+           SET snapshot = EXCLUDED.snapshot,
+               external_project_id = EXCLUDED.external_project_id`,
+        [
+          id,
+          t.id,
+          systemId,
+          `st-${id.slice(0, 8)}`,
+          JSON.stringify({
+            id: `st-${id.slice(0, 8)}`,
+            customer: { name: customer ?? "", phone: phone ?? "", email: email ?? "" },
+            location: { address: { street, city, state: region, zip: postal } },
+          }),
+          t.staff.owner!.id,
+        ],
+      );
+      if (estimate != null) {
+        await db.query(
+          `INSERT INTO projects.st_estimate_observations
+             (tenant_id, project_id, external_system_id, external_estimate_id, name,
+              status, customer_amount, classification)
+           VALUES ($1,$2,$3,$4,'Original','Open',$5,'original')
+           ON CONFLICT (tenant_id, external_estimate_id) DO UPDATE
+             SET project_id = EXCLUDED.project_id,
+                 customer_amount = EXCLUDED.customer_amount,
+                 status = EXCLUDED.status`,
+          [t.id, id, systemId, `est-${id}`, estimate],
+        );
+      }
+      if (sold != null) {
+        await db.query(
+          `INSERT INTO projects.st_project_summary
+             (tenant_id, project_id, contract_value, estimates_read)
+           VALUES ($1,$2,$3,true)
+           ON CONFLICT (tenant_id, project_id) DO UPDATE
+             SET contract_value = EXCLUDED.contract_value,
+                 estimates_read = true`,
+          [t.id, id, sold],
+        );
+      } else {
+        await db.query(`DELETE FROM projects.st_project_summary WHERE project_id = $1`, [id]);
+      }
+    });
+  }
+
   it("lets office save, refuses other roles, and completes Gate 0 on submit", async () => {
     const t = await createTenant(h, { slug: `hand-save-${n++}` });
     const id = await project(t, { project_number: `HO-${n}`, name: "Hall Bath" });
@@ -229,17 +381,42 @@ describe("CSR hand-off flow", () => {
 
     const draft = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ customer_name: "", phone: "", email: "", scope_summary: "" }, false));
+      .send(form({ scope_summary: "" }, false));
     expect(draft.status, JSON.stringify(draft.body)).toBe(200);
     expect(draft.body.data.status).toBe("draft");
+    expect(draft.body.data.service_titan.customer_name).toBeNull();
+    expect(draft.body.data.fields.sold_amount).toBeNull();
     expect((await gate0(t, id))?.status).toBe("open");
+
+    const retyped = await office
+      .put(`/api/v1/projects/projects/${id}/handoff`)
+      .send(form({ customer_name: "Typed Over", sold_amount: 1 }, false));
+    expect(retyped.status).toBe(400);
 
     const missing = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ phone: "", email: "" }, true));
+      .send(form({}, true));
     expect(missing.status).toBe(400);
-    expect(JSON.stringify(missing.body)).toContain("phone_or_email");
+    expect(JSON.stringify(missing.body)).toContain("customer_name");
     expect((await gate0(t, id))?.status).toBe("open");
+
+    await seedReads(t, id, { phone: null, email: null, sold: null });
+    const noContact = await office
+      .put(`/api/v1/projects/projects/${id}/handoff`)
+      .send(form({}, true));
+    expect(noContact.status).toBe(400);
+    expect(JSON.stringify(noContact.body)).toContain("phone_or_email");
+    expect(noContact.body.data).toBeUndefined();
+    const shown = await office.get(`/api/v1/projects/projects/${id}/handoff`);
+    expect(shown.body.data.service_titan).toMatchObject({
+      customer_name: "Ada Whitfield",
+      phone: null,
+      email: null,
+      sold_amount: null,
+      estimate_amount: 17250,
+    });
+    expect(shown.body.data.fields.sold_amount).toBeNull();
+    expect(shown.body.data.fields.customer_name).toBe("Ada Whitfield");
 
     const bad = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
@@ -263,9 +440,10 @@ describe("CSR hand-off flow", () => {
       ),
     );
 
+    await seedReads(t, id, { phone: null, email: "ada@example.test" });
     const emailOnly = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ phone: "", email: "ada@example.test" }));
+      .send(form());
     expect(emailOnly.status, JSON.stringify(emailOnly.body)).toBe(200);
     expect(emailOnly.body.data.status).toBe("submitted");
     expect(emailOnly.body.data.gate).toMatchObject({
@@ -274,12 +452,22 @@ describe("CSR hand-off flow", () => {
       status: "approved",
     });
     expect(emailOnly.body.data).not.toHaveProperty("email_sent");
+    expect(emailOnly.body.data.service_titan).toMatchObject({
+      customer_name: "Ada Whitfield",
+      phone: null,
+      email: "ada@example.test",
+      sold_amount: 18640,
+      estimate_amount: 17250,
+    });
+    expect(emailOnly.body.data.fields.customer_name).toBe("Ada Whitfield");
+    expect(emailOnly.body.data.fields.sold_amount).not.toBe(41800);
     expect((await gate0(t, id))?.status).toBe("approved");
 
     const phoneOnlyId = await project(t, { project_number: `HO-PH-${n}`, name: "Phone Only" });
+    await seedReads(t, phoneOnlyId, { email: null });
     const phoneOnly = await office
       .put(`/api/v1/projects/projects/${phoneOnlyId}/handoff`)
-      .send(form({ email: "" }));
+      .send(form());
     expect(phoneOnly.status, JSON.stringify(phoneOnly.body)).toBe(200);
     expect((await gate0(t, phoneOnlyId))?.status).toBe("approved");
 
@@ -291,12 +479,12 @@ describe("CSR hand-off flow", () => {
     expect((await gate0(t, id))?.status).toBe("rejected");
     const kept = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ email: "ada@example.test", phone: "" }, false));
+      .send(form({}, false));
     expect(kept.status).toBe(200);
     expect((await gate0(t, id))?.status).toBe("rejected");
     const again = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ email: "ada@example.test", phone: "" }, true));
+      .send(form({}, true));
     expect(again.status).toBe(200);
     expect((await gate0(t, id))?.status).toBe("approved");
 
@@ -307,7 +495,7 @@ describe("CSR hand-off flow", () => {
     expect(advance.status, JSON.stringify(advance.body)).toBe(200);
     const late = await office
       .put(`/api/v1/projects/projects/${id}/handoff`)
-      .send(form({ email: "ada@example.test", phone: "" }));
+      .send(form());
     expect(late.status).toBe(409);
   });
 
@@ -318,6 +506,7 @@ describe("CSR hand-off flow", () => {
     const draftId = await project(t, { project_number: `HO-D-${n}`, name: "Still Draft" });
     const foreign = await project(other, { project_number: `HO-F-${n}`, name: "Other Tenant" });
     const office = h.as(t.staff.office!.token);
+    await seedReads(t, waiting);
     expect(
       (await office.put(`/api/v1/projects/projects/${waiting}/handoff`).send(form())).status,
     ).toBe(200);
@@ -325,9 +514,10 @@ describe("CSR hand-off flow", () => {
       (
         await office
           .put(`/api/v1/projects/projects/${draftId}/handoff`)
-          .send(form({ customer_name: "Pat" }, false))
+          .send(form({}, false))
       ).status,
     ).toBe(200);
+    await seedReads(other, foreign);
     expect(
       (await h.as(other.staff.office!.token).put(`/api/v1/projects/projects/${foreign}/handoff`).send(form())).status,
     ).toBe(200);
@@ -400,6 +590,8 @@ describe("CSR hand-off flow", () => {
       name: "Richmond Job",
       business_unit_id: t.businessUnits.Richmond,
     });
+    await seedReads(t, away);
+    await seedReads(t, home);
     expect((await owner.put(`/api/v1/projects/projects/${away}/handoff`).send(form({ office: "hampton_newport_news" }))).status).toBe(200);
     expect((await owner.put(`/api/v1/projects/projects/${home}/handoff`).send(form())).status).toBe(200);
     const office = h.as(t.staff.office!.token);
@@ -478,37 +670,87 @@ describe("CSR hand-off flow", () => {
       scope_summary: "Replace the hall bath tub with a tiled shower.",
       handoff_project_ref: "44821",
       handoff_estimate_amount: 17250,
-      sold_amount: 18640,
+      sold_amount: null,
       target_start_window: "2026-11-16 to 2026-11-30",
     });
+    expect(view.body.data.service_titan).toMatchObject({
+      customer_name: "Linh Nguyen",
+      phone: "804-555-0142",
+      email: "linh.nguyen@example.test",
+      service_address: "3102 Parkwood Avenue, Richmond, VA 23221",
+      estimate_amount: 17250,
+      sold_amount: null,
+    });
+    await h.db.withTenant(t.id, async (db) => {
+      const system = await db.query<{ id: string }>(
+        `SELECT id FROM projects.external_systems LIMIT 1`,
+      );
+      await db.query(
+        `INSERT INTO projects.st_estimate_observations
+           (tenant_id, project_id, external_system_id, external_estimate_id, name,
+            status, customer_amount, classification)
+         VALUES ($1,$2,$3,'est-sold','Hall bath sold','Sold',9000,'unknown')`,
+        [t.id, id, system.rows[0]!.id],
+      );
+    });
+    const sold = await h.as(t.staff.office!.token).get(`/api/v1/projects/projects/${id}/handoff`);
+    expect(sold.body.data.service_titan.sold_amount).toBe(9000);
+    expect(sold.body.data.service_titan.estimate_amount).toBe(17250);
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `INSERT INTO projects.st_project_summary
+           (tenant_id, project_id, contract_value, estimates_read)
+         VALUES ($1,$2,18640,true)`,
+        [t.id, id],
+      ),
+    );
+    const summarized = await h.as(t.staff.office!.token).get(`/api/v1/projects/projects/${id}/handoff`);
+    expect(summarized.body.data.service_titan.sold_amount).toBe(18640);
+    expect(summarized.body.data.fields.sold_amount).toBe(18640);
+    expect(summarized.body.data.service_titan.estimate_amount).toBe(17250);
     const route = readFileSync("src/routes/csrHandoff.ts", "utf8");
     const domain = readFileSync("src/domain/csrHandoff.ts", "utf8");
     expect(route).not.toContain("fetch(");
     expect(domain).not.toContain("fetch(");
+    expect(route).not.toMatch(/adapters\/serviceTitan/);
+    expect(domain).not.toMatch(/adapters\/serviceTitan/);
     expect(route + domain).not.toMatch(/nodemailer|mailto:/);
   });
 
-  it("reapplies the hand-off migration without dropping a saved row", async () => {
+  it("reapplies provision twice without dropping a saved hand-off", async () => {
     const t = await createTenant(h, { slug: `hand-migrate-${n++}` });
     const id = await project(t, { project_number: `HO-MIG-${n}`, name: "Migration" });
+    await seedReads(t, id);
     const saved = await h
       .as(t.staff.office!.token)
       .put(`/api/v1/projects/projects/${id}/handoff`)
       .send(form({}, false));
-    expect(saved.status).toBe(200);
-    const sql = readFileSync("db/057_csr_handoff.sql", "utf8");
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+
+    const handoffFile = SCHEMA_FILES.find((file) => file.endsWith("057_csr_handoff.sql"));
+    expect(handoffFile).toBeTruthy();
     for (let pass = 0; pass < 2; pass++) {
-      for (const statement of splitSqlStatements(sql)) {
+      for (const statement of splitSqlStatements(readFileSync(handoffFile!, "utf8"))) {
         if (!hasExecutableSql(statement.text)) continue;
-        try {
-          await h.db.asOwner((db) => db.query(statement.text));
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (/already exists/i.test(message)) continue;
-          throw new Error(`057:${statement.startLine} ${message}`);
+        await h.db.asOwner((db) => db.query(statement.text));
+      }
+    }
+
+    for (let pass = 0; pass < 2; pass++) {
+      for (const file of SCHEMA_FILES) {
+        for (const statement of splitSqlStatements(readFileSync(file, "utf8"))) {
+          if (!hasExecutableSql(statement.text)) continue;
+          try {
+            await h.db.asOwner((db) => db.query(statement.text));
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (/already exists/i.test(message)) continue;
+            throw new Error(`${path.basename(file)}:${statement.startLine} ${message}`);
+          }
         }
       }
     }
+
     const row = await h.db.withTenant(t.id, (db) =>
       db.query<{ customer_name: string; status: string }>(
         `SELECT customer_name, status FROM projects.csr_handoffs WHERE project_id = $1`,

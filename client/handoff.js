@@ -27,18 +27,32 @@ function options(pairs, current, esc, blank) {
   );
 }
 
-function moneyValue(value) {
-  if (value == null || value === "") return "";
+const NOT_IN_SERVICETITAN = "Not in ServiceTitan";
+
+function moneyLabel(value) {
+  if (value == null || value === "") return null;
   const number = Number(value);
-  return Number.isFinite(number) ? String(number) : "";
+  if (!Number.isFinite(number)) return null;
+  return number.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function readOnlyFact(key, label, value, esc, { wide = false, money = false } = {}) {
+  const missing = value == null || String(value).trim() === "";
+  const shown = missing ? NOT_IN_SERVICETITAN : money ? moneyLabel(value) : String(value);
+  return `<div class="csr-readonly${wide ? " csr-wide" : ""}" data-st-field="${esc(key)}">
+    <span class="csr-readonly-label">${esc(label)}</span>
+    <p class="csr-readonly-value"${missing ? ' data-missing="true"' : ""}>${esc(shown || NOT_IN_SERVICETITAN)}</p>
+  </div>`;
 }
 
 /**
- * CSR hand-off form. `view.fields` is the saved row, or the prefill when
- * nothing has been saved yet.
+ * CSR hand-off form. Customer, phone, email, address, estimate, and sold
+ * amount are read from ServiceTitan data already on the project. The CSR
+ * types the rest.
  */
 export function csrHandoffHtml(view, { esc, canSave }) {
   const fields = view?.fields || {};
+  const st = view?.service_titan || {};
   const status = view?.status || "";
   const gate = view?.gate;
   const gateLine = !gate
@@ -48,7 +62,7 @@ export function csrHandoffHtml(view, { esc, canSave }) {
       : `<p class="csr-gate" data-gate-status="${esc(gate.status)}">Gate 0, ${esc(gate.title)}, completes when this form is submitted with the required fields.</p>`;
   const submitted = status === "submitted";
   const state = !view?.saved
-    ? "Not saved yet. Details already on the project are filled in."
+    ? "Not saved yet. ServiceTitan details are shown read-only."
     : submitted && view.acknowledged_at
       ? `Acknowledged${view.acknowledged_by_name ? " by " + view.acknowledged_by_name : ""}.`
       : submitted
@@ -61,19 +75,19 @@ export function csrHandoffHtml(view, { esc, canSave }) {
   return `<p class="hint">Internal handover of a sold job to the Project Coordinator. Doesn't send anything to ServiceTitan or Handoff.</p>
 <p class="csr-status" role="status">${esc(state)}</p>
 ${gateLine}
-<p class="hint">Required to submit: customer name, phone or email, service address, office, and scope summary. Submit records the hand-off for the Project Coordinator. Nothing is emailed.</p>
+<p class="hint">Customer name, phone, email, service address, estimate, and sold amount are read from ServiceTitan. A missing value says Not in ServiceTitan and is not typed in. Required to submit: customer name, phone or email, and service address from ServiceTitan, plus office and scope summary. Nothing is emailed.</p>
 <form id="csr-handoff-form" class="csr-form">
   <div class="csr-grid">
-    <label>Customer name<input id="csr-customer_name" maxlength="200"${disabled} value="${esc(valueOf(fields, "customer_name"))}"></label>
-    <label>Phone<input id="csr-phone" type="tel" maxlength="40"${disabled} value="${esc(valueOf(fields, "phone"))}"></label>
-    <label>Email<input id="csr-email" type="email" maxlength="200"${disabled} value="${esc(valueOf(fields, "email"))}"></label>
-    <label class="csr-wide">Service address<input id="csr-service_address" maxlength="500"${disabled} value="${esc(valueOf(fields, "service_address"))}"></label>
+    ${readOnlyFact("customer_name", "Customer name", st.customer_name, esc)}
+    ${readOnlyFact("phone", "Phone", st.phone, esc)}
+    ${readOnlyFact("email", "Email", st.email, esc)}
+    ${readOnlyFact("service_address", "Service address", st.service_address, esc, { wide: true })}
     <label>Office<select id="csr-office"${disabled}>${options(OFFICES, fields.office || "", esc, "Choose an office")}</select></label>
     <label>Lead source<input id="csr-lead_source" maxlength="200"${disabled} value="${esc(valueOf(fields, "lead_source"))}"></label>
     <label class="csr-wide">Scope summary<textarea id="csr-scope_summary" maxlength="8000" rows="4"${disabled}>${esc(valueOf(fields, "scope_summary"))}</textarea></label>
     <label>ServiceTitan project #<input id="csr-handoff_project_ref" maxlength="200"${disabled} value="${esc(valueOf(fields, "handoff_project_ref"))}"></label>
-    <label>Estimate amount (ServiceTitan)<input id="csr-handoff_estimate_amount" type="number" min="0" step="0.01"${disabled} value="${esc(moneyValue(fields.handoff_estimate_amount))}"></label>
-    <label>Sold amount<input id="csr-sold_amount" type="number" min="0" step="0.01"${disabled} value="${esc(moneyValue(fields.sold_amount))}"></label>
+    ${readOnlyFact("estimate_amount", "Estimate amount (ServiceTitan)", st.estimate_amount, esc, { money: true })}
+    ${readOnlyFact("sold_amount", "Sold amount", st.sold_amount, esc, { money: true })}
     <label>Target start window<input id="csr-target_start_window" maxlength="200"${disabled} value="${esc(valueOf(fields, "target_start_window"))}"></label>
     <label>Permits likely<select id="csr-permits_likely"${disabled}>${options(PERMITS, fields.permits_likely || "", esc, "Not set")}</select></label>
     <label class="csr-wide">Access / site notes<textarea id="csr-access_notes" maxlength="4000" rows="3"${disabled}>${esc(valueOf(fields, "access_notes"))}</textarea></label>
@@ -82,13 +96,6 @@ ${gateLine}
   <p class="csr-error" id="csr-handoff-error" role="alert"></p>
   ${buttons}
 </form>`;
-}
-
-function moneyOrNull(raw) {
-  const text = String(raw ?? "").trim();
-  if (!text) return null;
-  const number = Number(text);
-  return Number.isFinite(number) ? number : null;
 }
 
 export function bindCsrHandoff(root, { api, projectId, onSaved }) {
@@ -108,18 +115,10 @@ export function bindCsrHandoff(root, { api, projectId, onSaved }) {
       await api("/projects/" + projectId + "/handoff", {
         method: "PUT",
         body: JSON.stringify({
-          customer_name: read("customer_name"),
-          phone: read("phone"),
-          email: read("email"),
-          service_address: read("service_address"),
           office: read("office"),
           lead_source: read("lead_source"),
           scope_summary: read("scope_summary"),
           handoff_project_ref: read("handoff_project_ref"),
-          handoff_estimate_amount: moneyOrNull(
-            root.querySelector("#csr-handoff_estimate_amount")?.value,
-          ),
-          sold_amount: moneyOrNull(root.querySelector("#csr-sold_amount")?.value),
           target_start_window: read("target_start_window"),
           access_notes: read("access_notes"),
           decision_maker_notes: read("decision_maker_notes"),

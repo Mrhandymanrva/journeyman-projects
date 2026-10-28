@@ -542,7 +542,9 @@ body{
   .acct-row .lbl{display:block;margin-bottom:4px}
   .acct-suggest{flex-wrap:wrap}
 }
-.csr-form label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted)}
+.csr-form label,.csr-readonly{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted)}
+.csr-readonly-value{margin:0;font-weight:500;color:var(--ink);background:var(--paper);border:1px solid var(--rule);border-radius:6px;padding:8px;min-height:38px}
+.csr-readonly-value[data-missing="true"]{color:var(--muted);font-style:italic}
 .csr-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}
 .csr-wide{grid-column:1 / -1}
 .csr-form input,.csr-form select,.csr-form textarea{
