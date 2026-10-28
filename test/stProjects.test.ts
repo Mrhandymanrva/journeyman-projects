@@ -424,6 +424,68 @@ it("scopes invoices, payments, and estimates to the project on import", async ()
   delete client.readEstimatesForProject;
 });
 
+it("stores ServiceTitan phone and email on add and refresh, and keeps them when the contact read fails", async () => {
+  const added = snapshot();
+  added.project = { ...st, id: "910", number: "P-910", jobIds: ["911"] };
+  added.jobs = [{ ...added.jobs[0]!, id: "911", jobNumber: "J911", projectId: "910" }];
+  added.customer = {
+    id: "300",
+    name: "ST Customer",
+    phone: "804-555-0177",
+    email: "linh.nguyen@example.test",
+    contacts: [{ id: "506", type: "MobilePhone", value: "804-555-0177", memo: "primary", optedOut: false }],
+    contactsRead: true,
+  };
+  added.location = { ...added.location, contacts: [] };
+  readProject.mockResolvedValueOnce(added);
+  const created = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "910" });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const id = created.body.data.id as string;
+  const stored = (await owner().get(base + "/projects/" + id + "/servicetitan")).body.data.connection.snapshot;
+  expect(stored.customer.phone).toBe("804-555-0177");
+  expect(stored.customer.email).toBe("linh.nguyen@example.test");
+  expect(stored.customer.contactsRead).toBeUndefined();
+
+  const refreshed = snapshot();
+  refreshed.project = added.project;
+  refreshed.jobs = added.jobs;
+  refreshed.customer = {
+    ...added.customer,
+    phone: "804-555-0199",
+    email: "new@example.test",
+    contactsRead: true,
+  };
+  refreshed.location = added.location;
+  readProject.mockResolvedValueOnce(refreshed);
+  expect(
+    (await owner().post(base + "/projects/" + id + "/servicetitan").send({ external_project_id: "910" })).status,
+  ).toBe(200);
+  const afterRefresh = (await owner().get(base + "/projects/" + id + "/servicetitan")).body.data.connection.snapshot;
+  expect(afterRefresh.customer.phone).toBe("804-555-0199");
+
+  const failed = snapshot();
+  failed.project = added.project;
+  failed.jobs = added.jobs;
+  failed.customer = {
+    id: "300",
+    name: "ST Customer",
+    phone: null,
+    email: null,
+    contacts: null,
+    contactsRead: false,
+  };
+  failed.location = { ...added.location, contacts: null };
+  readProject.mockResolvedValueOnce(failed);
+  expect(
+    (await owner().post(base + "/projects/" + id + "/servicetitan").send({ external_project_id: "910" })).status,
+  ).toBe(200);
+  const kept = (await owner().get(base + "/projects/" + id + "/servicetitan")).body.data.connection.snapshot;
+  expect(kept.customer.phone).toBe("804-555-0199");
+  expect(kept.customer.email).toBe("new@example.test");
+});
+
 it('lets office staff browse ST projects for their permitted import workflow',async()=>{
  listProjects.mockResolvedValueOnce({data:[st],hasMore:false,page:1});
  expect((await h.as(t.staff.office!.token).get(base+'/servicetitan/projects')).status).toBe(200);

@@ -1,6 +1,11 @@
 import { z } from "zod";
 import type { SqlClient } from "../db/database.js";
 import { ApiError, validationFailed } from "../http/errors.js";
+import {
+  normalizeServiceTitanContact,
+  pickServiceTitanContact,
+  type ServiceTitanContactSource,
+} from "./stCustomerContacts.js";
 
 function num(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
@@ -210,9 +215,21 @@ function snapshotCustomer(snapshot: Record<string, unknown>): Record<string, unk
   return asRecord(snapshot.customer);
 }
 
-function snapshotContact(customer: Record<string, unknown>): Record<string, unknown> | undefined {
-  const contacts = Array.isArray(customer.contacts) ? customer.contacts : [];
-  return contacts.map(asRecord).find((row) => textOf(row.phone, row.phoneNumber, row.email));
+function storedContacts(record: Record<string, unknown>) {
+  const contacts = Array.isArray(record.contacts) ? record.contacts : [];
+  return contacts.flatMap((row) => {
+    const contact = asRecord(row);
+    const normalized = normalizeServiceTitanContact({
+      id: textOf(contact.id) || null,
+      type: textOf(contact.type),
+      value: textOf(contact.value, contact.phone, contact.phoneNumber, contact.email),
+      memo: textOf(contact.memo) || null,
+      optedOut: contact.optedOut === true,
+      doNotContact: contact.doNotContact === true,
+      phoneSettings: asRecord(contact.phoneSettings) as ServiceTitanContactSource["phoneSettings"],
+    });
+    return normalized ? [normalized] : [];
+  });
 }
 
 function snapshotServiceAddress(snapshot: Record<string, unknown>): string {
@@ -239,7 +256,11 @@ function orNull(value: string): string | null {
 export function serviceTitanHandoff(input: SuggestInput): ServiceTitanHandoff {
   const snapshot = asRecord(input.snapshot);
   const customer = snapshotCustomer(snapshot);
-  const contact = snapshotContact(customer);
+  const location = asRecord(snapshot.location);
+  const listed = Array.isArray(customer.contacts) || Array.isArray(location.contacts);
+  const picked = listed
+    ? pickServiceTitanContact([...storedContacts(customer), ...storedContacts(location)])
+    : null;
   const projectAddress = joinAddress(
     textOf(input.addressLine1),
     "",
@@ -250,10 +271,10 @@ export function serviceTitanHandoff(input: SuggestInput): ServiceTitanHandoff {
   const address = snapshotServiceAddress(snapshot) || (input.linked ? projectAddress : "");
   return {
     customer_name: orNull(textOf(input.sourceCustomerName, customer.name)),
-    phone: orNull(
-      textOf(customer.phone, customer.phoneNumber, contact?.phone, contact?.phoneNumber),
-    ),
-    email: orNull(textOf(customer.email, contact?.email)),
+    phone: listed
+      ? picked?.phone ?? null
+      : orNull(textOf(customer.phone, customer.phoneNumber)),
+    email: listed ? picked?.email ?? null : orNull(textOf(customer.email)),
     service_address: orNull(address),
     estimate_amount: input.estimateAmount,
     sold_amount: input.soldAmount,

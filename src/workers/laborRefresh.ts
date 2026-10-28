@@ -34,6 +34,7 @@ import {
 } from "../domain/projectFinancials.js";
 import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
 import { isBeforeSourceFloor, sourceWindowStart } from "../domain/sourceFloor.js";
+import { pickServiceTitanContact } from "../domain/stCustomerContacts.js";
 import { grossPayItemTooOld } from "../domain/grossPay.js";
 import {
   chooseLaborCostSource,
@@ -156,8 +157,8 @@ export function laborRefreshTenantId(
 /**
  * The same full read the Refresh button runs, for every linked project that
  * is not complete or cancelled. One overnight pass reads jobs, appointments,
- * payroll timesheets, invoices, and purchase orders. ServiceTitan is only
- * read. The stamp source is scheduled.
+ * payroll timesheets, invoices, purchase orders, and customer contacts.
+ * ServiceTitan is only read. The stamp source is scheduled.
  */
 export async function runHourlyLaborRefresh(
   db: Database,
@@ -644,6 +645,11 @@ export async function refreshLinkedProject(
     });
   });
   try {
+    await storeProjectCustomerContacts(db, connection, tenantId, projectId, externalProjectId, warnings);
+  } catch (err) {
+    warnings.push(`Customer contacts: ${errorText(err)}`);
+  }
+  try {
     await storeProjectFinancialSummary(
       db,
       connection,
@@ -658,6 +664,90 @@ export async function refreshLinkedProject(
     warnings.push(`Project summary: ${errorText(err)}`);
   }
   return { warnings };
+}
+
+function textId(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+/**
+ * Customer and location contacts, stored on the existing snapshot.
+ * GET only. A failed read leaves the phone and email already stored.
+ * observed_at is not moved, so a project refresh is not blocked by this pass.
+ */
+async function storeProjectCustomerContacts(
+  db: Database,
+  connection: ServiceTitanSource,
+  tenantId: string,
+  projectId: string,
+  externalProjectId: string | null,
+  warnings: string[],
+): Promise<void> {
+  const read = connection.client.readCustomerContacts;
+  if (!read) return;
+  const stored = await db.withTenant(tenantId, (client) =>
+    client.query<{ snapshot: unknown }>(
+      `SELECT snapshot
+         FROM projects.st_project_connections
+        WHERE project_id = $1 AND external_system_id = $2`,
+      [projectId, connection.externalSystemId],
+    ),
+  );
+  const snapshot = stored.rows[0]?.snapshot;
+  const snap =
+    snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+      ? (snapshot as Record<string, unknown>)
+      : null;
+  if (!snap) return;
+  const customer =
+    snap.customer && typeof snap.customer === "object" && !Array.isArray(snap.customer)
+      ? (snap.customer as Record<string, unknown>)
+      : {};
+  const location =
+    snap.location && typeof snap.location === "object" && !Array.isArray(snap.location)
+      ? (snap.location as Record<string, unknown>)
+      : {};
+  const customerId = textId(customer.id) ?? textId(snap.customerId);
+  const locationId = textId(location.id) ?? textId(snap.locationId);
+  if (!customerId || !locationId) {
+    if (externalProjectId) {
+      warnings.push("Customer contacts: the stored project has no ServiceTitan customer or location.");
+    }
+    return;
+  }
+  const readResult = await read.call(connection.client, customerId, locationId);
+  warnings.push(...readResult.warnings);
+  if (!readResult.ok) return;
+  const picked = pickServiceTitanContact([
+    ...readResult.customerContacts,
+    ...readResult.locationContacts,
+  ]);
+  await db.withTenant(tenantId, (client) =>
+    client.query(
+      `UPDATE projects.st_project_connections
+          SET snapshot = $2::jsonb
+        WHERE project_id = $1 AND external_system_id = $3`,
+      [
+        projectId,
+        JSON.stringify({
+          ...snap,
+          customer: {
+            ...customer,
+            phone: picked.phone,
+            email: picked.email,
+            contacts: readResult.customerContacts,
+          },
+          location: {
+            ...location,
+            contacts: readResult.locationContacts,
+          },
+        }),
+        connection.externalSystemId,
+      ],
+    ),
+  );
 }
 
 /**

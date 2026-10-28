@@ -48,6 +48,45 @@ import {
 type Details = Awaited<
   ReturnType<ServiceTitanReadAdapter["readProjectDetails"]>
 >;
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+/**
+ * The stored snapshot. A failed contact read keeps the phone, email, and
+ * contact lists from the previous snapshot instead of wiping them.
+ */
+function connectionSnapshot(result: Details, priorSnapshot: unknown) {
+  const prior = asRecord(priorSnapshot);
+  const priorCustomer = asRecord(prior.customer);
+  const priorLocation = asRecord(prior.location);
+  const customer: Record<string, unknown> = {
+    id: result.customer.id,
+    name: result.customer.name,
+  };
+  const location: Record<string, unknown> = { ...result.location };
+  delete location.contacts;
+  if (result.customer.contactsRead === false) {
+    if ("phone" in priorCustomer) customer.phone = priorCustomer.phone;
+    if ("email" in priorCustomer) customer.email = priorCustomer.email;
+    if ("contacts" in priorCustomer) customer.contacts = priorCustomer.contacts;
+    if ("contacts" in priorLocation) location.contacts = priorLocation.contacts;
+  } else if (result.customer.contactsRead === true) {
+    customer.phone = result.customer.phone;
+    customer.email = result.customer.email;
+    customer.contacts = result.customer.contacts ?? [];
+    location.contacts = result.location.contacts ?? [];
+  } else {
+    if (result.customer.phone != null) customer.phone = result.customer.phone;
+    if (result.customer.email != null) customer.email = result.customer.email;
+    if (result.customer.contacts) customer.contacts = result.customer.contacts;
+    if (result.location.contacts) location.contacts = result.location.contacts;
+  }
+  return { ...result.project, customer, location };
+}
 export function stProjectRoutes(
   deps: StaffRouterDeps,
   sources: SourceConnections = {},
@@ -98,8 +137,9 @@ export function stProjectRoutes(
       external_project_id: string;
       connection_key: string;
       observed_at: string;
+      snapshot: unknown;
     }>(
-      "SELECT external_project_id,connection_key,observed_at FROM projects.st_project_connections WHERE project_id=$1",
+      "SELECT external_project_id,connection_key,observed_at,snapshot FROM projects.st_project_connections WHERE project_id=$1",
       [id],
     );
     if (
@@ -145,11 +185,7 @@ export function stProjectRoutes(
         c.externalSystemId,
         result.project.id,
         c.key,
-        JSON.stringify({
-          ...result.project,
-          customer: result.customer,
-          location: result.location,
-        }),
+        JSON.stringify(connectionSnapshot(result, prior.rows[0]?.snapshot)),
         result.observedAt,
         ctx.staff.staffId,
       ],

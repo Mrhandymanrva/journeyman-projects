@@ -18,6 +18,9 @@
  * are not writable by the application role, and how you get privilege differs
  * between the two.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Database, SqlClient } from '../db/database.js';
 import { activateModule, writePlatformRows } from '../db/activation.js';
 import { storeProjectAr } from '../domain/arMatch.js';
@@ -31,6 +34,36 @@ import {
   segretoInvoiceLines,
   segretoReadNotes,
 } from './segretoDashboardFixture.js';
+import {
+  normalizeServiceTitanContact,
+  pickServiceTitanContact,
+  type ServiceTitanContactSource,
+} from '../domain/stCustomerContacts.js';
+
+/** The recorded CRM contacts response, mapped the same way a project read stores it. */
+function nguyenServiceTitanContacts() {
+  const file = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../test/fixtures/st-crm/customer-location-contacts.json',
+  );
+  const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
+    customer: { data: ServiceTitanContactSource[] };
+    location: { data: ServiceTitanContactSource[] };
+  };
+  const customerContacts = fixture.customer.data.flatMap((row) => {
+    const contact = normalizeServiceTitanContact(row);
+    return contact ? [contact] : [];
+  });
+  const locationContacts = fixture.location.data.flatMap((row) => {
+    const contact = normalizeServiceTitanContact(row);
+    return contact ? [contact] : [];
+  });
+  return {
+    customerContacts,
+    locationContacts,
+    picked: pickServiceTitanContact([...customerContacts, ...locationContacts]),
+  };
+}
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
@@ -1047,6 +1080,7 @@ log('project: Delaney — Basement Finish (healthy)');
       [TENANT_ID],
     );
     const systemId = system.rows[0]?.id;
+    const nguyenContacts = nguyenServiceTitanContacts();
     if (systemId) {
       await c.query(
         `INSERT INTO projects.st_project_connections
@@ -1063,12 +1097,14 @@ log('project: Delaney — Basement Finish (healthy)');
             summary: 'Replace the hall bath tub with a tiled shower. Keep the existing vanity.',
             leadSource: 'Referral',
             customer: {
-              id: 'cust-nguyen',
+              id: '300',
               name: 'Linh Nguyen',
-              phone: '804-555-0142',
-              email: 'linh.nguyen@example.test',
+              phone: nguyenContacts.picked.phone,
+              email: nguyenContacts.picked.email,
+              contacts: nguyenContacts.customerContacts,
             },
             location: {
+              id: '400',
               name: 'Home',
               address: {
                 street: '3102 Parkwood Avenue',
@@ -1076,6 +1112,7 @@ log('project: Delaney — Basement Finish (healthy)');
                 state: 'VA',
                 zip: '23221',
               },
+              contacts: nguyenContacts.locationContacts,
             },
           }),
           ids.staff.office!,
