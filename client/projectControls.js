@@ -53,25 +53,29 @@ export function createProjectControls({
   const status = (s) =>
     `<span class="control-status status-${esc(s)}">${esc(label(s))}</span>`;
   const rollupTone = {
-    done: "complete",
-    late: "red",
-    at_risk: "amber",
-    on_track: "green",
+    not_started: "not_started",
+    in_progress: "in_progress",
+    complete: "complete",
   };
   const rollupText = {
-    done: "Done",
-    late: "Late",
-    at_risk: "At risk",
-    on_track: "On track",
+    not_started: "Not started",
+    in_progress: "In progress",
+    complete: "Completed",
   };
-  const rollupBadge = (rollup) =>
-    rollup?.status
-      ? `<span class="control-status status-${esc(rollupTone[rollup.status] ?? rollup.status)}">${esc(rollupText[rollup.status] ?? label(rollup.status))}</span>`
+  const flagTone = { late: "red", at_risk: "amber" };
+  const flagText = { late: "Late", at_risk: "At risk" };
+  const rollupBadge = (rollup) => {
+    if (!rollup?.status) return "";
+    const status = `<span class="control-status plain status-${esc(rollupTone[rollup.status] ?? rollup.status)}">${esc(rollupText[rollup.status] ?? label(rollup.status))}</span>`;
+    const flag = rollup.flag
+      ? ` <span class="control-status plain status-${esc(flagTone[rollup.flag] ?? rollup.flag)}">${esc(flagText[rollup.flag] ?? label(rollup.flag))}</span>`
       : "";
+    return status + flag;
+  };
   const btn = (text, action, id = "", extra = "") =>
     `<button class="btn" data-control-action="${action}" data-record="${id}" ${extra}>${text}</button>`;
   const edits = (r) =>
-    `${writable(r.kind) ? btn("Edit", "edit", r.id) : ""}${writable(r.kind) && r.kind === "milestone" ? btn(r.active ? "Delete" : "Restore", r.active ? "delete-milestone" : "restore-milestone", r.id) : ""}${btn("History", "history", r.id)}${r.kind !== "document" ? btn("Record / ST", "read", r.id) : ""}`;
+    `${writable(r.kind) ? btn("Edit", "edit", r.id) : ""}${writable(r.kind) && (r.kind === "milestone" || r.kind === "goal") ? btn(r.active ? "Delete" : "Restore", r.active ? "delete-record" : "restore-record", r.id) : ""}${btn("History", "history", r.id)}${r.kind !== "document" ? btn("Record / ST", "read", r.id) : ""}`;
   const records = () => state.records.filter((r) => r.active);
   const children = (id) =>
     records().filter((r) => r.kind === "task" && r.data.parent_id === id);
@@ -161,9 +165,7 @@ export function createProjectControls({
             ? roadmap()
             : tab === "goals"
               ? goals()
-              : tab === "status"
-                ? reports()
-                : burndown();
+              : burndown();
     } else if (page === "documents") body = documents();
     else if (page === "risks") body = risks();
     else if (page === "communications") body = communications();
@@ -200,7 +202,7 @@ export function createProjectControls({
     return (
       header(
         "Roadmap & milestones",
-        "Status is calculated from linked tasks. Done when every linked task is done, otherwise late, at risk, or on track.",
+        "Not started when no linked task is done, in progress when some are done, and completed when all are done. Late and at risk show beside the status. A milestone with no linked tasks uses the status you set.",
         "milestone",
       ) +
       `<div class="control-roadmap">${
@@ -229,7 +231,7 @@ export function createProjectControls({
     return (
       header(
         "Objectives & key results",
-        "The percent is the share of linked milestones that are done. Key results are optional.",
+        "One percent, from linked milestones. Each milestone counts the share of its tasks that are done. Key results are optional.",
         "goal",
       ) +
       `<div class="control-roadmap">${
@@ -238,9 +240,9 @@ export function createProjectControls({
             const roll = r.rollup;
             const progress =
               roll && roll.percent != null
-                ? `<div class="control-kr"><strong>Milestones done</strong><p>${roll.done} of ${roll.total} · ${pct(roll.percent)}%</p><progress max="100" value="${pct(roll.percent)}">${pct(roll.percent)}%</progress></div>`
+                ? `<div class="control-kr"><strong>Progress</strong><p>${pct(roll.percent)}%</p><progress max="100" value="${pct(roll.percent)}">${pct(roll.percent)}%</progress></div>`
                 : `<p class="hint">No linked milestones yet.</p>`;
-            const results = (r.data.key_results ?? []).length
+            const measured = (r.data.key_results ?? []).length
               ? (r.data.key_results ?? [])
                   .map((k) => {
                     const p = pct(
@@ -249,8 +251,8 @@ export function createProjectControls({
                     return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
                   })
                   .join("")
-              : '<p class="hint">No key results. Add start, target, current, and a unit when you want a measured number.</p>';
-            return `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${rollupBadge(roll) || status(r.data.state)}${progress}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${results}${edits(r)}</article>`;
+              : '<p class="hint">No measured number yet. Edit the goal to add start, target, current, and a unit.</p>';
+            return `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${rollupBadge(roll) || status(r.data.state)}${progress}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small><button type="button" class="measure-link" data-goal-measures="${esc(r.id)}" aria-expanded="false" aria-controls="goal-measures-${esc(r.id)}">Add a measured number (optional)</button><div id="goal-measures-${esc(r.id)}" hidden>${measured}</div>${edits(r)}</article>`;
           })
           .join("") ||
         empty("Add an objective and a target date. Key results are optional.")
@@ -265,7 +267,7 @@ export function createProjectControls({
     );
     return (
       header(
-        "RAG status reports",
+        "Status (RAG)",
         "Green = on track · Amber = needs attention · Red = intervention needed. Assessments are recorded by the project team.",
         "report",
       ) +
@@ -335,8 +337,9 @@ export function createProjectControls({
   function risks() {
     const rows = active("risk");
     return (
+      reports() +
       header(
-        "Risk register & ROAM",
+        "Risk register (ROAM)",
         "Score likelihood × impact from 1–5. ROAM: Resolved, Owned, Accepted, Mitigated.",
         "risk",
       ) +
@@ -439,15 +442,19 @@ export function createProjectControls({
               draw(target);
             } else if (action === "new") form(id);
             else if (action === "edit") form(r.kind, r);
-            else if (action === "delete-milestone") {
-              const count = state.records.filter(t => t.kind === "task" && t.data.milestone_id === r.id).length;
-              if (!window.confirm(`Delete "${r.data.title}" from the project plan?${count ? ` Its ${count} linked task(s) will be kept and unlinked.` : ""} You can restore the milestone using Include archived records.`)) return;
+            else if (action === "delete-record") {
+              const linked = r.kind === "goal"
+                ? state.records.filter((t) => t.kind === "milestone" && t.data.goal_id === r.id)
+                : state.records.filter((t) => t.kind === "task" && t.data.milestone_id === r.id);
+              const noun = r.kind === "goal" ? "goal" : "milestone";
+              const kept = r.kind === "goal" ? "milestone(s)" : "task(s)";
+              if (!window.confirm(`Delete "${r.data.title}" from the project plan?${linked.length ? ` Its ${linked.length} linked ${kept} will be kept and unlinked.` : ""} You can restore the ${noun} using Include archived records.`)) return;
               b.disabled = true;
               await api(url() + "/" + r.id, {method:"DELETE",body:JSON.stringify({version:r.version})});
               await reload();
-            } else if (action === "restore-milestone") {
+            } else if (action === "restore-record") {
               b.disabled = true;
-              await save(r,r.data,true);
+              await save(r, r.data, true);
               await reload();
             }
             else if (action === "baseline") baselineForm();
@@ -469,6 +476,17 @@ export function createProjectControls({
           }
         }),
     );
+    target.querySelectorAll("[data-goal-measures]").forEach((button) => {
+      button.onclick = () => {
+        const panel = document.getElementById(
+          "goal-measures-" + button.dataset.goalMeasures,
+        );
+        if (!panel) return;
+        const open = panel.hidden;
+        panel.hidden = !open;
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+    });
     target.querySelectorAll("[data-task-check]").forEach(
       (c) =>
         (c.onchange = async () => {
@@ -545,10 +563,30 @@ export function createProjectControls({
       );
     if (k === "goal")
       html +=
-        '<p class="hint">The percent is calculated from milestones that are done. It cannot be typed in.</p>';
-    if (k === "milestone")
-      html +=
-        '<p class="hint">Status is calculated from linked tasks. It cannot be set here.</p>';
+        '<p class="hint">The percent is calculated from linked milestones, counting tasks done inside each one. It cannot be typed in.</p>';
+    if (k === "milestone") {
+      const linked = r
+        ? records().filter(
+            (t) => t.kind === "task" && t.data.milestone_id === r.id,
+          ).length
+        : 0;
+      if (linked > 0)
+        html +=
+          '<p class="hint">Status is calculated from linked tasks. It cannot be set here.</p>';
+      else
+        html +=
+          '<p class="hint">No linked tasks, so you can set the status. Not started, in progress, or completed.</p>' +
+          select(
+            "state",
+            "Status",
+            [
+              ["not_started", "Not started"],
+              ["in_progress", "In progress"],
+              ["complete", "Completed"],
+            ],
+            d.state === "blocked" ? "in_progress" : (d.state ?? "not_started"),
+          );
+    }
     if (k === "task")
       html +=
         `<div class="control-columns">${input("start_on", "Start", d.start_on ?? dt, "date", true)}${input("due_on", "Finish / due", d.due_on ?? dt, "date", true)}${input("completed_on", "Actual completion", d.completed_on, "date")}</div>` +
@@ -596,12 +634,23 @@ export function createProjectControls({
     if (k === "goal")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
-        "<h3>Measurable key results</h3>" +
+        '<button class="measure-link" type="button" id="cf-show-kr" aria-expanded="false" aria-controls="cf-kr-panel">Add a measured number (optional)</button>' +
+        '<div id="cf-kr-panel" hidden><h3>Measurable key results</h3>' +
         goalKeyResultHelpHtml() +
-        '<div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button>';
+        '<div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button></div>';
     if (k === "milestone")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
+        (r &&
+        records().filter((t) => t.kind === "task" && t.data.milestone_id === r.id)
+          .length
+          ? ""
+          : input(
+              "completed_on",
+              "Actual completion",
+              d.completed_on,
+              "date",
+            )) +
         select("goal_id", "Project goal", opts("goal"), d.goal_id) +
         area(
           "success_criteria",
@@ -702,10 +751,11 @@ export function createProjectControls({
           18,
         ) +
         '<p class="hint">Use ## for section headings, - for lists, **bold** for emphasis, and pipe-separated tables. Preview and PDF export format these automatically. Save a revision before publishing to ST.</p>';
-    if (k === "report")
+    if (k === "report") {
+      const rag = state.rag || { schedule: "green", cost: "green" };
       html +=
         input("as_of", "Reporting date", d.as_of ?? dt, "date", true) +
-        ["overall", "scope", "schedule", "cost", "quality"]
+        ["overall", "scope"]
           .map((key) =>
             select(
               key,
@@ -715,6 +765,17 @@ export function createProjectControls({
             ),
           )
           .join("") +
+        `<p class="hint">Schedule and cost come from project health, so this report cannot disagree with it. They cannot be typed in.</p><div class="control-rag-grid"><div><small>Schedule</small>${status(rag.schedule)}</div><div><small>Cost</small>${status(rag.cost)}</div></div><input type="hidden" id="cf-schedule" value="${esc(rag.schedule)}"><input type="hidden" id="cf-cost" value="${esc(rag.cost)}">` +
+        select(
+          "quality",
+          "Quality status",
+          ["not_assessed", "green", "amber", "red"],
+          d.quality ?? "not_assessed",
+        ) +
+        "";
+    }
+    if (k === "report")
+      html +=
         area("achievements", "Achievements", d.achievements) +
         area("next_steps", "Next steps / commitments", d.next_steps) +
         area("decisions", "Decisions / help needed", d.decisions);
@@ -734,6 +795,12 @@ export function createProjectControls({
       };
       (d.key_results ?? []).forEach(add);
       el("cf-add-kr").onclick = () => add();
+      el("cf-show-kr").onclick = () => {
+        const panel = el("cf-kr-panel");
+        const open = panel.hidden;
+        panel.hidden = !open;
+        el("cf-show-kr").setAttribute("aria-expanded", open ? "true" : "false");
+      };
     }
     el("control-form").onsubmit = async (e) => {
       e.preventDefault();

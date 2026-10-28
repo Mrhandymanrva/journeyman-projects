@@ -103,6 +103,20 @@
   font-weight: 650;
   text-transform: capitalize;
 }
+.control-status.plain {
+  text-transform: none;
+}
+button.measure-link {
+  display: block;
+  margin: 8px 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .status-green {
   background: var(--status-track-bg);
   color: var(--status-track);

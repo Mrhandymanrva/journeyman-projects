@@ -7,6 +7,8 @@ import {
   type TenantFixture,
 } from "./support/harness.js";
 import { today, nextCommunicationDate } from "../src/domain/projectControls.js";
+import { ragScheduleAndCost } from "../src/domain/ragHealth.js";
+import { loadProjectHealth } from "../src/domain/projectHealth.js";
 let h: Harness, t: TenantFixture, other: TenantFixture, p: string, q: string;
 const prefix = "/api/v1/projects/projects/";
 const owner = () => h.as(t.staff.owner!.token);
@@ -235,7 +237,6 @@ it("rolls milestone status up from tasks and goal percent up from milestones", a
     title: "Roll-up with no tasks",
     due_on: "2099-01-01",
     goal_id: goal.id,
-    state: "complete",
   });
   expect(none.data.state).toBe("not_started");
   const partial = await create("milestone", {
@@ -287,24 +288,30 @@ it("rolls milestone status up from tasks and goal percent up from milestones", a
   const byTitle = (title: string) =>
     rows.find((row: { data: { title: string } }) => row.data.title === title);
   expect(byTitle("Roll-up with no tasks").rollup).toMatchObject({
-    status: "on_track",
+    status: "not_started",
+    flag: null,
     total: 0,
     done: 0,
   });
   expect(byTitle("Roll-up with no tasks").data.state).toBe("not_started");
   expect(byTitle("Roll-up partial").rollup).toMatchObject({
-    status: "on_track",
+    status: "in_progress",
+    flag: null,
     done: 1,
     total: 2,
   });
   expect(byTitle("Roll-up all done").data.state).toBe("not_started");
-  expect(byTitle("Roll-up all done").rollup.status).toBe("done");
-  expect(byTitle("Roll-up late").rollup.status).toBe("late");
+  expect(byTitle("Roll-up all done").rollup.status).toBe("complete");
+  expect(byTitle("Roll-up late").rollup).toMatchObject({
+    status: "not_started",
+    flag: "late",
+  });
   expect(byTitle("Roll-up goal").data.key_results).toEqual([]);
   expect(byTitle("Roll-up goal").data.state).toBe("not_started");
   expect(byTitle("Roll-up goal").rollup).toEqual({
-    status: "late",
-    percent: 25,
+    status: "in_progress",
+    flag: "late",
+    percent: 38,
     done: 1,
     total: 4,
   });
@@ -315,8 +322,17 @@ it("rolls milestone status up from tasks and goal percent up from milestones", a
       data: { ...none.data, state: "complete", completed_on: today() },
     });
   expect(kept.status, JSON.stringify(kept.body)).toBe(200);
-  expect(kept.body.data.data.state).toBe("not_started");
-  expect(kept.body.data.data.completed_on).toBeNull();
+  expect(kept.body.data.data.state).toBe("complete");
+  expect(kept.body.data.data.completed_on).toBe(today());
+  const blocked = await owner()
+    .patch(url() + "/" + partial.id)
+    .send({
+      version: partial.version,
+      data: { ...partial.data, state: "complete", completed_on: today() },
+    });
+  expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+  expect(blocked.body.data.data.state).toBe("not_started");
+  expect(blocked.body.data.data.completed_on).toBeNull();
 });
 
 it("saves a goal with no key results", async () => {
@@ -340,7 +356,13 @@ it("saves a goal with no key results", async () => {
         title: "Bad measure",
         due_on: today(),
         key_results: [
-          { name: "Inspections", start: 1, target: 1, current: 1, unit: "inspections" },
+          {
+            name: "Inspections",
+            start: 1,
+            target: 1,
+            current: 1,
+            unit: "inspections",
+          },
         ],
       },
     });
@@ -420,18 +442,169 @@ it("records goals, linked milestones, RAG reports, ROAM risks and delivery histo
   expect(nextCommunicationDate("monthly", "2026-01-31")).toBe("2026-02-28");
 });
 
-it("deletes a milestone without deleting its tasks, checks versions and allows restoration", async()=>{
- const milestone=await create("milestone",{title:"Temporary milestone",due_on:today()});
- const linked=await create("task",{...task("Keep this work"),milestone_id:milestone.id});
- expect((await h.as(t.staff.office!.token).del(url()+"/"+milestone.id).send({version:1})).status).toBe(403);
- expect((await owner().del(url()+"/"+milestone.id).send({version:99})).status).toBe(409);
- const deleted=await owner().del(url()+"/"+milestone.id).send({version:1});
- expect(deleted.status,JSON.stringify(deleted.body)).toBe(200);
- expect(deleted.body.data).toMatchObject({active:false,version:2,unlinked_tasks:1});
- const rows=(await owner().get(url())).body.data.records;
- const kept=rows.find((x:any)=>x.id===linked.id);
- expect(kept.active).toBe(true);expect(kept.data).toEqual({...linked.data,milestone_id:null});expect(kept.version).toBe(2);
- expect((await owner().patch(url()+"/"+linked.id).send({version:1,data:linked.data})).status).toBe(409);
- expect((await owner().patch(url()+"/"+milestone.id).send({version:2,data:milestone.data,active:true})).status).toBe(200);
- expect((await owner().del(url()+"/"+linked.id).send({version:2})).status).toBe(400);
+it("deletes a milestone without deleting its tasks, checks versions and allows restoration", async () => {
+  const milestone = await create("milestone", {
+    title: "Temporary milestone",
+    due_on: today(),
+  });
+  const linked = await create("task", {
+    ...task("Keep this work"),
+    milestone_id: milestone.id,
+  });
+  expect(
+    (
+      await h
+        .as(t.staff.office!.token)
+        .del(url() + "/" + milestone.id)
+        .send({ version: 1 })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + milestone.id)
+        .send({ version: 99 })
+    ).status,
+  ).toBe(409);
+  const deleted = await owner()
+    .del(url() + "/" + milestone.id)
+    .send({ version: 1 });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body.data).toMatchObject({
+    active: false,
+    version: 2,
+    unlinked_tasks: 1,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const kept = rows.find((x: any) => x.id === linked.id);
+  expect(kept.active).toBe(true);
+  expect(kept.data).toEqual({ ...linked.data, milestone_id: null });
+  expect(kept.version).toBe(2);
+  expect(
+    (
+      await owner()
+        .patch(url() + "/" + linked.id)
+        .send({ version: 1, data: linked.data })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await owner()
+        .patch(url() + "/" + milestone.id)
+        .send({ version: 2, data: milestone.data, active: true })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + linked.id)
+        .send({ version: 2 })
+    ).status,
+  ).toBe(400);
+});
+
+it("deletes a goal, unlinks its milestones, and restores the goal", async () => {
+  const goal = await create("goal", {
+    title: "Temporary goal",
+    due_on: today(),
+  });
+  const milestone = await create("milestone", {
+    title: "Kept milestone",
+    due_on: today(),
+    goal_id: goal.id,
+  });
+  expect(
+    (
+      await h
+        .as(t.staff.office!.token)
+        .del(url() + "/" + goal.id)
+        .send({ version: 1 })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + goal.id)
+        .send({ version: 99 })
+    ).status,
+  ).toBe(409);
+  const deleted = await owner()
+    .del(url() + "/" + goal.id)
+    .send({ version: 1 });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body.data).toMatchObject({
+    active: false,
+    version: 2,
+    unlinked_milestones: 1,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const kept = rows.find((row: { id: string }) => row.id === milestone.id);
+  expect(kept.active).toBe(true);
+  expect(kept.data.goal_id).toBeNull();
+  const restored = await owner()
+    .patch(url() + "/" + goal.id)
+    .send({ version: 2, data: goal.data, active: true });
+  expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+  expect(restored.body.data.active).toBe(true);
+  const again = (await owner().get(url())).body.data.records.find(
+    (row: { id: string }) => row.id === milestone.id,
+  );
+  expect(again.data.goal_id).toBeNull();
+});
+
+it("keeps an old RAG report readable and writes schedule and cost from project health", async () => {
+  await h.db.withTenant(t.id, (db) =>
+    db.query(
+      `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+       VALUES ($1, $2, 'report', $3::jsonb)`,
+      [
+        t.id,
+        p,
+        JSON.stringify({
+          title: "Stored weekly review",
+          description: "",
+          owner_id: null,
+          overall: "amber",
+          scope: "green",
+          schedule: "amber",
+          cost: "red",
+          quality: "not_assessed",
+          achievements: "",
+          next_steps: "",
+          decisions: "",
+          as_of: today(),
+        }),
+      ],
+    ),
+  );
+  const listed = (await owner().get(url())).body.data;
+  const stored = listed.records.find(
+    (row: { data: { title: string } }) =>
+      row.data.title === "Stored weekly review",
+  );
+  expect(stored.data.schedule).toBe("amber");
+  expect(stored.data.cost).toBe("red");
+  const health = await h.db.withTenant(t.id, (db) =>
+    loadProjectHealth(db, today()),
+  );
+  const expected = ragScheduleAndCost(
+    health.find((row) => row.project_id === p)?.health,
+  );
+  expect(listed.rag).toEqual(expected);
+  const created = await create("report", {
+    title: "Health-backed review",
+    overall: "green",
+    scope: "green",
+    schedule: "red",
+    cost: "red",
+    quality: "green",
+  });
+  expect(created.data.schedule).toBe(expected.schedule);
+  expect(created.data.cost).toBe(expected.cost);
+  const still = (await owner().get(url())).body.data.records.find(
+    (row: { data: { title: string } }) =>
+      row.data.title === "Stored weekly review",
+  );
+  expect(still.data.schedule).toBe("amber");
+  expect(still.data.cost).toBe("red");
 });

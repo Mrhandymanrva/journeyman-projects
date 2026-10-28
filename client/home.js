@@ -1,4 +1,5 @@
 import { roleTitle } from "./roleTitles.js";
+import { SCHEDULE_CAPTION } from "./scheduleDefinition.js";
 
 /**
  * Where to land after sign-in.
@@ -48,6 +49,8 @@ const TYPE_LABELS = {
   precon_task: "Precon task",
   milestone: "Milestone",
   permit_milestone: "Permit milestone",
+  activity: "Gantt activity",
+  appointment: "ServiceTitan appointment",
 };
 
 const LIFECYCLE_LABELS = {
@@ -78,7 +81,7 @@ export function homeShellHtml() {
   </section>
   <div class="home-side">
     <section class="card" id="home-due" aria-label="Due today and overdue">
-      <div class="card-h"><div><h2>Due today / overdue</h2><p class="home-count">WBS tasks, preconstruction tasks, and milestones.</p></div></div>
+      <div class="card-h"><div><h2>Due today / overdue</h2><p class="home-count">${SCHEDULE_CAPTION}.</p></div></div>
       <div class="card-b" id="home-due-body"></div>
     </section>
     <section class="card home-handoff-slot" id="home-handoffs" data-slot="new-handoffs" hidden>

@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { milestoneCredit } from "../client/scheduleDefinition.js";
 import {
   attachControlRollups,
   controlData,
   goalRollup,
-  milestoneRollupStatus,
+  milestoneRollup,
   preserveDerivedControlFields,
   taskRollupStatus,
-  type RollupStatus,
 } from "../src/domain/projectControls.js";
 
 const asOf = "2026-10-26";
@@ -34,64 +34,118 @@ describe("task roll-up rules", () => {
 });
 
 describe("milestone status from linked tasks", () => {
-  it("stays on track when a milestone has no tasks", () => {
-    expect(milestoneRollupStatus([], asOf)).toBe("on_track");
-  });
-
-  it("stays on track when only some tasks are done", () => {
+  it("uses the manual status when a milestone has no tasks", () => {
+    expect(milestoneRollup([], asOf, { state: "not_started" })).toMatchObject({
+      status: "not_started",
+      flag: null,
+      done: 0,
+      total: 0,
+    });
     expect(
-      milestoneRollupStatus(
-        [task("complete", "2026-11-01"), task("in_progress", "2026-11-02")],
-        asOf,
-      ),
-    ).toBe("on_track");
-  });
-
-  it("is done only when every linked task is done", () => {
+      milestoneRollup([], asOf, { state: "in_progress", due_on: "2026-11-01" })
+        .status,
+    ).toBe("in_progress");
     expect(
-      milestoneRollupStatus(
-        [task("complete", "2020-01-01"), task("complete", "2026-11-01")],
-        asOf,
-      ),
-    ).toBe("done");
-  });
-
-  it("is late when any linked task is overdue", () => {
+      milestoneRollup([], asOf, { state: "complete", due_on: "2020-01-01" }),
+    ).toMatchObject({ status: "complete", flag: null });
     expect(
-      milestoneRollupStatus(
-        [task("complete", "2026-11-01"), task("not_started", "2026-10-20")],
-        asOf,
-      ),
+      milestoneRollup([], asOf, { state: "not_started", due_on: "2026-10-20" })
+        .flag,
     ).toBe("late");
   });
 
-  it("is at risk when a linked task is blocked and none are late", () => {
+  it("is not started when no linked task is done, even if one is in progress", () => {
     expect(
-      milestoneRollupStatus(
+      milestoneRollup(
+        [task("in_progress", "2026-11-02"), task("not_started", "2026-11-03")],
+        asOf,
+      ),
+    ).toMatchObject({ status: "not_started", flag: null, done: 0, total: 2 });
+  });
+
+  it("is in progress when some linked tasks are done", () => {
+    expect(
+      milestoneRollup(
+        [task("complete", "2026-11-01"), task("in_progress", "2026-11-02")],
+        asOf,
+      ),
+    ).toMatchObject({ status: "in_progress", flag: null, done: 1, total: 2 });
+  });
+
+  it("is completed only when every linked task is done", () => {
+    expect(
+      milestoneRollup(
+        [task("complete", "2020-01-01"), task("complete", "2026-11-01")],
+        asOf,
+      ),
+    ).toMatchObject({ status: "complete", flag: null, done: 2, total: 2 });
+  });
+
+  it("shows late as a flag when any linked task is overdue", () => {
+    expect(
+      milestoneRollup(
+        [task("complete", "2026-11-01"), task("not_started", "2026-10-20")],
+        asOf,
+      ),
+    ).toMatchObject({ status: "in_progress", flag: "late", done: 1, total: 2 });
+  });
+
+  it("shows at risk as a flag when a linked task is blocked and none are late", () => {
+    expect(
+      milestoneRollup(
         [task("in_progress", "2026-11-01"), task("blocked", "2026-11-03")],
         asOf,
       ),
-    ).toBe("at_risk");
+    ).toMatchObject({
+      status: "not_started",
+      flag: "at_risk",
+      done: 0,
+      total: 2,
+    });
   });
 });
 
-describe("goal percent from completed milestones", () => {
+describe("goal percent from milestone credit", () => {
   it("leaves the percent unset when a goal has no milestones", () => {
-    expect(goalRollup([])).toEqual({ status: "on_track", percent: null });
+    expect(goalRollup([])).toEqual({
+      status: "not_started",
+      flag: null,
+      percent: null,
+    });
   });
 
-  it("counts only milestones that are done, including a goal with no key results", () => {
-    const statuses: RollupStatus[] = ["done", "on_track", "late", "at_risk"];
-    expect(goalRollup(statuses)).toEqual({ status: "late", percent: 25 });
-    expect(goalRollup(["done", "done"])).toEqual({
-      status: "done",
-      percent: 100,
+  it("gives partial credit for tasks done inside a milestone", () => {
+    const threeOfFour = milestoneRollup(
+      [
+        task("complete", "2026-11-01"),
+        task("complete", "2026-11-01"),
+        task("complete", "2026-11-01"),
+        task("not_started", "2026-11-02"),
+      ],
+      asOf,
+    );
+    expect(milestoneCredit({ linkedTotal: 4, linkedDone: 3 })).toBe(0.75);
+    expect(milestoneCredit({ state: "complete" })).toBe(1);
+    expect(milestoneCredit({ state: "in_progress" })).toBe(0);
+    expect(goalRollup([threeOfFour])).toMatchObject({
+      status: "in_progress",
+      percent: 75,
     });
-    expect(goalRollup(["on_track", "on_track"])).toEqual({
-      status: "on_track",
-      percent: 0,
-    });
+    expect(
+      goalRollup([
+        { status: "complete", flag: null, done: 0, total: 0 },
+        { status: "not_started", flag: null, done: 0, total: 0 },
+      ]),
+    ).toMatchObject({ status: "in_progress", percent: 50, flag: null });
+    expect(
+      goalRollup([
+        { status: "complete", flag: null, done: 2, total: 2 },
+        { status: "complete", flag: null, done: 1, total: 1 },
+      ]),
+    ).toMatchObject({ status: "complete", percent: 100 });
+  });
 
+  it("counts milestone credit, including a goal with no key results", () => {
     const goal = {
       id: "goal-1",
       kind: "goal",
@@ -154,16 +208,18 @@ describe("goal percent from completed milestones", () => {
     expect(goal.data.state).toBe("complete");
     expect(goal.data.key_results).toEqual([]);
     expect(rolled.find((row) => row.id === "goal-1")?.rollup).toEqual({
-      status: "on_track",
+      status: "in_progress",
+      flag: null,
       percent: 50,
       done: 1,
       total: 2,
     });
     expect(rolled.find((row) => row.id === "m-done")?.rollup?.status).toBe(
-      "done",
+      "complete",
     );
     expect(rolled.find((row) => row.id === "m-open")?.rollup).toMatchObject({
-      status: "on_track",
+      status: "not_started",
+      flag: null,
       done: 0,
       total: 1,
     });
@@ -173,15 +229,15 @@ describe("goal percent from completed milestones", () => {
     ).toEqual([]);
   });
 
-  it("keeps a stored status when a save tries to type a new one", () => {
+  it("keeps a calculated status when linked tasks exist, and allows a manual status when they do not", () => {
     const stored = { state: "complete", completed_on: "2026-10-01" };
     const incoming = {
       state: "not_started",
       completed_on: null as string | null,
     };
-    expect(preserveDerivedControlFields("milestone", incoming, stored)).toEqual(
-      stored,
-    );
+    expect(
+      preserveDerivedControlFields("milestone", incoming, stored, 2),
+    ).toEqual(stored);
     expect(
       preserveDerivedControlFields(
         "goal",
@@ -190,21 +246,42 @@ describe("goal percent from completed milestones", () => {
       ).state,
     ).toBe("in_progress");
     expect(
-      preserveDerivedControlFields("milestone", { state: "complete" }, null)
-        .state,
-    ).toBe("not_started");
+      preserveDerivedControlFields(
+        "milestone",
+        { state: "complete", completed_on: "2026-10-26" },
+        null,
+        0,
+      ),
+    ).toMatchObject({ state: "complete", completed_on: "2026-10-26" });
+    expect(
+      preserveDerivedControlFields(
+        "milestone",
+        { state: "blocked", completed_on: null },
+        null,
+        0,
+      ).state,
+    ).toBe("in_progress");
   });
 
-  it("shows the calculated status and percent with the existing color tokens", () => {
+  it("shows one milestone percent, a separate late flag, and collapsed key results", () => {
     const ui = readFileSync("client/projectControls.js", "utf8");
-    expect(ui).toContain("Milestones done");
-    expect(ui).toContain('done: "complete"');
-    expect(ui).toContain('late: "red"');
-    expect(ui).toContain('at_risk: "amber"');
-    expect(ui).toContain('on_track: "green"');
-    expect(ui).toContain("status-${esc(rollupTone[rollup.status]");
+    expect(ui).toContain(">Progress</strong>");
+    expect(ui).toContain("Add a measured number (optional)");
+    expect(ui).toContain('not_started: "Not started"');
+    expect(ui).toContain('in_progress: "In progress"');
+    expect(ui).toContain('complete: "Completed"');
+    expect(ui).toContain('late: "Late"');
+    expect(ui).toContain('at_risk: "At risk"');
     expect(ui).toContain("It cannot be set here.");
     expect(ui).toContain("It cannot be typed in.");
+    expect(ui).toContain("delete-record");
+    expect(ui).toContain("Status (RAG)");
+    expect(ui).toContain("Risk register (ROAM)");
+    expect(ui).not.toContain("Milestones done");
     expect(ui).not.toContain('["task", "goal", "milestone"]');
+    const workspace = readFileSync("client/workspace.js", "utf8");
+    expect(workspace).not.toContain('status: "RAG status"');
+    expect(workspace).toContain('requested === "status"');
+    expect(workspace).toContain('url.hash = "risks"');
   });
 });

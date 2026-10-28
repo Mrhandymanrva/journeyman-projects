@@ -122,7 +122,6 @@ export function createWorkspace({
     tasks: "Tasks & WBS",
     roadmap: "Roadmap & milestones",
     goals: "Goals & key results",
-    status: "RAG status",
     burndown: "Burndown",
   };
   let planView = "gantt";
@@ -169,9 +168,17 @@ export function createWorkspace({
     };
   });
   function planFromQuery() {
-    const requested = new URLSearchParams(location.search).get("plan");
+    const url = new URL(location.href);
+    const requested = url.searchParams.get("plan");
+    if (requested === "status") {
+      url.searchParams.delete("plan");
+      url.hash = "risks";
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+      return "risks";
+    }
     if (requested && Object.prototype.hasOwnProperty.call(planViews, requested))
       planView = requested;
+    return null;
   }
   for (const id of ["budget", "pos", "cos", "closeout", "draws"])
     move(id, "financials", true);
@@ -325,7 +332,8 @@ export function createWorkspace({
     epoch++;
     controls.cancel();
     closeDrawer();
-    planFromQuery();
+    const redirected = planFromQuery();
+    if (redirected) id = redirected;
     const next = canonicalPage(id);
     if (next !== id) {
       const url = new URL(location.href);
@@ -506,13 +514,17 @@ export function createWorkspace({
     }
   }
   let scheduleTicket = 0;
-  function paintSchedule(d, appointments, ready) {
+  function paintSchedule(d, appointments, controlRecords, ready) {
     const p = d.detail,
       day = today(),
       progress = scheduleProgress({
         activities: d.schedule || [],
         appointments,
         preconTasks: p.precon?.tasks || [],
+        controlRecords,
+        permitMilestones: (d.permits || []).flatMap(
+          (permit) => permit.milestones || [],
+        ),
         today: day,
       }),
       unfinished = (d.schedule || []).filter(
@@ -539,8 +551,17 @@ export function createWorkspace({
       .forEach(
         (b) =>
           (b.onclick = () => {
-            if (b.dataset.weekKind === "precon") {
+            const kind = b.dataset.weekKind;
+            if (kind === "precon" || kind === "permit_milestone") {
               location.assign("#" + PROJECT_PAGE_ID);
+              return;
+            }
+            if (kind === "wbs_task" || kind === "milestone") {
+              const url = new URL(location.href);
+              url.searchParams.set("plan", kind === "wbs_task" ? "tasks" : "roadmap");
+              url.searchParams.set("item", b.dataset.agenda || "");
+              url.hash = "plan";
+              location.assign(url.pathname + url.search + url.hash);
               return;
             }
             const row =
@@ -561,20 +582,18 @@ export function createWorkspace({
     if (home) home.hidden = true;
     const p = d.detail,
       day = today();
-    paintSchedule(d, [], false);
+    paintSchedule(d, [], [], false);
     const ticket = ++scheduleTicket;
     const window = appointmentReadWindow(day, p);
-    api(
-      `/projects/${p.id}/plan-appointments?from=${window.from}&to=${window.to}`,
-    )
-      .then((source) => {
-        if (ticket !== scheduleTicket || data !== d) return;
-        paintSchedule(d, source?.rows || [], true);
-      })
-      .catch(() => {
-        if (ticket !== scheduleTicket || data !== d) return;
-        paintSchedule(d, [], true);
-      });
+    Promise.all([
+      api(
+        `/projects/${p.id}/plan-appointments?from=${window.from}&to=${window.to}`,
+      ).catch(() => null),
+      api(`/projects/${p.id}/controls`).catch(() => null),
+    ]).then(([source, controls]) => {
+      if (ticket !== scheduleTicket || data !== d) return;
+      paintSchedule(d, source?.rows || [], controls?.records || [], true);
+    });
     el("dashboard-attention").innerHTML =
       `<div class="card"><div class="card-h"><h2>Needs attention</h2><a href="#${PROJECT_PAGE_ID}">View all →</a></div><div class="card-b" id="dashboard-issues"></div></div>`;
     const issueRows = [...el("blockers").children];

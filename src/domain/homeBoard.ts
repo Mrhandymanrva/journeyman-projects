@@ -1,15 +1,33 @@
 import type { SqlClient } from "../db/database.js";
 import { ApiError } from "../http/errors.js";
-import { feedHealth, loadProjectHealth, type HealthScore } from "./projectHealth.js";
+import {
+  itemFromActivity,
+  itemFromMilestone,
+  itemFromPermit,
+  itemFromPrecon,
+  itemFromWbs,
+  summarizeSchedule,
+} from "../../client/scheduleDefinition.js";
+import {
+  feedHealth,
+  loadProjectHealth,
+  type HealthScore,
+} from "./projectHealth.js";
 import { STAGE_ORDER, type ProjectStage } from "./stages.js";
 
 /**
  * Home is the list of projects a staff member can already open, plus the
- * work due today or overdue. Gantt activities (schedule_items) stay out.
+ * work due today or overdue.
  *
- * Milestone "done" follows the plan roll-up: a milestone is done only when
- * it has at least one active linked task and every one of those tasks is
- * complete. The stored milestone state is not the source of truth.
+ * Due today uses summarizeSchedule() from client/scheduleDefinition.js, the
+ * same function as the project dashboard. The schedule is Gantt activities,
+ * ServiceTitan appointments when a caller supplies them, precon tasks, WBS
+ * tasks, and milestones. Home reads Gantt activities from schedule_items.
+ * Appointments are a live ServiceTitan read, so this list does not call
+ * ServiceTitan; the dashboard passes that read into the same function.
+ *
+ * A plan milestone is done when every linked task is done, or when it has
+ * no linked tasks and its manual status is complete.
  */
 
 export const HOME_STATUSES = ["open", "completed", "cancelled", "all"] as const;
@@ -21,7 +39,9 @@ export type DueItemType =
   | "wbs_task"
   | "precon_task"
   | "milestone"
-  | "permit_milestone";
+  | "permit_milestone"
+  | "activity"
+  | "appointment";
 
 export interface HomeFilters {
   status: HomeStatus;
@@ -75,29 +95,43 @@ export interface DueItem {
   href: string;
 }
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Open when the roll-up is not done. Stored state is ignored on purpose. */
+/**
+ * Open when milestone credit is not 1. Matches milestoneCredit():
+ * every linked task done, or no linked tasks and manual state complete.
+ */
 const MILESTONE_NOT_DONE = `
   m.kind = 'milestone'
   AND m.active
   AND COALESCE(m.data->>'due_on', '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
   AND NOT (
-    EXISTS (
-      SELECT 1 FROM projects.project_controls t
-       WHERE t.project_id = m.project_id
-         AND t.kind = 'task'
-         AND t.active
-         AND t.data->>'milestone_id' = m.id::text
+    (
+      EXISTS (
+        SELECT 1 FROM projects.project_controls t
+         WHERE t.project_id = m.project_id
+           AND t.kind = 'task'
+           AND t.active
+           AND t.data->>'milestone_id' = m.id::text
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM projects.project_controls t
+         WHERE t.project_id = m.project_id
+           AND t.kind = 'task'
+           AND t.active
+           AND t.data->>'milestone_id' = m.id::text
+           AND COALESCE(t.data->>'state', '') <> 'complete'
+      )
     )
-    AND NOT EXISTS (
-      SELECT 1 FROM projects.project_controls t
-       WHERE t.project_id = m.project_id
-         AND t.kind = 'task'
-         AND t.active
-         AND t.data->>'milestone_id' = m.id::text
-         AND COALESCE(t.data->>'state', '') <> 'complete'
+    OR (
+      NOT EXISTS (
+        SELECT 1 FROM projects.project_controls t
+         WHERE t.project_id = m.project_id
+           AND t.kind = 'task'
+           AND t.active
+           AND t.data->>'milestone_id' = m.id::text
+      )
+      AND COALESCE(m.data->>'state', '') = 'complete'
     )
   )
 `;
@@ -121,12 +155,12 @@ export function dueItemHref(
     return `/?project=${project}&plan=tasks&item=${item}#plan`;
   if (itemType === "milestone")
     return `/?project=${project}&plan=roadmap&item=${item}#plan`;
+  if (itemType === "activity" || itemType === "appointment")
+    return `/?project=${project}&plan=gantt&item=${item}#plan`;
   return `/?project=${project}&item=${item}#precon-permits`;
 }
 
-export function parseHomeFilters(
-  query: Record<string, unknown>,
-): HomeFilters {
+export function parseHomeFilters(query: Record<string, unknown>): HomeFilters {
   const statusRaw = stringQuery(query.status);
   const status = (statusRaw === "" ? "open" : statusRaw) as HomeStatus;
   if (!HOME_STATUSES.includes(status)) {
@@ -289,31 +323,53 @@ export async function loadHomeBoard(
   };
 }
 
+interface DueCandidate {
+  project_id: string;
+  project_number: string;
+  project_name: string;
+  item_type: string;
+  item_id: string;
+  title: string;
+  due_on: string | null;
+  start_on: string | null;
+  end_on: string | null;
+  status: string | null;
+  state: string | null;
+  linked_total: number | string | null;
+  linked_done: number | string | null;
+  owner_name: string | null;
+  owner_role: string | null;
+}
+
+function dueKind(kind: string): DueItemType {
+  if (kind === "precon") return "precon_task";
+  if (kind === "activity") return "activity";
+  if (kind === "appointment") return "appointment";
+  if (kind === "permit_milestone") return "permit_milestone";
+  if (kind === "milestone") return "milestone";
+  return "wbs_task";
+}
+
 export async function loadDueItems(
   db: SqlClient,
   scope: string | null,
   today: string,
 ): Promise<DueItem[]> {
-  const { rows } = await db.query<{
-    project_id: string;
-    project_number: string;
-    project_name: string;
-    item_type: DueItemType;
-    item_id: string;
-    title: string;
-    due_on: string;
-    overdue: boolean;
-    owner_name: string | null;
-    owner_role: string | null;
-  }>(
+  const { rows } = await db.query<DueCandidate>(
     `SELECT project_id, project_number, project_name, item_type, item_id,
-            title, due_on, overdue, owner_name, owner_role
+            title, due_on, start_on, end_on, status, state,
+            linked_total, linked_done, owner_name, owner_role
        FROM (
          SELECT v.id AS project_id, v.project_number, v.name AS project_name,
                 'wbs_task'::text AS item_type, c.id::text AS item_id,
                 COALESCE(NULLIF(btrim(c.data->>'title'), ''), 'Task') AS title,
                 c.data->>'due_on' AS due_on,
-                (c.data->>'due_on')::date < $2::date AS overdue,
+                c.data->>'due_on' AS start_on,
+                c.data->>'due_on' AS end_on,
+                NULL::text AS status,
+                c.data->>'state' AS state,
+                0 AS linked_total,
+                0 AS linked_done,
                 s.full_name AS owner_name,
                 NULL::text AS owner_role
            FROM projects.projects v
@@ -327,12 +383,10 @@ export async function loadDueItems(
             AND (c.data->>'due_on')::date <= $2::date
          UNION ALL
          SELECT v.id, v.project_number, v.name,
-                'precon_task'::text, t.id::text,
-                t.title,
-                t.due_on::text,
-                t.due_on < $2::date,
-                NULL::text,
-                t.owner_role::text
+                'precon_task', t.id::text, t.title,
+                t.due_on::text, t.due_on::text, t.due_on::text,
+                t.status::text, NULL::text, 0, 0,
+                NULL::text, t.owner_role::text
            FROM projects.projects v
            JOIN projects.precon_tasks t ON t.project_id = v.id
           WHERE ${visibleSql("v")}
@@ -341,49 +395,131 @@ export async function loadDueItems(
             AND t.due_on <= $2::date
          UNION ALL
          SELECT v.id, v.project_number, v.name,
-                'milestone'::text, m.id::text,
+                'milestone', m.id::text,
                 COALESCE(NULLIF(btrim(m.data->>'title'), ''), 'Milestone'),
-                m.data->>'due_on',
-                (m.data->>'due_on')::date < $2::date,
-                s.full_name,
-                NULL::text
+                m.data->>'due_on', m.data->>'due_on', m.data->>'due_on',
+                NULL::text, m.data->>'state',
+                (
+                  SELECT count(*)::int FROM projects.project_controls t
+                   WHERE t.project_id = m.project_id
+                     AND t.kind = 'task' AND t.active
+                     AND t.data->>'milestone_id' = m.id::text
+                ),
+                (
+                  SELECT count(*)::int FROM projects.project_controls t
+                   WHERE t.project_id = m.project_id
+                     AND t.kind = 'task' AND t.active
+                     AND t.data->>'milestone_id' = m.id::text
+                     AND COALESCE(t.data->>'state', '') = 'complete'
+                ),
+                s.full_name, NULL::text
            FROM projects.projects v
            JOIN projects.project_controls m ON m.project_id = v.id
            LEFT JOIN projects.staff s ON s.id::text = m.data->>'owner_id'
           WHERE ${visibleSql("v")}
-            AND ${MILESTONE_NOT_DONE}
+            AND m.kind = 'milestone'
+            AND m.active
+            AND COALESCE(m.data->>'due_on', '') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
             AND (m.data->>'due_on')::date <= $2::date
          UNION ALL
          SELECT v.id, v.project_number, v.name,
-                'permit_milestone'::text, pm.id::text,
-                pm.name,
-                pm.due_on::text,
-                pm.due_on < $2::date,
-                NULL::text,
-                pm.owner_role::text
+                'permit_milestone', pm.id::text, pm.name,
+                pm.due_on::text, pm.due_on::text, pm.due_on::text,
+                pm.status::text, NULL::text, 0, 0,
+                NULL::text, pm.owner_role::text
            FROM projects.projects v
            JOIN projects.permits pr ON pr.project_id = v.id
            JOIN projects.permit_milestones pm ON pm.permit_id = pr.id
           WHERE ${visibleSql("v")}
-            AND pm.status IN ('pending', 'in_progress')
+            AND pm.status IN ('pending', 'in_progress', 'complete')
             AND pm.due_on IS NOT NULL
             AND pm.due_on <= $2::date
-       ) due
-      ORDER BY overdue DESC, due_on ASC, project_name ASC, title ASC`,
+         UNION ALL
+         SELECT v.id, v.project_number, v.name,
+                'activity', s.id::text, s.title,
+                s.window_end::text, s.window_start::text, s.window_end::text,
+                s.status::text, NULL::text, 0, 0,
+                st.full_name, NULL::text
+           FROM projects.projects v
+           JOIN projects.schedule_items s ON s.project_id = v.id
+           LEFT JOIN projects.staff st ON st.id = s.staff_id
+          WHERE ${visibleSql("v")}
+            AND s.status NOT IN ('cancelled', 'complete')
+            AND s.window_start <= $2::date
+       ) due`,
     [scope, today],
   );
 
-  return rows.map((row) => ({
-    project_id: row.project_id,
-    project_number: row.project_number,
-    project_name: row.project_name,
-    item_type: row.item_type,
-    item_id: row.item_id,
-    title: row.title,
-    due_on: row.due_on.slice(0, 10),
-    overdue: row.overdue === true,
-    owner_name: row.owner_name,
-    owner_role: row.owner_role,
-    href: dueItemHref(row.project_id, row.item_type, row.item_id),
-  }));
+  const shared = rows.map((row) => {
+    const base = {
+      id: row.item_id,
+      title: row.title,
+      project_id: row.project_id,
+      project_number: row.project_number,
+      project_name: row.project_name,
+      owner_name: row.owner_name,
+      owner_role: row.owner_role,
+    };
+    if (row.item_type === "activity")
+      return itemFromActivity({
+        ...base,
+        window_start: row.start_on,
+        window_end: row.end_on,
+        status: row.status,
+      });
+    if (row.item_type === "precon_task")
+      return itemFromPrecon({
+        ...base,
+        due_on: row.due_on,
+        status: row.status,
+      });
+    if (row.item_type === "milestone")
+      return itemFromMilestone({
+        ...base,
+        due_on: row.due_on,
+        state: row.state,
+        linked_total: row.linked_total,
+        linked_done: row.linked_done,
+      });
+    if (row.item_type === "permit_milestone")
+      return itemFromPermit({
+        ...base,
+        name: row.title,
+        due_on: row.due_on,
+        status: row.status,
+      });
+    return itemFromWbs({ ...base, due_on: row.due_on, state: row.state });
+  });
+
+  const summary = summarizeSchedule(shared, today) as {
+    due: Array<{
+      kind: string;
+      id: string;
+      title: string;
+      end: string;
+      overdue?: boolean;
+      project_id: string;
+      project_number: string;
+      project_name: string;
+      owner_name: string | null;
+      owner_role: string | null;
+    }>;
+  };
+
+  return summary.due.map((item) => {
+    const itemType = dueKind(item.kind);
+    return {
+      project_id: item.project_id,
+      project_number: item.project_number,
+      project_name: item.project_name,
+      item_type: itemType,
+      item_id: item.id,
+      title: item.title,
+      due_on: String(item.end).slice(0, 10),
+      overdue: item.overdue === true,
+      owner_name: item.owner_name,
+      owner_role: item.owner_role,
+      href: dueItemHref(item.project_id, itemType, item.id),
+    };
+  });
 }

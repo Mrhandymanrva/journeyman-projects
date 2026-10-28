@@ -92,40 +92,42 @@ describe("home board", () => {
     const def = await owner.get(HOME);
     expect(def.status, JSON.stringify(def.body)).toBe(200);
     expect(def.body.data.status).toBe("open");
-    expect(def.body.data.projects.map((row: { id: string }) => row.id)).toEqual([
-      openId,
-    ]);
+    expect(def.body.data.projects.map((row: { id: string }) => row.id)).toEqual(
+      [openId],
+    );
     expect(def.body.data.projects[0].lifecycle).toBe("open");
     expect(def.body.data.projects[0].customer).toBe("Ada Whitfield");
     expect(def.body.data.projects[0].pm_name).toBe("pm");
 
     const completed = await owner.get(HOME).query({ status: "completed" });
     expect(completed.status).toBe(200);
-    expect(completed.body.data.projects.map((row: { id: string }) => row.id)).toEqual([
-      doneId,
-    ]);
+    expect(
+      completed.body.data.projects.map((row: { id: string }) => row.id),
+    ).toEqual([doneId]);
     expect(completed.body.data.projects[0].lifecycle).toBe("completed");
     expect(
-      completed.body.data.projects.some((row: { id: string }) => row.id === cancelledId),
+      completed.body.data.projects.some(
+        (row: { id: string }) => row.id === cancelledId,
+      ),
     ).toBe(false);
 
     const cancelled = await owner.get(HOME).query({ status: "cancelled" });
-    expect(cancelled.body.data.projects.map((row: { id: string }) => row.id)).toEqual([
-      cancelledId,
-    ]);
+    expect(
+      cancelled.body.data.projects.map((row: { id: string }) => row.id),
+    ).toEqual([cancelledId]);
     expect(cancelled.body.data.projects[0].lifecycle).toBe("cancelled");
 
     const all = await owner.get(HOME).query({ status: "all" });
-    expect(new Set(all.body.data.projects.map((row: { id: string }) => row.id))).toEqual(
-      new Set([openId, doneId, cancelledId]),
-    );
+    expect(
+      new Set(all.body.data.projects.map((row: { id: string }) => row.id)),
+    ).toEqual(new Set([openId, doneId, cancelledId]));
 
     const searched = await owner
       .get(HOME)
       .query({ status: "all", q: "Ada Whitfield" });
-    expect(new Set(searched.body.data.projects.map((row: { id: string }) => row.id))).toEqual(
-      new Set([openId, cancelledId]),
-    );
+    expect(
+      new Set(searched.body.data.projects.map((row: { id: string }) => row.id)),
+    ).toEqual(new Set([openId, cancelledId]));
     const completedSearch = await owner
       .get(HOME)
       .query({ status: "completed", q: "Ada" });
@@ -134,14 +136,20 @@ describe("home board", () => {
     const byStage = await owner
       .get(HOME)
       .query({ status: "open", stage: "execution" });
-    expect(byStage.body.data.projects.map((row: { id: string }) => row.id)).toEqual([
-      openId,
-    ]);
-    const byPm = await owner.get(HOME).query({ status: "all", pm_id: t.staff.pm!.id });
-    expect(byPm.body.data.projects.map((row: { id: string }) => row.id)).toEqual([openId]);
+    expect(
+      byStage.body.data.projects.map((row: { id: string }) => row.id),
+    ).toEqual([openId]);
+    const byPm = await owner
+      .get(HOME)
+      .query({ status: "all", pm_id: t.staff.pm!.id });
+    expect(
+      byPm.body.data.projects.map((row: { id: string }) => row.id),
+    ).toEqual([openId]);
 
     const today = newYorkDate(new Date().toISOString());
-    const health = await h.db.withTenant(t.id, (db) => loadProjectHealth(db, today));
+    const health = await h.db.withTenant(t.id, (db) =>
+      loadProjectHealth(db, today),
+    );
     const expected = health.find((row) => row.project_id === openId);
     expect(def.body.data.projects[0].health.score).toBe(expected?.health.score);
     expect(def.body.data.projects[0].health.band).toBe(expected?.health.band);
@@ -151,7 +159,7 @@ describe("home board", () => {
     expect((await h.request.get(DUE)).status).toBe(401);
   });
 
-  it("unions WBS tasks, precon tasks, and milestones, and leaves Gantt activities out", async () => {
+  it("unions WBS tasks, precon tasks, milestones, and Gantt activities", async () => {
     const t = await createTenant(h, { slug: `home-due-${n++}` });
     const projectId = await project(t, {
       project_number: `HB-DUE-${n}`,
@@ -176,7 +184,12 @@ describe("home board", () => {
       );
       return result.rows[0]!.id;
     };
-    const task = (title: string, due: string, state: string, milestoneId?: string) =>
+    const task = (
+      title: string,
+      due: string,
+      state: string,
+      milestoneId?: string,
+    ) =>
       control("task", {
         title,
         due_on: due,
@@ -192,7 +205,12 @@ describe("home board", () => {
     await task("Done wbs", yesterday, "complete");
     await control(
       "task",
-      { title: "Archived wbs", due_on: yesterday, start_on: yesterday, state: "not_started" },
+      {
+        title: "Archived wbs",
+        due_on: yesterday,
+        start_on: yesterday,
+        state: "not_started",
+      },
       false,
     );
 
@@ -218,7 +236,12 @@ describe("home board", () => {
         [projectId],
       ),
     );
-    await task("Still open child", tomorrow, "in_progress", openStored.rows[0]!.id);
+    await task(
+      "Still open child",
+      tomorrow,
+      "in_progress",
+      openStored.rows[0]!.id,
+    );
 
     await control("milestone", {
       title: "Charlie due milestone",
@@ -229,6 +252,11 @@ describe("home board", () => {
       title: "Future milestone",
       due_on: tomorrow,
       state: "not_started",
+    });
+    await control("milestone", {
+      title: "Manual done milestone",
+      due_on: yesterday,
+      state: "complete",
     });
 
     await q(
@@ -272,14 +300,19 @@ describe("home board", () => {
       t,
       `INSERT INTO projects.schedule_items
          (tenant_id, project_id, title, window_start, window_end, status)
-       VALUES ($1, $2, 'Gantt activity that must stay off the tile', $3::date, $3::date, 'confirmed')`,
-      [t.id, projectId, today],
+       VALUES
+         ($1, $2, 'Gantt activity due today', $3::date, $3::date, 'confirmed'),
+         ($1, $2, 'Future gantt', $4::date, $4::date, 'proposed'),
+         ($1, $2, 'Finished gantt', $5::date, $5::date, 'complete')`,
+      [t.id, projectId, today, tomorrow, yesterday],
     );
 
     const due = await h.as(t.staff.office!.token).get(DUE);
     expect(due.status, JSON.stringify(due.body)).toBe(200);
     expect(due.body.data.today).toBe(today);
-    const titles = due.body.data.items.map((item: { title: string }) => item.title);
+    const titles = due.body.data.items.map(
+      (item: { title: string }) => item.title,
+    );
     expect(titles).toEqual([
       "Alpha overdue milestone",
       "Alpha overdue precon",
@@ -289,6 +322,7 @@ describe("home board", () => {
       "Charlie due precon",
       "Charlie due wbs",
       "Delta due permit",
+      "Gantt activity due today",
     ]);
     const absent = [
       "Done wbs",
@@ -302,7 +336,9 @@ describe("home board", () => {
       "Future precon",
       "Complete permit",
       "Future permit",
-      "Gantt activity that must stay off the tile",
+      "Future gantt",
+      "Finished gantt",
+      "Manual done milestone",
     ];
     for (const title of absent) expect(titles).not.toContain(title);
 
@@ -332,7 +368,10 @@ describe("home board", () => {
     expect(precon.owner_role).toBe("estimator");
     expect(precon.href).toContain("#precon-permits");
 
-    const milestone = byTitle.get("Charlie due milestone") as { item_type: string; href: string };
+    const milestone = byTitle.get("Charlie due milestone") as {
+      item_type: string;
+      href: string;
+    };
     expect(milestone.item_type).toBe("milestone");
     expect(milestone.href).toContain("plan=roadmap");
 
@@ -344,6 +383,15 @@ describe("home board", () => {
     expect(permitItem.item_type).toBe("permit_milestone");
     expect(permitItem.overdue).toBe(true);
     expect(permitItem.href).toContain("#precon-permits");
+
+    const gantt = byTitle.get("Gantt activity due today") as {
+      item_type: string;
+      overdue: boolean;
+      href: string;
+    };
+    expect(gantt.item_type).toBe("activity");
+    expect(gantt.overdue).toBe(false);
+    expect(gantt.href).toContain("plan=gantt");
 
     const board = await h.as(t.staff.owner!.token).get(HOME);
     expect(board.body.data.projects[0].next_milestone.title).toBe(
@@ -406,23 +454,35 @@ describe("home board", () => {
     const pm = h.as(t.staff.pm!.token);
     const home = await pm.get(HOME).query({ status: "all" });
     expect(home.status, JSON.stringify(home.body)).toBe(200);
-    expect(home.body.data.projects.map((row: { id: string }) => row.id)).toEqual([mine]);
+    expect(
+      home.body.data.projects.map((row: { id: string }) => row.id),
+    ).toEqual([mine]);
     const listed = await pm.get("/api/v1/projects/projects?per_page=200");
-    expect(listed.body.data.map((row: { id: string }) => row.id)).toContain(mine);
-    expect(listed.body.data.map((row: { id: string }) => row.id)).not.toContain(theirs);
-
-    const due = await pm.get(DUE);
-    expect(due.body.data.items.map((item: { title: string }) => item.title)).toEqual([
-      "Visible task",
-    ]);
-
-    const office = await h.as(t.staff.office!.token).get(HOME).query({ status: "all" });
-    expect(new Set(office.body.data.projects.map((row: { id: string }) => row.id))).toEqual(
-      new Set([mine, theirs]),
+    expect(listed.body.data.map((row: { id: string }) => row.id)).toContain(
+      mine,
+    );
+    expect(listed.body.data.map((row: { id: string }) => row.id)).not.toContain(
+      theirs,
     );
 
+    const due = await pm.get(DUE);
+    expect(
+      due.body.data.items.map((item: { title: string }) => item.title),
+    ).toEqual(["Visible task"]);
+
+    const office = await h
+      .as(t.staff.office!.token)
+      .get(HOME)
+      .query({ status: "all" });
+    expect(
+      new Set(office.body.data.projects.map((row: { id: string }) => row.id)),
+    ).toEqual(new Set([mine, theirs]));
+
     const foreign = await createTenant(h, { slug: `home-foreign-${n++}` });
-    const outsider = await h.as(foreign.staff.owner!.token).get(HOME).query({ status: "all" });
+    const outsider = await h
+      .as(foreign.staff.owner!.token)
+      .get(HOME)
+      .query({ status: "all" });
     expect(outsider.status).toBe(200);
     expect(
       outsider.body.data.projects.some((row: { name: string }) =>
