@@ -12,6 +12,7 @@ import {
   requireOwnedRow,
 } from './shared.js';
 import { assertBaselineNotFrozen, freezeState } from '../domain/baseline.js';
+import { readBudgetEntry, saveBudgetEntry } from '../domain/projectBudget.js';
 import { toCsv } from '../http/csv.js';
 
 const budgetLineSchema = z.object({
@@ -24,6 +25,17 @@ const budgetLineSchema = z.object({
 const budgetPatchSchema = z.object({
   budget_amount: z.number().min(0).optional(),
   note: z.string().nullish(),
+});
+
+const moneyOrNull = z.number().finite().min(0).nullable();
+
+const budgetEntrySchema = z.object({
+  contract_value: z.number().finite().positive().nullable(),
+  labor: moneyOrNull,
+  materials: moneyOrNull,
+  subcontractor: moneyOrNull,
+  other: moneyOrNull,
+  labor_hours: moneyOrNull,
 });
 
 export function budgetRoutes(deps: StaffRouterDeps): Router {
@@ -50,12 +62,37 @@ export function budgetRoutes(deps: StaffRouterDeps): Router {
         baseline_frozen: freeze.frozen,
         frozen_by_gate: freeze.gateNumber,
         frozen_at: freeze.approvedAt,
+        entry: await readBudgetEntry(ctx.db, projectId),
         lines: rows.map((r) => ({
           ...r,
           budget_amount: num(r.budget_amount),
           baseline_amount: num(r.baseline_amount),
         })),
       });
+    }),
+  );
+
+  router.put(
+    '/projects/:id/budget/entry',
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, 'edit_budget_before_freeze');
+      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
+      await loadVisibleProject(ctx, projectId, 'id');
+      const body = parseBody(budgetEntrySchema, ctx.req.body);
+      await assertBaselineNotFrozen(ctx.db, projectId);
+      sendData(
+        ctx.res,
+        await saveBudgetEntry(ctx.db, {
+          tenantId: ctx.staff.tenantId,
+          projectId,
+          contractValue: body.contract_value,
+          laborHours: body.labor_hours,
+          labor: body.labor,
+          materials: body.materials,
+          subcontractor: body.subcontractor,
+          other: body.other,
+        }),
+      );
     }),
   );
 

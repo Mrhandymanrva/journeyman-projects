@@ -21,7 +21,7 @@ it('deletes all original seeded demo project graphs without deleting shared vend
  const owner=await h.db.withTenant(DEMO_TENANT_ID,async c=>(await c.query<{id:string}>("SELECT id FROM projects.staff WHERE role='owner'")).rows[0]!);
  const token=h.sessions.issue({tenantId:DEMO_TENANT_ID,staffId:owner.id});
  const projects=(await h.as(token).get(base)).body.data;
-  expect(projects).toHaveLength(6);
+ expect(projects).toHaveLength(7);
  for(const p of projects){const r=await h.as(token).del(base+'/'+p.id).send({confirm_project_number:p.project_number});expect(r.status,JSON.stringify(r.body)).toBe(200);}
  expect((await h.as(token).get(base)).body.data).toHaveLength(0);
  const vendors=await h.db.withTenant(DEMO_TENANT_ID,c=>c.query('SELECT id FROM projects.vendors'));expect(vendors.rows.length).toBeGreaterThan(0);

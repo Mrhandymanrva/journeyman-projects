@@ -59,7 +59,15 @@ const FILES = [
   path.join(repoRoot, "db/046_st_labor_code.sql"),
   path.join(repoRoot, "db/047_unbudgeted_labor.sql"),
   path.join(repoRoot, "db/048_pricebook_labor_code.sql"),
-  path.join(repoRoot, "db/049_csr_handoff.sql"),
+  path.join(repoRoot, "db/049_commission_labor.sql"),
+  path.join(repoRoot, "db/050_st_project_financials.sql"),
+  path.join(repoRoot, "db/051_labor_refresh_status.sql"),
+  path.join(repoRoot, "db/052_st_status_sync.sql"),
+  path.join(repoRoot, "db/053_st_financial_summary.sql"),
+  path.join(repoRoot, "db/054_project_budget_entry.sql"),
+  path.join(repoRoot, "db/055_st_labor_gap.sql"),
+  path.join(repoRoot, "db/056_posted_commission.sql"),
+  path.join(repoRoot, "db/057_csr_handoff.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');

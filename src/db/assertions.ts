@@ -74,6 +74,7 @@ export const TENANT_SCOPED_TABLES = [
   'st_invoice_observations',
   'st_payment_applications',
   'st_estimate_observations',
+  'st_project_summary',
   'project_health_snapshots',
   'draw_templates',
   'external_invoices',

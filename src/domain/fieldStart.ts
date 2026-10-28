@@ -1,6 +1,7 @@
 import type { SqlClient } from "../db/database.js";
 import { isoTimestamp } from "./fieldRelease.js";
 import { preconOverdueSql } from "./preconTasks.js";
+import { isBeforeSourceFloor } from "./sourceFloor.js";
 
 /** Same calendar the schedule board uses for appointment days. */
 export const FIELD_START_ZONE = "America/New_York";
@@ -143,10 +144,16 @@ export async function pickFieldStart(
       if (/cancel/i.test(result.job.jobStatus)) continue;
       for (const appointment of result.appointments) {
         if (!appointment.active || /cancel/i.test(appointment.status)) continue;
+        if (isBeforeSourceFloor(appointment.start)) continue;
         if (Date.parse(appointment.end) <= Date.parse(appointment.start)) {
           throw new Error("Invalid appointment window.");
         }
-        const date = newYorkDate(appointment.start);
+        let date: string;
+        try {
+          date = newYorkDate(appointment.start);
+        } catch {
+          continue;
+        }
         if (!result.observedAt) {
           throw new Error("ST job read returned no observation time.");
         }

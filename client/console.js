@@ -12,7 +12,30 @@ import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
 import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
+import { laborCardHtml } from "./laborCard.js";
 import { createPlanning } from "./planning.js";
+import {
+  closeoutCardHtml,
+  closeoutDoneCount,
+  closeoutDoneLabel,
+  closeoutSavePayload,
+} from "./closeoutCard.js";
+import { financialsDashboardHtml } from "./financialsDashboard.js";
+import {
+  budgetEntryHtml,
+  budgetEntryPayload,
+  budgetEntryTotal,
+  formatBudgetMoney,
+} from "./budgetEntry.js";
+import {
+  budgetSummary,
+  changeOrderSummary,
+  drawSummary,
+  laborSummary,
+  purchaseOrderSummary,
+  setSectionExpanded,
+  stDetailSummary,
+} from "./financialsSections.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
 
 const API = "/api/v1/projects";
@@ -23,6 +46,12 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+const laborMoney = (n) =>
+  "$" +
+  Number(n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 // U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
   (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
@@ -340,6 +369,8 @@ async function select(projectId) {
       cos,
       closeout,
       labor,
+      stFinancials,
+      financialSummary,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -354,6 +385,8 @@ async function select(projectId) {
       api(`/projects/${projectId}/change-orders`),
       api(`/projects/${projectId}/closeout`),
       api(`/projects/${projectId}/labor`),
+      api(`/projects/${projectId}/service-titan-financials`).catch(() => null),
+      api(`/projects/${projectId}/financials/summary`).catch(() => null),
     ]);
 
     if (revision !== selectionRevision) return;
@@ -386,6 +419,8 @@ async function select(projectId) {
       cos,
       closeout,
       labor,
+      stFinancials,
+      financialSummary,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -427,11 +462,13 @@ function render(d) {
   renderNotice(d.budget, d.drawData);
   renderStageBar(p, p.gates);
   renderGates(p);
+  renderFinancialsDashboard(d.financialSummary);
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
   renderCloseout(d.closeout);
   renderLabor(d.labor);
+  renderStFinancials(d.stFinancials);
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
@@ -616,20 +653,89 @@ async function saveFieldRelease(note, undo) {
   await select(current.id);
 }
 
-function renderBudget(cost, budget) {
-  if (cost.length === 0) {
-    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
-    el("btag").textContent = "No budget";
-    el("btag").className = "tag";
-    return;
-  }
+function setFinSummary(id, text) {
+  const node = el("fin-sum-" + id);
+  if (node) node.textContent = text;
+}
 
+function renderFinancialsDashboard(summary) {
+  const node = el("fin-summary");
+  if (!node) return;
+  node.innerHTML = financialsDashboardHtml(summary);
+}
+
+function renderBudgetEntry(budget) {
+  const host = el("budget-entry");
+  if (!host) return;
+  const editable = can("edit_budget_before_freeze") && !budget?.baseline_frozen;
+  host.innerHTML = budgetEntryHtml(budget?.entry, {
+    editable,
+    frozen: Boolean(budget?.baseline_frozen),
+  });
+  const form = el("budget-entry-form");
+  if (!form || !editable) return;
+  const refresh = () => {
+    const total = budgetEntryTotal({
+      labor: el("budget-labor")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    const node = el("budget-total");
+    if (node) node.textContent = formatBudgetMoney(total);
+  };
+  for (const id of ["budget-labor", "budget-materials", "budget-sub", "budget-other"]) {
+    el(id)?.addEventListener("input", refresh);
+  }
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const msg = el("budget-entry-msg");
+    const parsed = budgetEntryPayload({
+      contract_value: el("budget-contract")?.value,
+      labor: el("budget-labor")?.value,
+      labor_hours: el("budget-hours")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    if (parsed.error) {
+      if (msg) {
+        msg.textContent = parsed.error;
+        msg.className = "msg bad";
+      }
+      return;
+    }
+    try {
+      await api(`/projects/${current.id}/budget/entry`, {
+        method: "PUT",
+        body: JSON.stringify(parsed.body),
+      });
+      await select(current.id);
+    } catch (err) {
+      if (msg) {
+        msg.textContent = err.message;
+        msg.className = "msg bad";
+      }
+    }
+  });
+}
+
+function renderBudget(cost, budget) {
+  setFinSummary("budget", budgetSummary(cost, budget?.entry));
+  renderBudgetEntry(budget);
   const freeze = {
     frozen: Boolean(budget?.baseline_frozen),
     gateNumber: budget?.frozen_by_gate,
   };
   const editable = can("edit_budget_before_freeze");
-  el("budget-add").hidden = !editable || freeze.frozen;
+  const add = el("budget-add");
+  if (add) add.hidden = !editable || freeze.frozen;
+  if (cost.length === 0) {
+    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
+    el("btag").textContent = budget?.entry?.entered ? "No cost-code lines" : "No budget";
+    el("btag").className = "tag";
+    return;
+  }
 
   const maxScale = Math.max(
     ...cost.map((r) =>
@@ -655,19 +761,22 @@ function renderBudget(cost, budget) {
       const label = unbudgeted
         ? `<span class="c">${esc(r.cost_code)}</span>Unbudgeted labor`
         : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
-      const wage = Number(r.labor_wage) || 0;
-      const burden = Number(r.labor_burden) || 0;
-      const laborSplit =
-        wage !== 0 || burden !== 0
-          ? `<div class="labor-split">Labor ${money(wage)} · Burden ${money(burden)}</div>`
-          : "";
-      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true"' : ""}>
+      const detail = Array.isArray(r.lines)
+        ? `<ul class="labor-lines">${r.lines
+            .map(
+              (line) =>
+                `<li><span>${esc(line.description)}</span><span>${laborMoney(line.amount)}</span></li>`,
+            )
+            .join("")}</ul>`
+        : "";
+      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true" id="unbudgeted-labor"' : ""}>
       <div class="btop">
         <div class="bname">${label}
-          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}${laborSplit}</div>
+          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
+      ${detail}
       <div class="track">
         <div class="seg act" style="width:${actW}%"></div>
         <div class="seg com" style="left:${actW}%;width:${comW}%"></div>
@@ -1063,6 +1172,7 @@ function drawMatchLine(dr) {
 }
 
 function renderDraws(drawData) {
+  setFinSummary("draws", drawSummary(drawData));
   const canRecord = can("record_external_invoice");
   const refresh = el("ar-refresh");
   if (refresh) {
@@ -1473,9 +1583,22 @@ function renderStageBar(project, gates) {
           ? `blocked: gate ${blocking[0].gate_number} (${blocking[0].title}) is ${blocking[0].status}`
           : `ready to advance to ${next}`;
 
+  const st = project.st_status;
+  const badge = st?.badge
+    ? `<span class="st-status-badge" data-st-badge="${esc(st.badge)}">ServiceTitan ${esc(st.badge)}</span>`
+    : "";
+  const gateWarning = st?.gate_warning
+    ? `<p class="st-gate-warning" role="status">${esc(st.gate_warning)}</p>`
+    : "";
+  const writeError =
+    st && (st.write_result === "rejected" || st.write_result === "failed") && st.write_detail
+      ? `<p class="st-write-error" role="alert">${esc(st.write_detail)}</p>`
+      : "";
+
   el("stagebar").innerHTML = `
     <span class="lbl">Stage</span>
     <span class="now">${esc(String(project.stage).replace(/_/g, " "))}</span>
+    ${badge}
     <span class="why ${blocking.length ? "blocked" : ""}">${esc(why)}</span>
     ${
       next && project.stage !== "cancelled"
@@ -1483,15 +1606,20 @@ function renderStageBar(project, gates) {
             allowed ? "" : "disabled"
           }>Advance to ${esc(next)}</button>`
         : ""
-    }`;
+    }
+    ${gateWarning}
+    ${writeError}`;
 
   el("stage-advance")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      await api(`/projects/${current.id}/stage`, {
+      const updated = await api(`/projects/${current.id}/stage`, {
         method: "POST",
         body: JSON.stringify({ stage: next }),
       });
+      if (updated?.st_status_sync && updated.st_status_sync.ok === false) {
+        alert(updated.st_status_sync.message);
+      }
       await select(current.id);
     } catch (err) {
       e.target.disabled = false;
@@ -1587,6 +1715,7 @@ async function addBudgetLineDrawer() {
 // --------------------------------------------------------- purchase orders
 
 function renderPurchaseOrders(pos) {
+  setFinSummary("pos", purchaseOrderSummary(pos));
   el("potag").textContent = pos.length ? `${pos.length} raised` : "none";
   el("po-new").hidden = !can("issue_purchase_order");
 
@@ -2103,6 +2232,13 @@ async function newProjectDrawer() {
 el("project-new").textContent = "Add from ServiceTitan";
 el("project-new").addEventListener("click", newProjectDrawer);
 el("budget-add").addEventListener("click", addBudgetLineDrawer);
+document.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("#enter-budget");
+  if (!button) return;
+  const toggle = document.querySelector('[aria-controls="fin-body-budget"]');
+  setSectionExpanded(toggle, true);
+  el("budget-contract")?.focus();
+});
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
 el("log-new").addEventListener("click", dailyLogDrawer);
@@ -2123,6 +2259,7 @@ function soldEstimateNote(data) {
 }
 
 function renderChangeOrders(data) {
+  setFinSummary("cos", changeOrderSummary(data));
   const cos = data.change_orders;
   el("cotag").textContent = cos.length
     ? `${cos.filter((c) => c.status === "approved").length} of ${cos.length} approved`
@@ -2333,23 +2470,89 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
   );
 }
 
-function laborMoney(n) {
-  return (
-    "$" +
-    Number(n).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })
-  );
+const ST_REFRESH_TIMEOUT_MS = 180_000;
+
+function renderStFinancials(money) {
+  setFinSummary("st", stDetailSummary(money));
+  const node = el("st-financials");
+  if (!node) return;
+  const refresh = el("st-refresh");
+  if (refresh) {
+    refresh.hidden = !can("refresh_labor");
+    refresh.disabled = false;
+    refresh.textContent = "Refresh from ServiceTitan";
+    // onclick, not addEventListener: a re-render must not stack handlers.
+    refresh.onclick = async () => {
+      if (refresh.disabled) return;
+      const projectId = current.id;
+      const status = el("st-refresh-status");
+      refresh.disabled = true;
+      refresh.textContent = "Reading ServiceTitan…";
+      if (status) status.textContent = "";
+      // The refresh reads every job on the project. Never leave the button
+      // greyed out: give up after three minutes and say so.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ST_REFRESH_TIMEOUT_MS);
+      let failure = null;
+      try {
+        await api(`/projects/${projectId}/labor/refresh`, {
+          method: "POST",
+          signal: controller.signal,
+        });
+      } catch (err) {
+        failure =
+          err?.name === "AbortError"
+            ? "ServiceTitan did not answer within 3 minutes. The previous numbers are unchanged. Try again in a few minutes."
+            : err?.message || String(err);
+      } finally {
+        clearTimeout(timer);
+        refresh.disabled = false;
+        refresh.textContent = "Refresh from ServiceTitan";
+      }
+      if (failure) {
+        if (status) status.textContent = `Refresh failed: ${failure}`;
+        return;
+      }
+      if (current?.id === projectId) await select(projectId);
+    };
+  }
+  if (!money || !money.observed_at) {
+    const early = money?.error
+      ? `<p class="note warn">${esc(String(money.error))}</p>`
+      : "";
+    node.innerHTML =
+      early +
+      '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
+    return;
+  }
+  const materialsMissing = money.materials_expense_read === false;
+  const pct = Number(money.marginPercent || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const line = (label, value) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
+  const missingLine = (label) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m"><span class="fin-dash" title="ServiceTitan did not return this figure. Nothing is estimated.">\u2014</span></div></div></div>`;
+  const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
+  const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
+  const kept = problems.some((line) => /stored hours kept|left as they are|kept their last/i.test(line));
+  const readError = problems.length
+    ? `<details class="note warn"><summary>${problems.length} ServiceTitan note${problems.length === 1 ? "" : "s"} from that refresh.${kept ? " Failed lines kept their last stored values." : ""}</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></details>`
+    : "";
+  node.innerHTML = `${readAt}${readError}<p class="note">Billed counts every invoice line, including lines that are not labor or materials. Labor and materials still follow the ServiceTitan account label. Labor burden on this card is paid timesheet hours times each technician's burden rate. The ServiceTitan column on the reconciliation uses invoice totals for billed and gross-pay amounts for labor, so the two sides are not the same calculation. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
+    ${line("Billed labor", money.billedLabor)}
+    ${line("Billed materials", money.billedMaterials)}
+    ${line("Billed", money.billed)}
+    ${line("Labor burden", money.laborBurden)}
+    ${materialsMissing ? missingLine("Materials expense") : line("Materials expense", money.materialsExpense)}
+    ${
+      materialsMissing
+        ? missingLine("Margin")
+        : `<div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`
+    }`;
 }
-function laborRefreshLine(data) {
-  if (!data || !data.observed_at) return "Not refreshed yet.";
-  const when = stamp(data.observed_at);
-  if (data.source === "scheduled") return `Last refreshed ${when} (scheduled)`;
-  if (data.source === "auto-hourly") return `Last refreshed ${when} (automatic)`;
-  if (data.source === "manual") return `Last refreshed ${when} (manual)`;
-  return `Last refreshed ${when}`;
-}
+
 function renderLabor(row) {
   const data = row || {
     hours: 0,
@@ -2363,142 +2566,40 @@ function renderLabor(row) {
     st_labor_code: null,
     st_labor_code_error: null,
   };
-  const refresh = el("labor-refresh");
-  if (refresh) refresh.hidden = !can("refresh_labor");
+  setFinSummary("labor", laborSummary(data));
   if (el("labortag")) {
     el("labortag").textContent = data.hours_source
       ? String(data.hours_source).replaceAll("_", " ")
       : "none";
   }
   if (!el("labor")) return;
-  const moneyLine =
-    data.labor_wage === undefined
-      ? ""
-      : `<div class="row-m">Wage ${laborMoney(data.labor_wage)} · Burden ${laborMoney(
-          data.labor_burden,
-        )} · Total ${laborMoney(data.total)}</div>`;
-  const techs = (data.technicians || [])
-    .map((tech) => {
-      const wage =
-        tech.wage == null
-          ? ""
-          : `<div class="row-m">Wage ${laborMoney(tech.wage)} · ${laborMoney(
-              tech.hourly_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician hourlyRate</div>`;
-      const burden =
-        tech.burden == null
-          ? ""
-          : `<div class="row-m">Burden ${laborMoney(tech.burden)} · ${laborMoney(
-              tech.burden_rate,
-            )}/hr × ${esc(tech.hours)} h · ServiceTitan technician burdenRate</div>`;
-      const flags = (tech.missing || [])
-        .map((line) => `<p class="msg">${esc(line)}</p>`)
-        .join("");
-      return `<div class="row"><div class="row-b"><div class="row-t">${esc(
-        tech.technician_name || "Technician",
-      )}</div><div class="row-m">${esc(tech.hours)} hours</div>${wage}${burden}${flags}</div></div>`;
-    })
-    .join("");
-  const gaps =
-    data.rate_gaps === undefined
-      ? ""
-      : `<h4>Active technicians missing a ServiceTitan rate</h4>${
-          data.rate_gaps.length
-            ? `<ul id="labor-rate-gaps">${data.rate_gaps
-                .map(
-                  (gap) =>
-                    `<li>${esc(gap.technician_name)}: ${(gap.messages || [])
-                      .map((line) => esc(line))
-                      .join(" ")}</li>`,
-                )
-                .join("")}</ul>`
-            : `<p id="labor-rate-gaps">No active technician is missing an hourly rate or a burden rate.</p>`
-        }`;
-  const stCode = data.st_labor_code;
-  const codeText = !stCode
-    ? "Labor code: unavailable"
-    : `Labor code: ${esc(stCode.code)} ${esc(stCode.name || "")}`;
-  const uncoded = Number(data.uncoded_hours) > 0;
-  const laborError = data.st_labor_code_error
-    ? `<p class="msg" id="labor-st-error">${esc(data.st_labor_code_error)}</p>`
-    : "";
-  const uncodedNote =
-    uncoded && !data.st_labor_code_error
-      ? `<p class="msg">${Number(data.uncoded_hours).toLocaleString("en-US")} hours are not on the ServiceTitan labor code, so they are not in the budget.</p>`
-      : "";
-  el("labor").innerHTML = `
-    <p class="note">Hours come from ServiceTitan timesheets. Wage is hours times that technician's ServiceTitan hourly rate. Burden is the same hours times that technician's burden rate, added on top. If payroll is not permitted, appointment windows are used and the last timesheet rows stay. Nothing here writes to ServiceTitan.</p>
-    ${
-      data.rates_forbidden
-        ? `<p class="msg">The latest ServiceTitan technician read was denied. Rates from the last successful read are still used. A technician with no saved rate stays out of actual cost.</p>`
-        : ""
-    }
-    <div class="row"><div class="row-b"><div class="row-t">${Number(data.hours || 0).toLocaleString("en-US")} hours</div>
-      ${moneyLine}
-      <div class="row-m">${laborRefreshLine(data)}</div>
-      <div class="row-m" id="labor-st-code">${codeText}</div></div></div>
-    ${laborError}
-    ${uncodedNote}
-    ${techs}
-    ${gaps}`;
-  refresh?.addEventListener("click", async () => {
-    refresh.disabled = true;
-    try {
-      await api(`/projects/${current.id}/labor/refresh`, { method: "POST" });
-      await select(current.id);
-    } catch (err) {
-      refresh.disabled = false;
-      window.alert(err.message);
-    }
-  });
+  el("labor").innerHTML = laborCardHtml(data, { esc, stamp });
 }
 
 function renderCloseout(row) {
   const c = row || {};
   const may = can("manage_project_controls");
-  const disabled = may ? "" : "disabled";
-  el("closetag").textContent = c.warranty_start_on
-    ? `warranty ${c.warranty_start_on}`
-    : "open";
-  el("closeout").innerHTML = `
-    <p class="note">Punch, photos, the final draw invoice, the warranty date, and the review request live on this card. Nothing here emails the customer or writes to ServiceTitan. Photos stay in the photos folder. Gate 4 is still ticked by a person.</p>
-    <label><input id="cl-punch" type="checkbox" ${c.punch_done_at ? "checked" : ""} ${disabled}> Punch list complete</label>
-    ${field("Punch note", `<input id="cl-punch-note" value="${esc(c.punch_note || "")}" ${disabled}>`)}
-    <label><input id="cl-photos" type="checkbox" ${c.photos_done_at ? "checked" : ""} ${disabled}> Final photos filed</label>
-    ${field("Photo note", `<input id="cl-photos-note" value="${esc(c.photos_note || "")}" ${disabled}>`)}
-    ${field(
-      "Final draw invoice number",
-      `<input id="cl-invoice" value="${esc(c.final_draw_invoice_number || "")}" maxlength="80" ${disabled}>`,
-    )}
-    ${field(
-      "Warranty start",
-      `<input id="cl-warranty" type="date" value="${esc(c.warranty_start_on || "")}" ${disabled}>`,
-    )}
-    ${field(
-      "Review request",
-      `<textarea id="cl-review" maxlength="2000" ${disabled}>${esc(c.review_request_note || "")}</textarea>`,
-    )}
-    <p class="note">The review request is a note on this project. Nobody is emailed.</p>
-    ${
-      may
-        ? `<div class="actions"><button class="btn sm primary" id="cl-save" type="button">Save closeout</button></div>`
-        : `<p class="note">Owner, manager, or the project coordinator records closeout.</p>`
-    }`;
+  const done = closeoutDoneLabel(closeoutDoneCount(c));
+  el("closetag").textContent = done;
+  setFinSummary("closeout", done);
+  el("closeout").innerHTML = closeoutCardHtml(c, { esc, canEdit: may });
   el("cl-save")?.addEventListener("click", async (event) => {
     const button = event.target;
     button.disabled = true;
     try {
       await api(`/projects/${current.id}/closeout`, {
         method: "PUT",
-        body: JSON.stringify({
-          punch_done: el("cl-punch").checked,
-          punch_note: el("cl-punch-note").value,
-          photos_done: el("cl-photos").checked,
-          photos_note: el("cl-photos-note").value,
-          final_draw_invoice_number: el("cl-invoice").value.trim() || null,
-          warranty_start_on: el("cl-warranty").value || null,
-          review_request_note: el("cl-review").value,
-        }),
+        body: JSON.stringify(
+          closeoutSavePayload({
+            punch_done: el("cl-punch").checked,
+            punch_note: el("cl-punch-note").value,
+            photos_done: el("cl-photos").checked,
+            photos_note: el("cl-photos-note").value,
+            final_draw_invoice_number: el("cl-invoice").value,
+            warranty_start_on: el("cl-warranty").value,
+            review_request_note: el("cl-review").value,
+          }),
+        ),
       });
       await select(current.id);
     } catch (err) {

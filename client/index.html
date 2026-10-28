@@ -84,12 +84,31 @@
     </section>
     <div class="grid">
       <div>
-        <div class="card">
+        <div class="card" data-fin-section="st">
           <div class="card-h">
-            <span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="st-financials">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">ServiceTitan project financials detail</span>
+            </button>
+            <button class="btn sm" id="st-refresh" type="button" hidden>Refresh from ServiceTitan</button>
+          </div>
+          <p class="note warn" id="st-refresh-status" role="status" aria-live="polite"></p>
+          <p class="fin-section-summary" id="fin-sum-st"></p>
+          <div class="card-b fin-section-body" id="st-financials" hidden></div>
+        </div>
+
+        <div class="card" data-fin-section="budget">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="fin-body-budget">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Budget vs. actual by cost code</span>
+            </button>
+            <span class="tag" id="btag"></span>
             <button class="btn sm" id="budget-add" type="button">Add line</button>
           </div>
-          <div class="card-b">
+          <p class="fin-section-summary" id="fin-sum-budget"></p>
+          <div class="card-b fin-section-body" id="fin-body-budget" hidden>
+            <div id="budget-entry"></div>
             <div class="bh"><div class="lbl">Cost code</div><div class="lbl">Budget</div><div class="lbl">Variance</div></div>
             <div id="budget"></div>
             <div class="legend">
@@ -101,35 +120,54 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="pos">
           <div class="card-h">
-            <span class="lbl">Purchase orders</span><span class="tag" id="potag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="pos">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Purchase orders</span>
+            </button>
+            <span class="tag" id="potag"></span>
             <button class="btn sm" id="po-new" type="button">Issue PO</button>
           </div>
-          <div class="card-b" id="pos"></div>
+          <p class="fin-section-summary" id="fin-sum-pos"></p>
+          <div class="card-b fin-section-body" id="pos" hidden></div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="cos">
           <div class="card-h">
-            <span class="lbl">Change orders</span><span class="tag" id="cotag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="cos">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Change orders</span>
+            </button>
+            <span class="tag" id="cotag"></span>
             <button class="btn sm" id="co-new" type="button">Raise change order</button>
           </div>
-          <div class="card-b" id="cos"></div>
+          <p class="fin-section-summary" id="fin-sum-cos"></p>
+          <div class="card-b fin-section-body" id="cos" hidden></div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="closeout">
           <div class="card-h">
-            <span class="lbl">Closeout</span><span class="tag" id="closetag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="closeout">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Closeout</span>
+            </button>
+            <span class="tag" id="closetag"></span>
           </div>
-          <div class="card-b" id="closeout"></div>
+          <p class="fin-section-summary" id="fin-sum-closeout"></p>
+          <div class="card-b fin-section-body" id="closeout" hidden></div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="labor">
           <div class="card-h">
-            <span class="lbl">Labor</span><span class="tag" id="labortag"></span>
-            <button class="btn sm" id="labor-refresh" type="button">Refresh hours</button>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="labor">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Labor</span>
+            </button>
+            <span class="tag" id="labortag"></span>
           </div>
-          <div class="card-b" id="labor"></div>
+          <p class="fin-section-summary" id="fin-sum-labor"></p>
+          <div class="card-b fin-section-body" id="labor" hidden></div>
         </div>
 
         <div class="card">
@@ -160,11 +198,17 @@
           <div class="card-b"><div class="chain" id="permits"></div></div>
         </div>
 
-        <div class="card">
-          <div class="card-h"><span class="lbl">Draw schedule</span><span class="tag" id="dtag"></span>
+        <div class="card" data-fin-section="draws">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="draws">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Draw schedule</span>
+            </button>
+            <span class="tag" id="dtag"></span>
             <button class="btn sm" id="ar-refresh" type="button" hidden>Refresh invoices</button>
           </div>
-          <div class="card-b" id="draws"></div>
+          <p class="fin-section-summary" id="fin-sum-draws"></p>
+          <div class="card-b fin-section-body" id="draws" hidden></div>
         </div>
       </div>
     </div>

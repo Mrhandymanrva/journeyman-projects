@@ -1,3 +1,4 @@
+import { bindFinancialSections } from "./financialsSections.js";
 import { revealLinkedItem } from "./home.js";
 import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
 import { createPermitOffices } from "./permitOffices.js";
@@ -180,10 +181,21 @@ export function createWorkspace({
   move("logs", "logs", true);
   for (const id of ["stagebar", "gates"]) move(id, PROJECT_PAGE_ID);
   move("labor", LABOR_PAGE_ID, true);
+  move("st-financials", "financials", true);
   const laborCard = el("labor")?.closest(".card");
   const budgetCard = el("budget")?.closest(".card");
+  const financialsCard = el("st-financials")?.closest(".card");
+  if (financialsCard && budgetCard)
+    budgetCard.insertAdjacentElement("beforebegin", financialsCard);
   if (laborCard && budgetCard)
     budgetCard.insertAdjacentElement("afterend", laborCard);
+  if (!el("fin-summary")) {
+    el("page-financials").insertAdjacentHTML(
+      "afterbegin",
+      '<div id="fin-summary" class="fin-summary" aria-label="Project financials"></div>',
+    );
+  }
+  bindFinancialSections(el("page-financials"));
   move("permits", PROJECT_PAGE_ID, true);
   el("page-" + PROJECT_PAGE_ID).insertAdjacentHTML(
     "afterbegin",
@@ -555,7 +567,7 @@ export function createWorkspace({
     const ticket = ++scheduleTicket;
     const window = appointmentReadWindow(day, p);
     api(
-      `/projects/${p.id}/servicetitan/schedule?from=${window.from}&to=${window.to}`,
+      `/projects/${p.id}/plan-appointments?from=${window.from}&to=${window.to}`,
     )
       .then((source) => {
         if (ticket !== scheduleTicket || data !== d) return;

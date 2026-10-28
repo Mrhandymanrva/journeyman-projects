@@ -7,6 +7,7 @@ import { createApp } from "../src/app.js";
 import { MemoryStaffSessions } from "../src/http/memoryStaffSessions.js";
 import {
   LABOR_REFRESH_LOCK_KEY,
+  OVERNIGHT_LOCK_RETRY_MS,
   laborRefreshTenantId,
   runHourlyLaborRefresh,
   startLaborRefreshScheduler,
@@ -66,6 +67,7 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
             dispatchedOn: null,
             doneOn: "2026-10-25T15:00:00Z",
             canceledOn: null,
+            paidDurationHours: 2,
           },
         ],
       };
@@ -73,8 +75,22 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
     readTechnicians: async () => {
       methods.push("GET");
       return [
-        { id: "tech-casey", name: "Casey Nguyen", active: true, hourlyRate: 40, burdenRate: 12 },
-        { id: "tech-jordan", name: "Jordan Hale", active: true, hourlyRate: 36, burdenRate: 0 },
+        {
+          id: "tech-casey",
+          name: "Casey Nguyen",
+          active: true,
+          hourlyRate: 40,
+          burdenRate: 12,
+          commissionRate: null,
+        },
+        {
+          id: "tech-jordan",
+          name: "Jordan Hale",
+          active: true,
+          hourlyRate: 36,
+          burdenRate: 0,
+          commissionRate: null,
+        },
       ];
     },
   },
@@ -199,9 +215,19 @@ describe("hourly labor refresh", () => {
       });
       expect(lockSpy).toHaveBeenCalledWith(LABOR_REFRESH_LOCK_KEY);
       expect(report.skipped).toBeNull();
-      expect(report.refreshed).toEqual([ids.get("A-100"), ids.get("A-300")]);
-      expect(report.failed.map((failure) => failure.projectNumber)).toEqual(["A-200"]);
-      expect(report.failed[0]?.message).toContain("HTTP 500");
+      // A failed timesheet read no longer aborts the project. Its hours are
+      // kept, its labor stamp does not move, and the run lists it with the error.
+      expect(report.refreshed).toEqual([ids.get("A-100"), ids.get("A-200"), ids.get("A-300")]);
+      expect(report.failed).toEqual([]);
+      const run = await h.db.withTenant(tenant.id, (db) =>
+        db.query<{ run: { ok: string[]; failed: Array<{ project_number: string; error: string }> } }>(
+          `SELECT labor_refresh_run AS run FROM projects.tenant_settings WHERE tenant_id = $1`,
+          [tenant.id],
+        ),
+      );
+      expect(run.rows[0]?.run.ok).toEqual([ids.get("A-100"), ids.get("A-300")]);
+      expect(run.rows[0]?.run.failed.map((item) => item.project_number)).toEqual(["A-200"]);
+      expect(run.rows[0]?.run.failed[0]?.error).toContain("HTTP 500");
       expect(jobsSeen).toEqual(["100", "200", "300"]);
       expect(methods.every((method) => method === "GET")).toBe(true);
       expect(sleeps).toEqual([25, 25]);
@@ -223,10 +249,15 @@ describe("hourly labor refresh", () => {
       wage: 80,
       burden: 24,
     });
-    expect(ok.body.data.rate_gaps).toEqual([
+    expect(ok.body.data).not.toHaveProperty("rate_gaps");
+    expect(ok.body.data).not.toHaveProperty("burden_notices");
+    const settings = await owner.get("/api/v1/projects/settings/labor");
+    expect(settings.status, JSON.stringify(settings.body)).toBe(200);
+    expect(settings.body.data.rate_gaps).toEqual([]);
+    expect(settings.body.data.burden_notices).toEqual([
       expect.objectContaining({
         technician_name: "Jordan Hale",
-        messages: ["Missing from ServiceTitan: burden rate is 0 for Jordan Hale"],
+        messages: ["burden not set"],
       }),
     ]);
 
@@ -257,6 +288,73 @@ describe("hourly labor refresh", () => {
     });
     expect(laborOf("A-200")).toMatchObject({ source: null, observed_at: null });
     expect(laborOf("A-900")).toMatchObject({ source: null, observed_at: null, labor_hours: 0 });
+    const projectFeed = (number: string) =>
+      (feed.body.data.projects as Array<{
+        project_number: string;
+        labor_refresh: { status: string; ok: number; failed: number; error: string | null };
+        reconciliation: {
+          lines: Array<{ key: string; jp: number; st: number; delta: number }>;
+          technicians: Array<{ technician_name: string; hours: number; burden: number | null; commission_percent: number | null }>;
+        } | null;
+      }>).find((project) => project.project_number === number);
+    expect(projectFeed("A-100")?.labor_refresh).toMatchObject({
+      status: "finished",
+      ok: 2,
+      failed: 1,
+      error: null,
+    });
+    expect(projectFeed("A-200")?.labor_refresh.error).toContain("HTTP 500");
+    expect(projectFeed("A-100")?.reconciliation?.technicians).toEqual([
+      expect.objectContaining({
+        technician_name: "Casey Nguyen",
+        hours: 2,
+        commission_percent: null,
+        burden: 24,
+      }),
+    ]);
+    const burdenLine = projectFeed("A-100")?.reconciliation?.lines.find((line) => line.key === "laborBurden");
+    expect(burdenLine).toMatchObject({ jp: 24, st: 24, delta: 0 });
+
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.labor_actuals SET burden_amount = burden_amount + 0.01 WHERE project_id = $1`,
+        [ids.get("A-100")],
+      ),
+    );
+    const stored = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-100")}/financials/reconciliation`,
+    );
+    expect(stored.status, JSON.stringify(stored.body)).toBe(200);
+    expect(stored.body.data.lines.find((line: { key: string }) => line.key === "laborBurden")).toMatchObject({
+      jp: 24,
+      st: 24,
+      delta: 0,
+    });
+    expect(stored.body.data.note).toBeNull();
+    const untouched = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-900")}/financials/reconciliation`,
+    );
+    expect(untouched.body.data.observed_at).toBeNull();
+    expect(untouched.body.data.lines).toEqual([]);
+    expect(untouched.body.data.note).toBe("No reconciliation has been stored. Refresh will write one.");
+
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.st_financial_reconciliation
+            SET lines = $2::jsonb
+          WHERE project_id = $1`,
+        [
+          ids.get("A-300"),
+          JSON.stringify([{ key: "billedLabor", label: "Billed labor", jp: 1.01, st: 1, delta: 0.01 }]),
+        ],
+      ),
+    );
+    const drifted = await owner.get(
+      `/api/v1/projects/projects/${ids.get("A-300")}/financials/reconciliation`,
+    );
+    expect(drifted.body.data.lines).toEqual([
+      expect.objectContaining({ key: "billedLabor", jp: 1.01, st: 1, delta: 0.01 }),
+    ]);
   });
 
   it("skips the whole run when the advisory lock is already held", async () => {
@@ -300,25 +398,64 @@ describe("hourly labor refresh", () => {
     });
     try {
       expect(startLaborRefreshScheduler(h.db, {})).toBeUndefined();
-      expect(lines).toContain("Labor refresh is off. ServiceTitan is not configured.");
+      expect(lines).toContain("Overnight ServiceTitan refresh is off. ServiceTitan is not configured.");
     } finally {
       spy.mockRestore();
     }
   });
 
-  it("schedules the first run 15 seconds after boot", () => {
-    const spy = vi.spyOn(global, "setTimeout");
-    let timer: ReturnType<typeof setInterval> | undefined;
+  it("waits until the next 2 AM America/New_York and does not run on a first boot", async () => {
+    const now = new Date("2026-01-15T06:59:00.000Z");
+    const delays: number[] = [];
+    const timer = startLaborRefreshScheduler(h.db, { serviceTitan: connection }, {
+      env: {},
+      now: () => now,
+      schedule: (_run, delayMs) => {
+        delays.push(delayMs);
+        return { cancel() {} };
+      },
+    });
+    expect(timer).toBeDefined();
+    await vi.waitFor(() => {
+      expect(delays.length).toBeGreaterThan(0);
+    });
+    expect(delays[0]).toBe(60_000);
+    timer?.cancel();
+  });
+
+  it("catch-up runs a morning restart that has no finish stamp, and a lock retries without finishing the night", async () => {
+    const now = new Date("2026-10-27T09:43:00.000Z");
+    const lines: string[] = [];
+    const delays: number[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((message) => {
+      lines.push(String(message));
+    });
+    const timer = startLaborRefreshScheduler(h.db, { serviceTitan: connection }, {
+      env: {},
+      now: () => now,
+      gapMs: 0,
+      tryLock: async () => null,
+      schedule: (_run, delayMs) => {
+        delays.push(delayMs);
+        return { cancel() {} };
+      },
+    });
     try {
-      timer = startLaborRefreshScheduler(h.db, { serviceTitan: connection }, { env: {} });
-      expect(timer).toBeDefined();
-      expect(spy.mock.calls.map((call) => call[1])).toContain(15_000);
+      await vi.waitFor(() => {
+        expect(lines.some((line) => line.includes("Missed the 2 AM America/New_York refresh. Running one catch-up."))).toBe(true);
+      });
+      expect(lines.some((line) => line.includes("Retrying in 15 minutes."))).toBe(true);
+      expect(delays).toEqual([OVERNIGHT_LOCK_RETRY_MS]);
+      const finished = await h.db.withTenant(tenant.id, (db) =>
+        db.query<{ finished: Date | null }>(
+          `SELECT overnight_refresh_finished_at AS finished
+             FROM projects.tenant_settings WHERE tenant_id = $1`,
+          [tenant.id],
+        ),
+      );
+      expect(finished.rows[0]?.finished).toBeNull();
     } finally {
-      for (const result of spy.mock.results) {
-        const handle = result.value as ReturnType<typeof setTimeout> | undefined;
-        if (handle) clearTimeout(handle);
-      }
-      if (timer) clearInterval(timer);
+      timer?.cancel();
       spy.mockRestore();
     }
   });
@@ -360,7 +497,7 @@ describe("labor refresh tenant", () => {
 describe("scheduler uses the manual refresh env", () => {
   let h: Harness;
   let portfolio: TenantFixture;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let timer: { cancel: () => void } | undefined;
   const ids = new Map<string, string>();
   const calls: Array<{ url: string; method: string }> = [];
   const secret = "scheduler-fix-client-secret";
@@ -387,6 +524,46 @@ describe("scheduler uses the manual refresh env", () => {
       if (url.includes("/connect/token")) {
         return Response.json({ access_token: "test-token", expires_in: 900 });
       }
+      if (/\/jobs\/\d+$/.test(url.split("?")[0] ?? url)) {
+        const jobId = url.match(/jobs\/(\d+)/)?.[1] ?? "0";
+        return Response.json({
+          id: Number(jobId),
+          jobNumber: jobId,
+          customerId: 1,
+          locationId: 1,
+          jobStatus: "Scheduled",
+          modifiedOn: "2026-10-25T12:00:00Z",
+        });
+      }
+      if (
+        url.includes("/appointments") ||
+        url.includes("/appointment-assignments") ||
+        url.includes("/invoices") ||
+        url.includes("/purchase-orders")
+      ) {
+        return Response.json({ data: [], hasMore: false });
+      }
+      if (url.includes("/payroll/v2/tenant/99887766/gross-pay-items")) {
+        // Documented GrossPayItemResponse: paid time per technician per job.
+        return Response.json({
+          page: 1,
+          pageSize: 500,
+          hasMore: false,
+          totalCount: null,
+          data: ["100", "200", "300", "400", "500"].map((jobId, index) => ({
+            id: index + 1,
+            employeeId: 6,
+            employeeType: "Technician",
+            date: "2026-10-25T00:00:00Z",
+            activity: "Working",
+            amount: 80,
+            grossPayItemType: "TimesheetTime",
+            paidDurationHours: 2,
+            paidTimeType: "Regular",
+            jobId: Number(jobId),
+          })),
+        });
+      }
       if (url.includes("/timesheets")) {
         const jobId = url.match(/jobs\/(\d+)\/timesheets/)?.[1] ?? "0";
         return Response.json({
@@ -399,6 +576,7 @@ describe("scheduler uses the manual refresh env", () => {
               arrivedOn: "2026-10-25T13:00:00Z",
               doneOn: "2026-10-25T15:00:00Z",
               canceledOn: null,
+              paidDurationHours: 2,
               hourlyRate: 99,
             },
           ],
@@ -475,6 +653,14 @@ describe("scheduler uses the manual refresh env", () => {
       }
     });
 
+    await h.db.withTenant(portfolio.id, (db) =>
+      db.query(
+        `UPDATE projects.tenant_settings
+            SET overnight_refresh_finished_at = $2
+          WHERE tenant_id = $1`,
+        [portfolio.id, "2026-10-24T06:05:00.000Z"],
+      ),
+    );
     const lines: string[] = [];
     const errors: string[] = [];
     const logSpy = vi.spyOn(console, "log").mockImplementation((message) => {
@@ -486,16 +672,16 @@ describe("scheduler uses the manual refresh env", () => {
     try {
       timer = startLaborRefreshScheduler(h.db, sources, {
         env,
-        firstTickMs: 0,
         gapMs: 0,
         now: () => new Date(WHEN),
       });
       expect(timer).toBeDefined();
       await vi.waitFor(() => {
-        if (!lines.includes("Labor refresh run: 3 refreshed, 0 failed; labor code: MHM.25PLFE Project Labor From Estimate")) {
+        if (!lines.some((line) => line.includes("Labor refresh run: 3 refreshed, 0 failed; labor code: MHM.25PLFE Project Labor From Estimate"))) {
           throw new Error(`logs=${lines.join(" | ")} errors=${errors.join(" | ")}`);
         }
       }, { timeout: 5000 });
+      expect(lines).toContain("Missed the 2 AM America/New_York refresh. Running one catch-up.");
       expect(lines.join("\n")).not.toContain(secret);
       expect(errors.join("\n")).not.toContain(secret);
       expect(calls.some((call) => call.method !== "GET" && !call.url.includes("/connect/token"))).toBe(
@@ -523,7 +709,7 @@ describe("scheduler uses the manual refresh env", () => {
   });
 
   afterAll(async () => {
-    if (timer) clearInterval(timer);
+    timer?.cancel();
     vi.unstubAllGlobals();
     await h?.close();
   });

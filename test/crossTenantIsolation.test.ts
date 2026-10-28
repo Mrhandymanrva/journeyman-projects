@@ -628,6 +628,19 @@ const ROUTES: RouteCase[] = [
     body: () => ({ budget_amount: 1 }),
   },
   {
+    method: "put",
+    template: `${BASE}/projects/:id/budget/entry`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget/entry`,
+    body: () => ({
+      contract_value: null,
+      labor: 10,
+      labor_hours: 1,
+      materials: null,
+      subcontractor: null,
+      other: null,
+    }),
+  },
+  {
     method: "get",
     template: `${BASE}/projects/:id/exceptions`,
     path: (f) => `${BASE}/projects/${f.projectId}/exceptions`,
@@ -921,6 +934,26 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/projects/:id/labor/refresh`,
     path: (f) => `${BASE}/projects/${f.projectId}/labor/refresh`,
     body: () => ({}),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/service-titan-financials`,
+    path: (f) => `${BASE}/projects/${f.projectId}/service-titan-financials`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/financials/reconciliation`,
+    path: (f) => `${BASE}/projects/${f.projectId}/financials/reconciliation`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/financials/summary`,
+    path: (f) => `${BASE}/projects/${f.projectId}/financials/summary`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/plan-appointments`,
+    path: (f) => `${BASE}/projects/${f.projectId}/plan-appointments`,
   },
   {
     method: "post",

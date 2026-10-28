@@ -496,7 +496,7 @@ describe("CSR hand-off flow", () => {
       .put(`/api/v1/projects/projects/${id}/handoff`)
       .send(form({}, false));
     expect(saved.status).toBe(200);
-    const sql = readFileSync("db/049_csr_handoff.sql", "utf8");
+    const sql = readFileSync("db/057_csr_handoff.sql", "utf8");
     for (let pass = 0; pass < 2; pass++) {
       for (const statement of splitSqlStatements(sql)) {
         if (!hasExecutableSql(statement.text)) continue;
@@ -505,7 +505,7 @@ describe("CSR hand-off flow", () => {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           if (/already exists/i.test(message)) continue;
-          throw new Error(`049:${statement.startLine} ${message}`);
+          throw new Error(`057:${statement.startLine} ${message}`);
         }
       }
     }

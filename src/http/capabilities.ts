@@ -60,8 +60,8 @@ export const CAPABILITIES = {
   refresh_labor: ['owner', 'manager', 'project_manager'],
   // Read ServiceTitan invoices, payments, and estimates for one project.
   refresh_ar: ['owner', 'manager', 'project_manager'],
-  // A technician's ServiceTitan hourly rate and burden rate, and the list of
-  // active technicians whose rates are missing or zero.
+  // The flag list for technicians missing both a commission percent and an
+  // hourly rate, and the informational burden-not-set list. Pay rates are not included.
   view_labor_rates: ['owner', 'manager'],
   // Write today's portfolio health rows. The portfolio token cannot call it.
   run_health_snapshots: ['owner'],
