@@ -21,6 +21,8 @@ import {
   type ControlKind,
   type ControlRecord,
 } from "../domain/projectControls.js";
+import { loadProjectHealth } from "../domain/projectHealth.js";
+import { ragScheduleAndCost } from "../domain/ragHealth.js";
 const kind = z.enum([
   "task",
   "goal",
@@ -92,6 +94,30 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
         JSON.stringify(after),
       ],
     );
+  }
+  function linkedTasks(rows: ControlRecord[], milestoneId: string) {
+    return rows.filter(
+      (row) =>
+        row.active &&
+        row.kind === "task" &&
+        row.data.milestone_id === milestoneId,
+    ).length;
+  }
+  async function healthRag(ctx: StaffContext, projectId: string) {
+    const rows = await loadProjectHealth(ctx.db, today());
+    return ragScheduleAndCost(
+      rows.find((row) => row.project_id === projectId)?.health,
+    );
+  }
+  function finishManualMilestone(data: object, linked: number) {
+    const record = data as { state?: string; completed_on?: string | null };
+    if (linked > 0 || record.state !== "complete") return;
+    record.completed_on ??= today();
+    if (record.completed_on > today())
+      throw new ApiError(
+        "validation_failed",
+        "Completion cannot be in the future.",
+      );
   }
   async function progress(ctx: StaffContext, id: string) {
     const b = (
@@ -227,6 +253,7 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
         records: attachControlRollups(rows, today()),
         baseline,
         history,
+        rag: await healthRag(ctx, id),
       });
     }),
   );
@@ -243,7 +270,10 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
         b.kind,
         parseBody(controlData[b.kind], b.data),
         null,
+        0,
       );
+      if (b.kind === "milestone") finishManualMilestone(data, 0);
+      if (b.kind === "report") Object.assign(data, await healthRag(ctx, id));
       const row: ControlRecord = {
         id: randomUUID(),
         kind: b.kind,
@@ -269,20 +299,64 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
       const id = await project(ctx, true);
       const old = await one(ctx, id);
       write(ctx, old.kind);
-      if (old.kind !== "milestone") throw new ApiError("validation_failed", "This delete action is only available for milestones.");
-      const body = parseBody(z.object({version:z.number().int().positive()}).strict(), ctx.req.body);
-      if (body.version !== old.version) throw new ApiError("conflict", "This milestone changed. Reload it before deleting.");
-      if (!old.active) { sendData(ctx.res, old); return; }
-      // Preserve tasks, dates and completion history; remove only the milestone link.
-      const linked = (await records(ctx,id)).filter(row => row.kind === "task" && row.data.milestone_id === old.id);
-      for (const task of linked) {
-        const data = {...task.data,milestone_id:null};
-        await ctx.db.query("UPDATE projects.project_controls SET data=$1::jsonb,version=version+1,updated_at=now() WHERE id=$2",[JSON.stringify(data),task.id]);
-        await audit(ctx,task.id,"milestone_unlinked",task.data,data);
+      if (old.kind !== "milestone" && old.kind !== "goal")
+        throw new ApiError(
+          "validation_failed",
+          "This delete action is only available for milestones and goals.",
+        );
+      const body = parseBody(
+        z.object({ version: z.number().int().positive() }).strict(),
+        ctx.req.body,
+      );
+      const noun = old.kind === "goal" ? "goal" : "milestone";
+      if (body.version !== old.version)
+        throw new ApiError(
+          "conflict",
+          `This ${noun} changed. Reload it before deleting.`,
+        );
+      if (!old.active) {
+        sendData(ctx.res, old);
+        return;
       }
-      await ctx.db.query("UPDATE projects.project_controls SET active=false,version=version+1,updated_at=now() WHERE id=$1",[old.id]);
-      await audit(ctx,old.id,"archived",old.data,old.data);
-      sendData(ctx.res,{...old,active:false,version:old.version+1,unlinked_tasks:linked.length});
+      const existing = await records(ctx, id);
+      // Keep the linked records. Drop only the link, the same way a milestone delete keeps its tasks.
+      const linkedTasks = existing.filter(
+        (row) => row.kind === "task" && row.data.milestone_id === old.id,
+      );
+      const linkedMilestones = existing.filter(
+        (row) => row.kind === "milestone" && row.data.goal_id === old.id,
+      );
+      if (old.kind === "milestone") {
+        for (const task of linkedTasks) {
+          const data = { ...task.data, milestone_id: null };
+          await ctx.db.query(
+            "UPDATE projects.project_controls SET data=$1::jsonb,version=version+1,updated_at=now() WHERE id=$2",
+            [JSON.stringify(data), task.id],
+          );
+          await audit(ctx, task.id, "milestone_unlinked", task.data, data);
+        }
+      } else {
+        for (const milestone of linkedMilestones) {
+          const data = { ...milestone.data, goal_id: null };
+          await ctx.db.query(
+            "UPDATE projects.project_controls SET data=$1::jsonb,version=version+1,updated_at=now() WHERE id=$2",
+            [JSON.stringify(data), milestone.id],
+          );
+          await audit(ctx, milestone.id, "goal_unlinked", milestone.data, data);
+        }
+      }
+      await ctx.db.query(
+        "UPDATE projects.project_controls SET active=false,version=version+1,updated_at=now() WHERE id=$1",
+        [old.id],
+      );
+      await audit(ctx, old.id, "archived", old.data, old.data);
+      sendData(ctx.res, {
+        ...old,
+        active: false,
+        version: old.version + 1,
+        unlinked_tasks: old.kind === "milestone" ? linkedTasks.length : 0,
+        unlinked_milestones: old.kind === "goal" ? linkedMilestones.length : 0,
+      });
     }),
   );
   r.patch(
@@ -306,11 +380,16 @@ export function projectControlRoutes(deps: StaffRouterDeps) {
           "conflict",
           "This record changed. Reload it before saving.",
         );
+      const all = await records(ctx, id);
+      const linked = old.kind === "milestone" ? linkedTasks(all, old.id) : 0;
       const data = preserveDerivedControlFields(
         old.kind,
         parseBody(controlData[old.kind], b.data),
         old.data,
+        linked,
       );
+      if (old.kind === "milestone") finishManualMilestone(data, linked);
+      if (old.kind === "report") Object.assign(data, await healthRag(ctx, id));
       const updated = {
         ...old,
         data,

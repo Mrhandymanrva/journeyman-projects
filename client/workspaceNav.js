@@ -28,10 +28,10 @@ export const workspacePages = {
   dashboard: ["Dashboard", "Your project, at a glance."],
   plan: [
     "Plan",
-    "Scheduled work, crews, tasks, milestones and project reporting.",
+    "Scheduled work, crews, tasks, and milestones.",
   ],
   documents: ["Documents", "Project files, templates and working forms."],
-  risks: ["Risks", "Identify, assess and manage project risks."],
+  risks: ["Risks", "Status reports and the risk register."],
   communications: [
     "Communications",
     "Updates, delivery logs and scheduled check-ins.",

@@ -86,10 +86,25 @@ describe("schedule progress", () => {
         },
       ],
       preconTasks: [
-        { id: "p1", title: "Permit application", due_on: "2026-11-01", status: "not_started" },
-        { id: "p2", title: "Plans", due_on: "2026-11-02", status: "in_progress" },
+        {
+          id: "p1",
+          title: "Permit application",
+          due_on: "2026-11-01",
+          status: "not_started",
+        },
+        {
+          id: "p2",
+          title: "Plans",
+          due_on: "2026-11-02",
+          status: "in_progress",
+        },
         { id: "p3", title: "Selections", due_on: null, status: "done" },
-        { id: "p4", title: "Site visit", due_on: "2026-10-26", status: "waived" },
+        {
+          id: "p4",
+          title: "Site visit",
+          due_on: "2026-10-26",
+          status: "waived",
+        },
       ],
     });
 
@@ -104,13 +119,84 @@ describe("schedule progress", () => {
       "ST job · DEMO-1",
       "Permit application",
     ]);
-    expect(progress.week.every((row) => row.start >= today && row.start <= "2026-11-01" || row.end >= today)).toBe(true);
+    expect(
+      progress.week.every(
+        (row) =>
+          (row.start >= today && row.start <= "2026-11-01") || row.end >= today,
+      ),
+    ).toBe(true);
+  });
+
+  it("counts WBS tasks and milestones with the same function Home uses", () => {
+    const progress = scheduleProgress({
+      today,
+      activities: [
+        {
+          id: "gantt",
+          title: "Set tile",
+          window_start: today,
+          window_end: today,
+          status: "confirmed",
+        },
+      ],
+      wbsTasks: [
+        { id: "w1", title: "Hang board", due_on: today, state: "in_progress" },
+        {
+          id: "w2",
+          title: "Finished task",
+          due_on: "2026-10-01",
+          state: "complete",
+        },
+      ],
+      milestones: [
+        {
+          id: "m1",
+          title: "Inspection",
+          due_on: "2026-10-27",
+          state: "not_started",
+          linked_total: 4,
+          linked_done: 3,
+        },
+        {
+          id: "m2",
+          title: "Walkthrough",
+          due_on: today,
+          state: "complete",
+          linked_total: 0,
+          linked_done: 0,
+        },
+      ],
+      permitMilestones: [
+        { id: "pm1", name: "Permit posted", due_on: today, status: "pending" },
+      ],
+    });
+    expect(progress.caption).toContain("WBS tasks");
+    expect(progress.caption).toContain("Gantt activities");
+    expect(progress.total).toBe(6);
+    expect(progress.complete).toBe(2);
+    expect(progress.percent).toBe(33);
+    expect(progress.week.map((row) => row.title)).toEqual([
+      "Hang board",
+      "Permit posted",
+      "Set tile",
+      "Walkthrough",
+      "Inspection",
+    ]);
+    const home = readFileSync("src/domain/homeBoard.ts", "utf8");
+    const dashboard = readFileSync("client/scheduleProgress.js", "utf8");
+    expect(home).toContain("summarizeSchedule");
+    expect(dashboard).toContain("summarizeSchedule");
+    expect(readFileSync("client/home.js", "utf8")).toContain(
+      "SCHEDULE_CAPTION",
+    );
   });
 
   it("leaves progress blank when the schedule is empty and ignores undated precon in the next 7 days", () => {
     const progress = scheduleProgress({
       today,
-      preconTasks: [{ id: "p", title: "No date", due_on: null, status: "not_started" }],
+      preconTasks: [
+        { id: "p", title: "No date", due_on: null, status: "not_started" },
+      ],
     });
     expect(progress.percent).toBe(0);
     expect(progress.total).toBe(1);
@@ -134,7 +220,8 @@ describe("schedule progress", () => {
       scheduled_end: "2026-12-31",
     });
     const span =
-      (Date.parse(wide.to + "T12:00:00Z") - Date.parse(wide.from + "T12:00:00Z")) /
+      (Date.parse(wide.to + "T12:00:00Z") -
+        Date.parse(wide.from + "T12:00:00Z")) /
       86400000;
     expect(span).toBeLessThanOrEqual(62);
     expect(wide.from <= today).toBe(true);
@@ -164,7 +251,11 @@ describe("precon and permits tab", () => {
   it("renames the tab, keeps the old hash as a redirect, and leads with coordinator work", () => {
     expect(workspacePages[PROJECT_PAGE_ID]?.[0]).toBe("Precon & permits");
     expect(PROJECT_PAGE_ALIASES).toContain("project");
-    expect(PROJECT_PAGE_ORDER.slice(0, 3)).toEqual(["precon", "permits", "gates"]);
+    expect(PROJECT_PAGE_ORDER.slice(0, 3)).toEqual([
+      "precon",
+      "permits",
+      "gates",
+    ]);
     expect(LABOR_PAGE_ID).toBe("financials");
     expect(PRECON_ROLE_NOTE).toContain("Project Coordinator");
     expect(PRECON_ROLE_NOTE).toContain("Richmond GM");
@@ -205,7 +296,9 @@ describe("document templates", () => {
       scheduled_end: "2026-11-12",
       actual_start: "2026-10-08",
       field_start: { date: "2026-10-20" },
-      sold_estimates: [{ name: "Customer upgraded the tile", customer_amount: 2400 }],
+      sold_estimates: [
+        { name: "Customer upgraded the tile", customer_amount: 2400 },
+      ],
       permit_summary: [
         {
           permit_type: "Building",
@@ -241,10 +334,13 @@ describe("document templates", () => {
     expect(knownProjectFacts({})).toContain("- Field start: ");
     for (const template of Object.values(projectTemplates)) {
       const body = templateContent(
-        Object.keys(projectTemplates).find((key) => projectTemplates[key] === template)!,
+        Object.keys(projectTemplates).find(
+          (key) => projectTemplates[key] === template,
+        )!,
         null,
       );
-      for (const section of template.sections) expect(body).toContain("## " + section);
+      for (const section of template.sections)
+        expect(body).toContain("## " + section);
     }
   });
 });

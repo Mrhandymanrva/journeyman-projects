@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { milestoneCredit } from "../../client/scheduleDefinition.js";
 export const today = () =>
   new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/New_York",
@@ -220,10 +221,19 @@ export function validateTaskGraph(records: ControlRecord[]) {
  * At risk is the blocked state, which the task list already paints amber.
  * Anything else is on track. A complete task is done even if its due date passed.
  */
+/** Task delivery, used only to decide the Late and At risk flags. */
 export type RollupStatus = "done" | "late" | "at_risk" | "on_track";
+/** Not started (nothing done), in progress (some done), complete (all done). */
+export type MilestoneStatus = "not_started" | "in_progress" | "complete";
+export type MilestoneFlag = "late" | "at_risk" | null;
 export interface ControlRollup {
-  status: RollupStatus;
-  /** Share of linked milestones that are done. Null unless this is a goal with at least one. */
+  status: MilestoneStatus;
+  /** Late or at risk sits beside the status. It is not a status. */
+  flag: MilestoneFlag;
+  /**
+   * Goal percent gives each linked milestone partial credit for tasks done.
+   * Null unless this is a goal with at least one milestone.
+   */
   percent: number | null;
   done: number;
   total: number;
@@ -249,50 +259,132 @@ export function taskRollupStatus(task: RollupTask, asOf: string): RollupStatus {
   if (task.state === "blocked") return "at_risk";
   return "on_track";
 }
-function worstOpen(statuses: RollupStatus[]): RollupStatus {
-  if (statuses.some((status) => status === "late")) return "late";
-  if (statuses.some((status) => status === "at_risk")) return "at_risk";
-  return "on_track";
+export interface MilestoneManual {
+  state?: string;
+  due_on?: string | null;
 }
-/** No linked tasks stays on track. Done only when every linked task is done. */
+/**
+ * Status comes from how many linked tasks are done.
+ * No tasks uses the manual status (not started, in progress, or complete).
+ * Late wins over at risk. A complete milestone is not late.
+ */
+export function milestoneRollup(
+  tasks: RollupTask[],
+  asOf: string,
+  manual?: MilestoneManual | null,
+): Pick<ControlRollup, "status" | "flag" | "done" | "total"> {
+  const done = tasks.filter((task) => task.state === "complete").length;
+  const total = tasks.length;
+  if (total === 0) {
+    const stored = manual?.state;
+    const status: MilestoneStatus =
+      stored === "complete"
+        ? "complete"
+        : stored === "in_progress" || stored === "blocked"
+          ? "in_progress"
+          : "not_started";
+    let flag: MilestoneFlag = null;
+    if (status !== "complete" && manual?.due_on && manual.due_on < asOf)
+      flag = "late";
+    else if (stored === "blocked") flag = "at_risk";
+    return { status, flag, done: 0, total: 0 };
+  }
+  const status: MilestoneStatus =
+    done === 0 ? "not_started" : done === total ? "complete" : "in_progress";
+  const flags = tasks.map((task) => taskRollupStatus(task, asOf));
+  const flag: MilestoneFlag = flags.some((item) => item === "late")
+    ? "late"
+    : flags.some((item) => item === "at_risk")
+      ? "at_risk"
+      : null;
+  return { status, flag, done, total };
+}
+/** @deprecated Use milestoneRollup. Kept so older imports still resolve during the rename. */
 export function milestoneRollupStatus(
   tasks: RollupTask[],
   asOf: string,
-): RollupStatus {
-  if (tasks.length === 0) return "on_track";
-  const statuses = tasks.map((task) => taskRollupStatus(task, asOf));
-  if (statuses.every((status) => status === "done")) return "done";
-  return worstOpen(statuses);
+  manual?: MilestoneManual | null,
+): MilestoneStatus {
+  return milestoneRollup(tasks, asOf, manual).status;
 }
-/** Percent counts milestones whose own roll-up is done. No milestones leaves it unset. */
-export function goalRollup(milestoneStatuses: RollupStatus[]): {
-  status: RollupStatus;
-  percent: number | null;
-} {
-  if (milestoneStatuses.length === 0)
-    return { status: "on_track", percent: null };
-  const done = milestoneStatuses.filter((status) => status === "done").length;
-  const percent = Math.round((100 * done) / milestoneStatuses.length);
-  if (done === milestoneStatuses.length) return { status: "done", percent };
-  return { status: worstOpen(milestoneStatuses), percent };
+export interface GoalPart {
+  status: MilestoneStatus;
+  flag: MilestoneFlag;
+  done: number;
+  total: number;
 }
 /**
- * Keep the stored status and completion date. The screen calculates over them
- * and does not offer a way to type a new value.
+ * Each milestone contributes its task credit (3 of 4 tasks = 75% of that milestone).
+ * A milestone with no tasks contributes 0, or 100 when its manual status is complete.
+ * The goal percent is the average of those shares. No milestones leaves it unset.
+ */
+export function goalRollup(parts: GoalPart[]): {
+  status: MilestoneStatus;
+  flag: MilestoneFlag;
+  percent: number | null;
+} {
+  if (parts.length === 0)
+    return { status: "not_started", flag: null, percent: null };
+  const credit = parts.reduce(
+    (sum, part) =>
+      sum +
+      milestoneCredit({
+        linkedTotal: part.total,
+        linkedDone: part.done,
+        state:
+          part.total === 0 && part.status === "complete"
+            ? "complete"
+            : "not_started",
+      }),
+    0,
+  );
+  const percent = Math.round((100 * credit) / parts.length);
+  const flag: MilestoneFlag = parts.some((part) => part.flag === "late")
+    ? "late"
+    : parts.some((part) => part.flag === "at_risk")
+      ? "at_risk"
+      : null;
+  const status: MilestoneStatus = parts.every(
+    (part) => part.status === "complete",
+  )
+    ? "complete"
+    : parts.every((part) => part.status === "not_started")
+      ? "not_started"
+      : "in_progress";
+  return { status, flag, percent };
+}
+const MANUAL_MILESTONE_STATES = new Set([
+  "not_started",
+  "in_progress",
+  "complete",
+]);
+/**
+ * Goals stay calculated. A milestone with linked tasks stays calculated.
+ * A milestone with no linked tasks keeps the status someone typed
+ * (not started, in progress, or completed).
  */
 export function preserveDerivedControlFields<T extends object>(
   kind: string,
   data: T,
   previous?: { state?: string; completed_on?: string | null } | null,
+  linkedTaskCount = 0,
 ): T {
   if (kind !== "goal" && kind !== "milestone") return data;
   const record = data as T & {
     state?: string;
     completed_on?: string | null;
   };
-  record.state = previous?.state ?? "not_started";
-  if (kind === "milestone")
-    record.completed_on = previous?.completed_on ?? null;
+  if (kind === "goal" || linkedTaskCount > 0) {
+    record.state = previous?.state ?? "not_started";
+    if (kind === "milestone")
+      record.completed_on = previous?.completed_on ?? null;
+    return record;
+  }
+  if (!MANUAL_MILESTONE_STATES.has(record.state ?? ""))
+    record.state = "in_progress";
+  if (record.state === "complete") {
+    record.completed_on = record.completed_on ?? previous?.completed_on ?? null;
+  } else record.completed_on = null;
   return record;
 }
 export function attachControlRollups<T extends RollupRecord>(
@@ -311,15 +403,17 @@ export function attachControlRollups<T extends RollupRecord>(
     const linked = activeTasks.filter(
       (task) => task.data.milestone_id === milestone.id,
     );
-    const status = milestoneRollupStatus(
+    const rolled = milestoneRollup(
       linked.map((task) => task.data),
       asOf,
+      { state: milestone.data.state, due_on: milestone.data.due_on },
     );
     milestones.set(milestone.id, {
-      status,
+      status: rolled.status,
+      flag: rolled.flag,
       percent: null,
-      done: linked.filter((task) => task.data.state === "complete").length,
-      total: linked.length,
+      done: rolled.done,
+      total: rolled.total,
     });
   }
   const goals = new Map<string, ControlRollup>();
@@ -328,14 +422,13 @@ export function attachControlRollups<T extends RollupRecord>(
     const linked = activeMilestones.filter(
       (milestone) => milestone.data.goal_id === goal.id,
     );
-    const statuses = linked.map(
-      (milestone) => milestones.get(milestone.id)!.status,
-    );
-    const rolled = goalRollup(statuses);
+    const parts = linked.map((milestone) => milestones.get(milestone.id)!);
+    const rolled = goalRollup(parts);
     goals.set(goal.id, {
       status: rolled.status,
+      flag: rolled.flag,
       percent: rolled.percent,
-      done: statuses.filter((status) => status === "done").length,
+      done: parts.filter((part) => part.status === "complete").length,
       total: linked.length,
     });
   }

@@ -13,6 +13,10 @@ export function scheduleProgress(input: {
   activities?: unknown[];
   appointments?: unknown[];
   preconTasks?: unknown[];
+  wbsTasks?: unknown[];
+  milestones?: unknown[];
+  permitMilestones?: unknown[];
+  controlRecords?: unknown[];
   today: string;
 }): {
   total: number;
