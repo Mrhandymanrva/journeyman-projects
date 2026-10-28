@@ -179,6 +179,7 @@ function joinAddress(
 function windowText(start: string | null, end: string | null): string {
   const from = (start ?? "").slice(0, 10);
   const to = (end ?? "").slice(0, 10);
+  if (from && to && to < from) return from;
   if (from && to && from !== to) return `${from} to ${to}`;
   return from || to || "";
 }
@@ -187,6 +188,8 @@ export interface ServiceTitanHandoff {
   customer_name: string | null;
   phone: string | null;
   email: string | null;
+  /** The displayed phone is a number ServiceTitan marked do-not-text. */
+  phone_do_not_text: boolean;
   service_address: string | null;
   estimate_amount: number | null;
   sold_amount: number | null;
@@ -226,6 +229,7 @@ function storedContacts(record: Record<string, unknown>) {
       memo: textOf(contact.memo) || null,
       optedOut: contact.optedOut === true,
       doNotContact: contact.doNotContact === true,
+      doNotText: contact.doNotText === true,
       phoneSettings: asRecord(contact.phoneSettings) as ServiceTitanContactSource["phoneSettings"],
     });
     return normalized ? [normalized] : [];
@@ -274,6 +278,7 @@ export function serviceTitanHandoff(input: SuggestInput): ServiceTitanHandoff {
     phone: listed
       ? picked?.phone ?? null
       : orNull(textOf(customer.phone, customer.phoneNumber)),
+    phone_do_not_text: listed ? picked?.doNotText === true : false,
     email: listed ? picked?.email ?? null : orNull(textOf(customer.email)),
     service_address: orNull(address),
     estimate_amount: input.estimateAmount,

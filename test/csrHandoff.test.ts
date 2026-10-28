@@ -155,11 +155,41 @@ describe("CSR hand-off validation", () => {
       customer_name: null,
       phone: null,
       email: null,
+      phone_do_not_text: false,
       service_address: null,
       estimate_amount: null,
       sold_amount: null,
     });
     expect(serviceTitanHandoff({ ...input, soldAmount: null, estimateAmount: null }).sold_amount).toBeNull();
+  });
+
+  it("does not render a target window whose end is before its start", () => {
+    const base = {
+      sourceCustomerName: null,
+      addressLine1: null,
+      city: null,
+      region: null,
+      postalCode: null,
+      businessUnitName: null,
+      sourceProjectSummary: null,
+      externalProjectId: null,
+      estimateAmount: null,
+      soldAmount: null,
+      linked: false,
+      snapshot: {},
+    };
+    expect(suggestHandoff({ ...base, scheduledStart: "2026-10-28", scheduledEnd: "2026-10-13" }).target_start_window).toBe(
+      "2026-10-28",
+    );
+    expect(suggestHandoff({ ...base, scheduledStart: "2026-10-13", scheduledEnd: "2026-10-28" }).target_start_window).toBe(
+      "2026-10-13 to 2026-10-28",
+    );
+    expect(suggestHandoff({ ...base, scheduledStart: "2026-10-28", scheduledEnd: "2026-10-28" }).target_start_window).toBe(
+      "2026-10-28",
+    );
+    expect(suggestHandoff({ ...base, scheduledStart: "2026-10-28T15:00:00Z", scheduledEnd: "2026-10-13" }).target_start_window).toBe(
+      "2026-10-28",
+    );
   });
 
   it("renders the form, the waiting list, and an acknowledge action", () => {

@@ -506,7 +506,7 @@ it("reads customer and location contacts with GET and picks the primary mobile a
   expect(result.customer.phone).toBe("804-555-0177");
   expect(result.customer.email).toBe("linh.nguyen@example.test");
   expect(result.customer.contactsRead).toBe(true);
-  expect(result.customer.contacts?.some((contact) => contact.value === "804-555-0111" && contact.optedOut)).toBe(true);
+  expect(result.customer.contacts?.some((contact) => contact.value === "804-555-0111" && contact.doNotText && !contact.optedOut)).toBe(true);
   expect(result.customer.contacts?.some((contact) => contact.value.trim() === "")).toBe(false);
   expect(result.location.contacts?.map((contact) => contact.value)).toEqual([
     "757-555-0101",

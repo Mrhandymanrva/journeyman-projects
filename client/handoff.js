@@ -36,12 +36,13 @@ function moneyLabel(value) {
   return number.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
 
-function readOnlyFact(key, label, value, esc, { wide = false, money = false } = {}) {
+function readOnlyFact(key, label, value, esc, { wide = false, money = false, note = "" } = {}) {
   const missing = value == null || String(value).trim() === "";
   const shown = missing ? NOT_IN_SERVICETITAN : money ? moneyLabel(value) : String(value);
+  const aside = !missing && note ? `<span class="csr-do-not-text">${esc(note)}</span>` : "";
   return `<div class="csr-readonly${wide ? " csr-wide" : ""}" data-st-field="${esc(key)}">
     <span class="csr-readonly-label">${esc(label)}</span>
-    <p class="csr-readonly-value"${missing ? ' data-missing="true"' : ""}>${esc(shown || NOT_IN_SERVICETITAN)}</p>
+    <p class="csr-readonly-value"${missing ? ' data-missing="true"' : ""}>${esc(shown || NOT_IN_SERVICETITAN)}${aside}</p>
   </div>`;
 }
 
@@ -79,7 +80,7 @@ ${gateLine}
 <form id="csr-handoff-form" class="csr-form">
   <div class="csr-grid">
     ${readOnlyFact("customer_name", "Customer name", st.customer_name, esc)}
-    ${readOnlyFact("phone", "Phone", st.phone, esc)}
+    ${readOnlyFact("phone", "Phone", st.phone, esc, { note: st.phone_do_not_text ? "Do not text" : "" })}
     ${readOnlyFact("email", "Email", st.email, esc)}
     ${readOnlyFact("service_address", "Service address", st.service_address, esc, { wide: true })}
     <label>Office<select id="csr-office"${disabled}>${options(OFFICES, fields.office || "", esc, "Choose an office")}</select></label>

@@ -39,20 +39,95 @@ describe("ServiceTitan contact mapping", () => {
 
   it("prefers the primary mobile and primary email, and skips blank, fax, and opted-out rows", () => {
     expect(customer.some((contact) => contact.value.trim() === "")).toBe(false);
-    expect(customer.find((contact) => contact.value === "804-555-0111")?.optedOut).toBe(true);
+    expect(customer.find((contact) => contact.value === "804-555-0111")).toMatchObject({
+      optedOut: false,
+      doNotText: true,
+    });
     expect(customer.find((contact) => contact.value === "old@example.test")?.optedOut).toBe(true);
     expect(pickServiceTitanContact([...customer, ...location])).toEqual({
       phone: "804-555-0177",
       email: "linh.nguyen@example.test",
+      doNotText: false,
     });
     expect(pickServiceTitanContact(location)).toEqual({
       phone: "757-555-0101",
       email: "site@example.test",
+      doNotText: false,
     });
-    expect(pickServiceTitanContact([])).toEqual({ phone: null, email: null });
-    expect(
-      pickServiceTitanContact(customer.filter((contact) => contact.optedOut && contact.type !== "Email")),
-    ).toEqual({ phone: null, email: null });
+    expect(pickServiceTitanContact([])).toEqual({ phone: null, email: null, doNotText: false });
+    const blocked = normalizeServiceTitanContact({
+      type: "Phone",
+      value: "804-555-0000",
+      doNotContact: true,
+    });
+    expect(blocked?.optedOut).toBe(true);
+    expect(pickServiceTitanContact(blocked ? [blocked] : [])).toEqual({
+      phone: null,
+      email: null,
+      doNotText: false,
+    });
+  });
+
+  it("keeps a do-not-text phone and ranks a Phone memo of cell or mobile as a mobile", () => {
+    const textOff = normalizeServiceTitanContact({
+      type: "Phone",
+      value: "804-555-0111",
+      memo: "home",
+      phoneSettings: { doNotText: true },
+    });
+    expect(textOff).toMatchObject({ optedOut: false, doNotText: true });
+    expect(pickServiceTitanContact(textOff ? [textOff] : [])).toEqual({
+      phone: "804-555-0111",
+      email: null,
+      doNotText: true,
+    });
+    const cell = normalizeServiceTitanContact({ type: "Phone", value: "804-555-0166", memo: "Cell--Tina" });
+    const writtenMobile = normalizeServiceTitanContact({ type: "Phone", value: "804-555-0188", memo: "mobile" });
+    const primaryLandline = normalizeServiceTitanContact({ type: "Phone", value: "804-555-0100", memo: "primary" });
+    const primaryMobile = normalizeServiceTitanContact({
+      type: "MobilePhone",
+      value: "804-555-0177",
+      memo: "primary",
+    });
+    expect(pickServiceTitanContact([primaryLandline, cell].filter((row) => row != null))).toEqual({
+      phone: "804-555-0166",
+      email: null,
+      doNotText: false,
+    });
+    expect(pickServiceTitanContact([writtenMobile, cell, primaryMobile].filter((row) => row != null))).toEqual({
+      phone: "804-555-0177",
+      email: null,
+      doNotText: false,
+    });
+    const view = serviceTitanHandoff({
+      sourceCustomerName: "Linh Nguyen",
+      addressLine1: null,
+      city: null,
+      region: null,
+      postalCode: null,
+      businessUnitName: null,
+      sourceProjectSummary: null,
+      scheduledStart: null,
+      scheduledEnd: null,
+      externalProjectId: null,
+      snapshot: { customer: { contacts: textOff ? [textOff] : [] } },
+      linked: true,
+      estimateAmount: null,
+      soldAmount: null,
+    });
+    expect(view.phone).toBe("804-555-0111");
+    expect(view.phone_do_not_text).toBe(true);
+    const html = csrHandoffHtml(
+      {
+        saved: false,
+        fields: {},
+        service_titan: view,
+      },
+      { esc, canSave: true },
+    );
+    expect(html).toContain("804-555-0111");
+    expect(html).toContain("Do not text");
+    expect(html).not.toContain('id="csr-phone"');
   });
 
   it("shows the picked contact read-only and still rejects a typed phone or email", () => {
