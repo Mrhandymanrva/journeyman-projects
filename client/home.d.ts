@@ -14,6 +14,12 @@ export function projectTableHtml(
   esc: (value: unknown) => string,
 ): string;
 
+export function handoffListHtml(
+  items: Array<Record<string, unknown>>,
+  esc: (value: unknown) => string,
+  canAcknowledge?: boolean,
+): string;
+
 export function dueListHtml(
   items: Array<Record<string, unknown>>,
   esc: (value: unknown) => string,

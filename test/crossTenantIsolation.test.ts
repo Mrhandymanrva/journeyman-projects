@@ -571,6 +571,33 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/projects/${f.projectId}/field-release/undo`,
     body: () => ({ note: "not this tenant" }),
   },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/handoff`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/handoff`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff`,
+    body: () => ({
+      office: "richmond",
+      lead_source: "",
+      scope_summary: "Not this tenant.",
+      handoff_project_ref: "",
+      target_start_window: "",
+      access_notes: "",
+      decision_maker_notes: "",
+      permits_likely: "",
+      submit: true,
+    }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/handoff/acknowledge`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff/acknowledge`,
+    body: () => ({}),
+  },
 
   // --- phase 2: budget ----------------------------------------------------
   {

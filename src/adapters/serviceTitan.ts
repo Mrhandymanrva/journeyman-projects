@@ -10,6 +10,12 @@ import {
 import { classifyInvoiceItem, JOB_LIST_STATUSES } from "../domain/projectFinancials.js";
 import type { EstimateRead, InvoiceHeaderRead } from "../domain/stFinancialSummary.js";
 import { isBeforeSourceFloor } from "../domain/sourceFloor.js";
+import {
+  normalizeServiceTitanContact,
+  pickServiceTitanContact,
+  type ServiceTitanContactSource,
+  type StoredServiceTitanContact,
+} from "../domain/stCustomerContacts.js";
 import type { BurdenCandidateRead, PayrollAdjustmentRow } from "../domain/stLabor.js";
 import { classifyActivityEvent } from "../domain/stLaborDiagnosticDetail.js";
 import type { ActivityEvent, PayrollPeriodFact } from "../domain/stLaborDiagnosticDetail.js";
@@ -1126,6 +1132,10 @@ export class ServiceTitanReadAdapter {
       throw new ServiceTitanReadError(
         "ST project customer/location did not match.",
       );
+    const contactRead = await this.readCustomerContacts(project.customerId, project.locationId);
+    const picked = contactRead.ok
+      ? pickServiceTitanContact([...contactRead.customerContacts, ...contactRead.locationContacts])
+      : { phone: null, email: null };
     const jobs: ServiceTitanJob[] = [];
     const warnings: string[] = [];
     // Four jobs at a time. Each GET has its own timeout and retry. A bad job
@@ -1177,14 +1187,117 @@ export class ServiceTitanReadAdapter {
       throw new ServiceTitanReadError(
         "ST project changed during the read. Refresh again.",
       );
+    warnings.push(...contactRead.warnings);
     return {
       project,
-      customer,
-      location,
+      customer: {
+        ...customer,
+        phone: contactRead.ok ? picked.phone : null,
+        email: contactRead.ok ? picked.email : null,
+        contacts: contactRead.ok ? contactRead.customerContacts : null,
+        contactsRead: contactRead.ok,
+      },
+      location: {
+        ...location,
+        contacts: contactRead.ok ? contactRead.locationContacts : null,
+      },
       jobs,
       warnings,
       observedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * GET customer and location contacts. No write. A failed read sets ok false
+   * so the caller can keep the contacts it already stored.
+   */
+  async readCustomerContacts(
+    customerId: string,
+    locationId: string,
+  ): Promise<{
+    ok: boolean;
+    customerContacts: StoredServiceTitanContact[];
+    locationContacts: StoredServiceTitanContact[];
+    warnings: string[];
+  }> {
+    if (!/^\d+$/.test(customerId) || !/^\d+$/.test(locationId)) {
+      return {
+        ok: false,
+        customerContacts: [],
+        locationContacts: [],
+        warnings: ["Customer contacts: ServiceTitan id is not numeric."],
+      };
+    }
+    const warnings: string[] = [];
+    const customer = await this.readContactPages(`customers/${customerId}/contacts`, "Customer contacts");
+    const location = await this.readContactPages(`locations/${locationId}/contacts`, "Location contacts");
+    warnings.push(...customer.warnings, ...location.warnings);
+    if (!customer.ok || !location.ok) {
+      return { ok: false, customerContacts: [], locationContacts: [], warnings };
+    }
+    return {
+      ok: true,
+      customerContacts: customer.contacts,
+      locationContacts: location.contacts,
+      warnings,
+    };
+  }
+
+  private async readContactPages(
+    resource: string,
+    label: string,
+  ): Promise<{ ok: boolean; contacts: StoredServiceTitanContact[]; warnings: string[] }> {
+    const contacts: StoredServiceTitanContact[] = [];
+    try {
+      for (let page = 1; page <= 5; page++) {
+        const raw = await this.get(
+          "crm",
+          resource,
+          new URLSearchParams({ page: String(page), pageSize: "50" }),
+        );
+        const parsed = z
+          .object({
+            data: z.array(z.object({
+              id: z.union([z.string(), z.number()]).nullish(),
+              type: z.string().nullish(),
+              value: z.string().nullish(),
+              memo: z.string().nullish(),
+              optedOut: z.boolean().nullish(),
+              doNotContact: z.boolean().nullish(),
+              doNotMail: z.boolean().nullish(),
+              phoneSettings: z
+                .object({
+                  phoneNumber: z.string().nullish(),
+                  doNotText: z.boolean().nullish(),
+                })
+                .nullish(),
+            }).passthrough()),
+            hasMore: z.boolean().optional(),
+          })
+          .safeParse(raw);
+        if (!parsed.success) {
+          return {
+            ok: false,
+            contacts: [],
+            warnings: [`${label}: unexpected ServiceTitan contact response.`],
+          };
+        }
+        for (const row of parsed.data.data) {
+          const contact = normalizeServiceTitanContact(row as ServiceTitanContactSource);
+          if (contact) contacts.push(contact);
+        }
+        if (!parsed.data.hasMore) return { ok: true, contacts, warnings: [] };
+      }
+      return {
+        ok: true,
+        contacts,
+        warnings: [`${label}: stopped after 5 pages.`],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/HTTP 404/.test(message)) return { ok: true, contacts, warnings: [] };
+      return { ok: false, contacts: [], warnings: [`${label}: ${message}`] };
+    }
   }
   async readEmployees() {
     // Role source is on user-roles, not employees. Join by every assigned role

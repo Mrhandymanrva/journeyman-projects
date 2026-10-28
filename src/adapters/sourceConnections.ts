@@ -22,6 +22,7 @@ export interface SourceConnections {
           | "grantedScopes"
           | "listProjects"
           | "readProjectDetails"
+          | "readCustomerContacts"
           | "publishRecord"
           | "recordReceipts"
           | "projectNoteReceipt"

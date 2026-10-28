@@ -6,6 +6,7 @@ import {
   bindPrecon,
   preconHtml,
 } from "./precon.js";
+import { bindCsrHandoff, csrHandoffHtml } from "./handoff.js";
 import { createHome, landingChoice, revealLinkedItem } from "./home.js";
 import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
@@ -476,7 +477,36 @@ function render(d) {
   renderDraws(d.drawData);
   workspace.render(d);
   renderPrecon(d.detail);
+  void renderCsrHandoff(current.id, p.stage);
   revealLinkedItem();
+}
+
+async function renderCsrHandoff(projectId, stage) {
+  const card = el("csr-handoff");
+  if (!card) return;
+  if (stage !== "handoff") {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const body = el("csr-handoff-body");
+  body.textContent = "Loading hand-off…";
+  try {
+    const view = await api(`/projects/${projectId}/handoff`);
+    if (!current || current.id !== projectId) return;
+    body.innerHTML = csrHandoffHtml(view, {
+      esc,
+      canSave: can("save_csr_handoff"),
+    });
+    bindCsrHandoff(body, {
+      api,
+      projectId,
+      onSaved: () => select(projectId),
+    });
+  } catch (error) {
+    if (!current || current.id !== projectId) return;
+    body.textContent = error.message;
+  }
 }
 
 function addressLine(p) {
@@ -2728,6 +2758,7 @@ const home = createHome({
   api,
   el,
   esc,
+  can,
   openProject: (id) => select(id),
 });
 

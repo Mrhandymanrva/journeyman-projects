@@ -70,6 +70,11 @@ export const CAPABILITIES = {
   // Permit office directory. Project Coordinator is project_manager.
   // Office can read the directory and cannot create or import offices.
   manage_permit_offices: ['owner', 'manager', 'project_manager'],
+  // CSR hand-off on a Handoff-stage project. Office can fill and save it.
+  // No other office permission is added.
+  save_csr_handoff: ['owner', 'manager', 'project_manager', 'office'],
+  // Project Coordinator acknowledges a submitted hand-off. In the app only.
+  acknowledge_csr_handoff: ['project_manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

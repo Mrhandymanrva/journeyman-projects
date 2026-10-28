@@ -444,10 +444,13 @@ it("reads project service address, customer and real job details atomically", as
       zip: "23220",
     },
   };
+  const noContacts = { data: [], hasMore: false };
   const { client, fetcher } = setup([
     p,
     customer,
     location,
+    noContacts,
+    noContacts,
     { ...job, projectId: 20 },
     p,
   ]);
@@ -464,6 +467,8 @@ it("reads project service address, customer and real job details atomically", as
     p,
     customer,
     location,
+    noContacts,
+    noContacts,
     { ...job, projectId: 20 },
     { ...p, jobIds: [] },
   ]);
@@ -474,6 +479,68 @@ it("reads project service address, customer and real job details atomically", as
   await expect(wrong.client.readProjectDetails("20")).rejects.toThrow(
     "did not match",
   );
+});
+
+it("reads customer and location contacts with GET and picks the primary mobile and email", async () => {
+  const fixture = JSON.parse(
+    readFileSync("test/fixtures/st-crm/customer-location-contacts.json", "utf8"),
+  ) as { customer: unknown; location: unknown };
+  const p = {
+    id: 20,
+    number: "P20",
+    name: "Nguyen",
+    customerId: 300,
+    locationId: 400,
+    jobIds: [] as number[],
+    modifiedOn: "2026-10-01T00:00:00Z",
+  };
+  const customer = { id: 300, name: "Linh Nguyen", balance: 12 };
+  const location = {
+    id: 400,
+    customerId: 300,
+    name: "Home",
+    address: { street: "3102 Parkwood Avenue", city: "Richmond", state: "VA", zip: "23221" },
+  };
+  const { client, fetcher } = setup([p, customer, location, fixture.customer, fixture.location, p]);
+  const result = await client.readProjectDetails("20");
+  expect(result.customer.phone).toBe("804-555-0177");
+  expect(result.customer.email).toBe("linh.nguyen@example.test");
+  expect(result.customer.contactsRead).toBe(true);
+  expect(result.customer.contacts?.some((contact) => contact.value === "804-555-0111" && contact.doNotText && !contact.optedOut)).toBe(true);
+  expect(result.customer.contacts?.some((contact) => contact.value.trim() === "")).toBe(false);
+  expect(result.location.contacts?.map((contact) => contact.value)).toEqual([
+    "757-555-0101",
+    "site@example.test",
+  ]);
+  expect(result.customer).not.toHaveProperty("balance");
+  const contactCalls = fetcher.mock.calls.filter((call) => String(call[0]).includes("/contacts"));
+  expect(contactCalls.map((call) => new URL(String(call[0])).pathname)).toEqual([
+    "/crm/v2/tenant/10/customers/300/contacts",
+    "/crm/v2/tenant/10/locations/400/contacts",
+  ]);
+  expect(contactCalls.every((call) => call[1]?.method === "GET")).toBe(true);
+  const apiCalls = fetcher.mock.calls.filter((call) => /\/(crm|jpm)\//.test(String(call[0])));
+  expect(apiCalls.every((call) => call[1]?.method === "GET")).toBe(true);
+  expect(apiCalls.some((call) => ["POST", "PUT", "PATCH", "DELETE"].includes(String(call[1]?.method)))).toBe(false);
+
+  const missing = setup([p, customer, location, { data: [], hasMore: false }, { data: [], hasMore: false }, p]);
+  const none = await missing.client.readProjectDetails("20");
+  expect(none.customer.contactsRead).toBe(true);
+  expect(none.customer.phone).toBeNull();
+  expect(none.customer.email).toBeNull();
+
+  const failed = setup([
+    p,
+    customer,
+    location,
+    new Response("no", { status: 500 }),
+    { data: [], hasMore: false },
+    p,
+  ]);
+  const kept = await failed.client.readProjectDetails("20");
+  expect(kept.customer.contactsRead).toBe(false);
+  expect(kept.warnings.join(" ")).toMatch(/Customer contacts/);
+  expect(kept.project.id).toBe("20");
 });
 
 describe("job timesheets", () => {
@@ -1160,7 +1227,7 @@ describe("gross pay and job walks that must not abort an add", () => {
       name: "8 Center Street",
       address: { street: "8 Center Street", city: "Newport News", state: "VA", zip: "23601" },
     };
-    const pages: unknown[] = [project, customer, location];
+    const pages: unknown[] = [project, customer, location, { data: [], hasMore: false }, { data: [], hasMore: false }];
     for (const id of ids) {
       if (id === 1010) {
         pages.push(new Response("no", { status: 500 }));
