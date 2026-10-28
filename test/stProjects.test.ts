@@ -6,8 +6,28 @@ import {
   type Harness,
   type TenantFixture,
 } from "./support/harness.js";
-import type { SourceConnections } from "../src/adapters/sourceConnections.js";
+import type { ServiceTitanReadAdapter } from "../src/adapters/serviceTitan.js";
 import { ServiceTitanReadError } from "../src/adapters/serviceTitan.js";
+import type { SourceConnections } from "../src/adapters/sourceConnections.js";
+import type { StoredServiceTitanContact } from "../src/domain/stCustomerContacts.js";
+
+type ReadDetails = Awaited<ReturnType<ServiceTitanReadAdapter["readProjectDetails"]>>;
+/** Contact row stored on a project snapshot. doNotText is optional here so a fixture can omit it. */
+type FixtureContact = Omit<StoredServiceTitanContact, "doNotText"> & { doNotText?: boolean };
+type SnapshotCustomer = Omit<ReadDetails["customer"], "contacts" | "phone" | "email" | "contactsRead"> & {
+  phone?: ReadDetails["customer"]["phone"];
+  email?: ReadDetails["customer"]["email"];
+  contacts?: FixtureContact[] | null;
+  contactsRead?: ReadDetails["customer"]["contactsRead"];
+};
+type SnapshotLocation = Omit<ReadDetails["location"], "contacts"> & {
+  contacts?: FixtureContact[] | null;
+};
+type SnapshotDetails = Omit<ReadDetails, "customer" | "location" | "warnings"> & {
+  customer: SnapshotCustomer;
+  location: SnapshotLocation;
+  warnings?: ReadDetails["warnings"];
+};
 let h: Harness,
   t: TenantFixture,
   other: TenantFixture,
@@ -31,7 +51,7 @@ const st = {
   targetCompletionDate: "2026-10-10",
 };
 const owner = () => h.as(t.staff.owner!.token);
-const snapshot = () => ({
+const snapshot = (): SnapshotDetails => ({
   project: st,
   customer: { id: "300", name: "ST Customer" },
   location: {
