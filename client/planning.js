@@ -45,7 +45,33 @@ export function createPlanning({
     "beforebegin",
     '<p class="hint" id="planning-st-status" role="status"></p>',
   );
-  el("planning-st-refresh").addEventListener("click", () => void lookahead());
+  el("planning-st-refresh").addEventListener("click", () => void refreshStJobs());
+  let refreshing = false;
+  async function refreshStJobs() {
+    if (refreshing) return;
+    const project = current();
+    if (!project?.id || !can("refresh_labor")) {
+      await lookahead();
+      return;
+    }
+    refreshing = true;
+    const button = el("planning-st-refresh");
+    button.disabled = true;
+    el("planning-st-status").textContent = "Reading this project's ServiceTitan appointments…";
+    try {
+      await api("/projects/" + project.id + "/plan-appointments/refresh", {
+        method: "POST",
+        body: "{}",
+      });
+    } catch (error) {
+      el("planning-st-status").textContent = error.message;
+    }
+    refreshing = false;
+    await lookahead();
+    setTimeout(() => {
+      if (el("planning-st-refresh")) el("planning-st-refresh").disabled = false;
+    }, 3000);
+  }
   let generation = 0;
   const day = () => {
     const d = new Date();
@@ -130,13 +156,23 @@ export function createPlanning({
       if (stResult.status === "fulfilled") {
         source = stResult.value;
         stCache.set(key, source);
-        el("planning-st-status").textContent = !source.configured
-          ? "ServiceTitan is not configured for this account."
-          : !source.linkedProjects
-            ? "Connect this project to ServiceTitan to include technician jobs."
-            : source.rows.length +
-              " ST appointments · Times shown in America/New_York · Refreshed " +
-              new Date(source.observedAt).toLocaleTimeString();
+        const status = el("planning-st-status");
+        status.textContent = source.message
+          ? source.message
+          : !source.configured
+            ? "ServiceTitan is not configured for this account."
+            : !source.linkedProjects
+              ? "Connect this project to ServiceTitan to include technician jobs."
+              : source.rows.length +
+                " ST appointments · Times shown in America/New_York · last read " +
+                (source.appointmentsReadAt
+                  ? new Date(source.appointmentsReadAt).toLocaleString()
+                  : "not yet");
+        const warn =
+          Number(source.skippedAppointments) > 0 ||
+          (Array.isArray(source.failedJobs) && source.failedJobs.length > 0) ||
+          source.readError;
+        status.className = warn ? "hint warn" : "hint";
       } else {
         source = stCache.get(key);
         el("planning-st-status").textContent =

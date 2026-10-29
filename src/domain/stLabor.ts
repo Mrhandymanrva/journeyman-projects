@@ -478,6 +478,8 @@ export interface BurdenCandidateRead {
       arrivalWindowEnd: string | null;
       status: string | null;
     }>;
+    /** Rows dropped by the same format check the plan uses. */
+    skipped?: number;
     note: string | null;
   };
   assignments: {

@@ -403,7 +403,8 @@ it("keeps a manual field start, and a cleared override can fill from ServiceTita
   expect(refresh.status).toBe(200);
   expect(refresh.body.data.field_start.date).toBe("2026-12-15");
   expect(refresh.body.data.field_start.source).toBe("manual");
-  expect(readJob.mock.calls.length).toBe(calls);
+  // Field start stays manual and is not re-read. The link refresh still stores appointments.
+  expect(readJob.mock.calls.length).toBe(calls + 1);
 
   const cleared = await h
     .as(t.staff.manager!.token)

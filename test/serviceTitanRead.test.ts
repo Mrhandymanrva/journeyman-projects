@@ -146,6 +146,42 @@ describe("read-only ServiceTitan client", () => {
       () => new ServiceTitanReadAdapter({ ...config, tenantId: "../other" }),
     ).toThrow("settings");
   });
+  it("accepts an appointment that omits isConfirmed and modifiedOn and counts a record that is not an appointment", async () => {
+    const loose = { ...appointment };
+    delete (loose as { isConfirmed?: boolean }).isConfirmed;
+    delete (loose as { modifiedOn?: string }).modifiedOn;
+    const { client } = setup([
+      job,
+      {
+        data: [
+          loose,
+          { id: "not-a-number", jobId: 1, start: "nope" },
+          { ...appointment, id: 8, start: "2020-01-01T12:00:00Z" },
+        ],
+        hasMore: false,
+      },
+      { data: [], hasMore: false },
+    ]);
+    const result = await client.readJob("1");
+    expect(result.appointments.map((row) => row.id)).toEqual(["4"]);
+    expect(result.appointments[0]?.isConfirmed).toBeUndefined();
+    expect(result.skippedAppointments).toBe(1);
+    expect(result.appointments.some((row) => row.start.startsWith("2020-"))).toBe(false);
+  });
+  it("keeps a current appointment that is after the source floor", async () => {
+    const { client } = setup([
+      job,
+      {
+        data: [{ ...appointment, id: 9, start: "2026-10-29T13:00:00Z", end: "2026-10-29T17:00:00Z" }],
+        hasMore: false,
+      },
+      { data: [], hasMore: false },
+    ]);
+    const result = await client.readJob("1");
+    expect(result.appointments).toHaveLength(1);
+    expect(result.appointments[0]?.start).toBe("2026-10-29T13:00:00Z");
+    expect(result.skippedAppointments).toBe(0);
+  });
   it("refuses an inverted appointment window", async () => {
     const { client } = setup([
       job,

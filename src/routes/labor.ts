@@ -170,7 +170,7 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
       },
       async (prepared) => {
         const laborCode = await resolveStLaborCode(prepared.source.client);
-        await refreshLinkedProject(
+        const refreshed = await refreshLinkedProject(
           deps.database,
           prepared.source,
           prepared.tenantId,
@@ -179,12 +179,27 @@ export function laborRoutes(deps: StaffRouterDeps, sources: SourceConnections): 
           laborCode,
           "manual",
         );
-        return prepared.source.client;
+        return { client: prepared.source.client, refreshed };
       },
-      async (ctx, prepared, client) => {
+      async (ctx, prepared, result) => {
         requireCapability(ctx.staff.role, "refresh_labor");
         await loadVisibleProject(ctx, prepared.projectId, "id");
-        sendData(ctx.res, await presentLabor(ctx, prepared.projectId, client));
+        const labor = await presentLabor(ctx, prepared.projectId, result.client);
+        const plan = result.refreshed.planAppointments;
+        sendData(ctx.res, {
+          ...labor,
+          warnings: result.refreshed.warnings,
+          plan_appointments: plan
+            ? {
+                stored: plan.stored,
+                skipped: plan.skipped,
+                failed_jobs: plan.failedJobs,
+                warnings: plan.warnings,
+                read_at: plan.readAt,
+                error: plan.error,
+              }
+            : null,
+        });
       },
     ),
   );

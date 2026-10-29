@@ -120,7 +120,14 @@ const jobSchema = z.object({
 const stInstant = z.string().refine((value) => Number.isFinite(Date.parse(value)), {
   message: "Invalid date",
 });
-const appointmentSchema = z.object({
+/**
+ * Fields the plan Gantt stores: id, job, number, start, end, status, active.
+ * isConfirmed and modifiedOn are not shown on the Gantt. They stay on the
+ * record when ServiceTitan sends them, and a payload that omits them is still
+ * a real appointment. Every other required field stays required, so a payload
+ * that already passed this check still parses to the same values.
+ */
+export const planAppointmentSchema = z.object({
   arrivalWindowStart: z.string().nullish(),
   arrivalWindowEnd: z.string().nullish(),
   id: sourceId,
@@ -130,9 +137,25 @@ const appointmentSchema = z.object({
   end: stInstant,
   status: z.string(),
   active: z.boolean(),
-  isConfirmed: z.boolean(),
-  modifiedOn: z.string(),
+  isConfirmed: z.boolean().nullish(),
+  modifiedOn: z.string().nullish(),
 });
+const appointmentSchema = planAppointmentSchema;
+
+export function planAppointmentSkipReason(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.length ? issue.path.join(".") : "record"}: ${issue.message}`)
+    .join("; ");
+}
+
+/** Shared by the plan reader and the labor diagnostic. A failure is a skipped record, not a dropped page. */
+export function parsePlanAppointment(
+  raw: unknown,
+): { ok: true; appointment: ServiceTitanAppointment } | { ok: false; reason: string } {
+  const parsed = planAppointmentSchema.safeParse(raw);
+  if (!parsed.success) return { ok: false, reason: planAppointmentSkipReason(parsed.error) };
+  return { ok: true, appointment: parsed.data };
+}
 const assignmentSchema = z.object({
   id: sourceId,
   jobId: sourceId,
@@ -481,6 +504,7 @@ export class ServiceTitanReadAdapter {
     resource: string,
     schema: z.ZodType<T, z.ZodTypeDef, any>,
     jobId: string,
+    skipped?: { count: number },
   ): Promise<T[]> {
     const rows: T[] = [];
     for (let page = 1; page <= 100; page++) {
@@ -502,9 +526,23 @@ export class ServiceTitanReadAdapter {
           `Unexpected ServiceTitan ${resource} response.`,
         );
       for (const row of result.data.data) {
-        if (row == null) continue;
+        if (row == null) {
+          if (skipped) {
+            skipped.count += 1;
+            console.warn(`ServiceTitan ${resource} record skipped: empty record`);
+          }
+          continue;
+        }
         const parsed = schema.safeParse(row);
-        if (!parsed.success) continue;
+        if (!parsed.success) {
+          if (skipped) {
+            skipped.count += 1;
+            console.warn(
+              `ServiceTitan ${resource} record skipped: ${planAppointmentSkipReason(parsed.error)}`,
+            );
+          }
+          continue;
+        }
         rows.push(parsed.data);
       }
       if (!result.data.hasMore) return rows;
@@ -1495,6 +1533,8 @@ export class ServiceTitanReadAdapter {
     appointments: ServiceTitanAppointment[];
     assignments: ServiceTitanAssignment[];
     observedAt: string;
+    /** Appointment rows dropped by the shared format check. Assignments are not included. */
+    skippedAppointments?: number;
   }> {
     if (!/^\d+$/.test(jobId))
       throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
@@ -1503,11 +1543,13 @@ export class ServiceTitanReadAdapter {
       throw new ServiceTitanReadError(
         "ServiceTitan returned an unexpected job.",
       );
+    const skippedAppointments = { count: 0 };
     const appointments = await this.pages(
       "jpm",
       "appointments",
       appointmentSchema,
       jobId,
+      skippedAppointments,
     );
     const assignments = await this.pages(
       "dispatch",
@@ -1536,6 +1578,7 @@ export class ServiceTitanReadAdapter {
       appointments: appointments.filter((row) => !isBeforeSourceFloor(row.start)),
       assignments,
       observedAt: new Date().toISOString(),
+      skippedAppointments: skippedAppointments.count,
     };
   }
 
@@ -1558,7 +1601,14 @@ export class ServiceTitanReadAdapter {
         throw new ServiceTitanReadError("ServiceTitan returned an unexpected job.");
       job = parsed.data;
     }
-    const appointments = await this.pages("jpm", "appointments", appointmentSchema, jobId);
+    const skippedAppointments = { count: 0 };
+    const appointments = await this.pages(
+      "jpm",
+      "appointments",
+      appointmentSchema,
+      jobId,
+      skippedAppointments,
+    );
     const assignments = await this.pages("dispatch", "appointment-assignments", assignmentSchema, jobId);
     return {
       job,
@@ -2277,21 +2327,13 @@ export class ServiceTitanReadAdapter {
     const assignments: BurdenCandidateRead["assignments"]["assignments"] = [];
     if (jobIds.length === 0) {
       return {
-        appointments: { available: true, endpoint: appointmentEndpoint, appointments, note: "No jobs to query." },
+        appointments: { available: true, endpoint: appointmentEndpoint, appointments, skipped: 0, note: "No jobs to query." },
         assignments: { available: true, endpoint: assignmentEndpoint, assignments, note: "No jobs to query." },
       };
     }
     let appointmentDenied = false;
     let assignmentDenied = false;
-    const appointmentSchema = z.object({
-      id: sourceId,
-      jobId: sourceId,
-      start: z.string(),
-      end: z.string(),
-      arrivalWindowStart: z.string().nullish(),
-      arrivalWindowEnd: z.string().nullish(),
-      status: z.string().nullish(),
-    }).strip();
+    let appointmentsSkipped = 0;
     const assignmentSchema = z.object({
       appointmentId: sourceId,
       jobId: sourceId,
@@ -2314,16 +2356,20 @@ export class ServiceTitanReadAdapter {
         else if (read.appointmentsRead.status >= 200 && read.appointmentsRead.status < 300) {
           const parsed = z.object({ data: z.array(z.unknown()).optional() }).safeParse(read.appointmentsRead.body);
           for (const raw of parsed.success ? parsed.data.data ?? [] : []) {
-            const row = appointmentSchema.safeParse(raw);
-            if (!row.success) continue;
+            const row = parsePlanAppointment(raw);
+            if (!row.ok) {
+              appointmentsSkipped += 1;
+              console.warn(`ServiceTitan appointments record skipped: ${row.reason}`);
+              continue;
+            }
             appointments.push({
-              id: row.data.id,
-              jobId: row.data.jobId,
-              start: row.data.start,
-              end: row.data.end,
-              arrivalWindowStart: row.data.arrivalWindowStart ?? null,
-              arrivalWindowEnd: row.data.arrivalWindowEnd ?? null,
-              status: row.data.status ?? null,
+              id: row.appointment.id,
+              jobId: row.appointment.jobId,
+              start: row.appointment.start,
+              end: row.appointment.end,
+              arrivalWindowStart: row.appointment.arrivalWindowStart ?? null,
+              arrivalWindowEnd: row.appointment.arrivalWindowEnd ?? null,
+              status: row.appointment.status,
             });
           }
         }
@@ -2349,7 +2395,15 @@ export class ServiceTitanReadAdapter {
         available: !(appointmentDenied && appointments.length === 0),
         endpoint: appointmentEndpoint,
         appointments,
-        note: appointmentDenied ? "Some appointment reads were denied (HTTP 403)." : null,
+        skipped: appointmentsSkipped,
+        note: [
+          appointmentDenied ? "Some appointment reads were denied (HTTP 403)." : null,
+          appointmentsSkipped > 0
+            ? `${appointmentsSkipped} ST appointment record${appointmentsSkipped === 1 ? "" : "s"} skipped because they failed the format check.`
+            : null,
+        ]
+          .filter((line): line is string => !!line)
+          .join(" ") || null,
       },
       assignments: {
         available: !(assignmentDenied && assignments.length === 0),

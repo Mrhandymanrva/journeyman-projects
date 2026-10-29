@@ -80,6 +80,7 @@ const db = await PgliteDatabase.create([
   "db/056_posted_commission.sql",
   "db/057_csr_handoff.sql",
   "db/058_vendor_bill_po_sync.sql",
+  "db/059_st_plan_appointment_reads.sql",
 ]);
 
 await assertDatabaseContract(db);

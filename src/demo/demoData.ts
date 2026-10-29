@@ -459,7 +459,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
 
   const whitfield = await buildProject({
     number: 'DMO-2026-0184',
-    name: 'Whitfield — Primary Bath',
+    name: "Blanton's Plan",
     address: '4412 Grove Avenue',
     city: 'Richmond',
     unit: ids.richmond,
@@ -864,10 +864,35 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
           [
             TENANT_ID,
             whitfield,
-            JSON.stringify([{ id: 'tech-riley', name: 'Riley Cho' }]),
-          ],
-        );
-        await c.query(
+        JSON.stringify([{ id: 'tech-riley', name: 'Riley Cho' }]),
+      ],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id,
+          job_number, appointment_number, job_status, starts_at, ends_at,
+          status, active, technicians, observed_at)
+       VALUES (
+         $1, $2, '900184', 'appt-184-later', '900184', '2', 'Scheduled',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '120 days' + interval '9 hours') AT TIME ZONE 'America/New_York',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '120 days' + interval '12 hours') AT TIME ZONE 'America/New_York',
+         'Scheduled', true, $3::jsonb, now() - interval '2 hours'
+       )`,
+      [
+        TENANT_ID,
+        whitfield,
+        JSON.stringify([{ id: 'tech-casey', name: 'Casey Nguyen' }]),
+      ],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointment_reads
+         (tenant_id, project_id, read_at, skipped, failed_jobs, error)
+       VALUES ($1, $2, now() - interval '2 hours', 2, '[]'::jsonb, NULL)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
           `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
            VALUES ($1,$2,'task',$3::jsonb)`,
           [
