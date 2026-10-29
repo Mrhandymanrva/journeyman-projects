@@ -7,12 +7,31 @@ SET search_path = projects, public;
 ALTER TABLE projects
   ADD COLUMN IF NOT EXISTS labor_cost_source text;
 
-ALTER TABLE projects DROP CONSTRAINT IF EXISTS projects_labor_cost_source_check;
-ALTER TABLE projects ADD CONSTRAINT projects_labor_cost_source_check
-  CHECK (
-    labor_cost_source IS NULL
-    OR labor_cost_source IN ('payroll', 'billed_labor_25pct', 'none_recent_payroll_missing')
-  );
+-- Added only when missing. provision.ts re-applies every db/ file on each
+-- boot, and 056_posted_commission.sql owns the current definition (it adds
+-- 'posted_commission'). Dropping and re-adding a narrower list here failed the
+-- deploy once a refresh had written 'posted_commission'. The list matches 056
+-- so a database that reaches this file without the constraint gets the same
+-- check 056 would leave behind.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'projects_labor_cost_source_check'
+      AND conrelid = 'projects.projects'::regclass
+  ) THEN
+    ALTER TABLE projects.projects ADD CONSTRAINT projects_labor_cost_source_check
+      CHECK (
+        labor_cost_source IS NULL
+        OR labor_cost_source IN (
+          'payroll',
+          'billed_labor_25pct',
+          'none_recent_payroll_missing',
+          'posted_commission'
+        )
+      );
+  END IF;
+END $$;
 
 COMMENT ON COLUMN projects.labor_cost_source IS
   'payroll: gross-pay TimesheetTime paid hours were found for this project. billed_labor_25pct: no matching payroll rows and the project is older than 60 days, so labor cost is 25% of billed labor plus timesheet burden. none_recent_payroll_missing: no matching payroll rows and every dated job was created within 60 days, so the 25% estimate was not applied.';
