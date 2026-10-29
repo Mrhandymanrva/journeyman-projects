@@ -507,20 +507,29 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     // Cardinal Painting is scheduled but its GL lapsed — proposed rather than
     // confirmed, because the trigger will not allow confirmed and that is the
     // behaviour being demonstrated.
-    const schedule: Array<[string, string, number, number, string]> = [
-      ['Set tile', 'tile', 0, 3, 'confirmed'],
-      ['Plumbing finish set', 'plumb', 4, 5, 'proposed'],
-      ['Interior painting', 'paint', 8, 11, 'proposed'],
-      ['Countertop template', 'counter', 6, 6, 'proposed'],
+    const schedule: Array<[string, string, number, number, string, string | null]> = [
+      ['Set tile', 'tile', 0, 3, 'confirmed', 'Waterproofing and finishes'],
+      ['Plumbing finish set', 'plumb', 4, 5, 'proposed', 'Installation and trim'],
+      ['Interior painting', 'paint', 8, 11, 'proposed', 'Installation and trim'],
+      ['Countertop template', 'counter', 6, 6, 'proposed', null],
     ];
-    for (const [title, vendorKey, startOffset, endOffset, status] of schedule) {
-      await c.query(
+    const scheduleIds = new Map<string, string>();
+    for (const [title, vendorKey, startOffset, endOffset, status, phase] of schedule) {
+      const inserted = await c.query<{ id: string }>(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4, CURRENT_DATE + $5::int, CURRENT_DATE + $6::int, $7::projects.sched_status)`,
-        [TENANT_ID, whitfield, title, vendors[vendorKey], startOffset, endOffset, status],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4, CURRENT_DATE + $5::int, CURRENT_DATE + $6::int, $7::projects.sched_status, $8)
+         RETURNING id`,
+        [TENANT_ID, whitfield, title, vendors[vendorKey], startOffset, endOffset, status, phase],
       );
+      scheduleIds.set(title, inserted.rows[0]!.id);
     }
+    await c.query(
+      `INSERT INTO projects.schedule_dependencies
+         (tenant_id, project_id, schedule_item_id, predecessor_id, lag_days)
+       VALUES ($1,$2,$3,$4,0)`,
+      [TENANT_ID, whitfield, scheduleIds.get('Plumbing finish set'), scheduleIds.get('Set tile')],
+    );
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
   await db.withTenant(TENANT_ID, (c) =>
@@ -793,13 +802,31 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     );
     const systemId = system.rows[0]?.id;
     if (systemId) {
-      await c.query(
+      const linked = await c.query<{ id: string }>(
         `INSERT INTO projects.project_job_links
            (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
          VALUES ($1,$2,$3,'900184','Whitfield field job', true)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
         [TENANT_ID, whitfield, systemId],
       );
+      const linkId =
+        linked.rows[0]?.id ??
+        (
+          await c.query<{ id: string }>(
+            `SELECT id FROM projects.project_job_links
+              WHERE project_id = $1 AND external_job_id = '900184'`,
+            [whitfield],
+          )
+        ).rows[0]?.id;
+      if (linkId) {
+        await c.query(
+          `UPDATE projects.schedule_items
+              SET job_link_id = $1
+            WHERE project_id = $2 AND title = 'Set tile'`,
+          [linkId, whitfield],
+        );
+      }
       await storeProjectAr(c, {
         tenantId: TENANT_ID,
         projectId: whitfield,
@@ -909,15 +936,15 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    for (const [title, vendorKey, s, e] of [
-      ['Electrical rough', 'elec', 20, 22],
-      ['Plumbing rough', 'plumb', 21, 23],
+    for (const [title, vendorKey, s, e, phase] of [
+      ['Electrical rough', 'elec', 20, 22, 'Rough-in'],
+      ['Plumbing rough', 'plumb', 21, 23, 'Rough-in'],
     ] as const) {
       await c.query(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'confirmed')`,
-        [TENANT_ID, okonkwo, title, vendors[vendorKey], s, e],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'confirmed',$7)`,
+        [TENANT_ID, okonkwo, title, vendors[vendorKey], s, e, phase],
       );
     }
   });
@@ -988,15 +1015,15 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    for (const [title, vendorKey, s, e] of [
-      ['Interior painting', 'paint', 6, 9],
-      ['Flooring install', 'floor', 9, 11],
+    for (const [title, vendorKey, s, e, phase] of [
+      ['Interior painting', 'paint', 6, 9, 'Waterproofing and finishes'],
+      ['Flooring install', 'floor', 9, 11, 'Installation and trim'],
     ] as const) {
       await c.query(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'proposed')`,
-        [TENANT_ID, delaney, title, vendors[vendorKey], s, e],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'proposed',$7)`,
+        [TENANT_ID, delaney, title, vendors[vendorKey], s, e, phase],
       );
     }
   });

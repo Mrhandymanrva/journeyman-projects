@@ -11,6 +11,7 @@ import { ApiError } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseBody, parseUuidParam } from "./shared.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { assignAppointmentPhases } from "../domain/planPhase.js";
 type Target = {
   id: string;
   name: string;
@@ -162,7 +163,7 @@ export function stScheduleRoutes(
                   " · " +
                   a.appointmentNumber,
                 summary: result.job.summary ?? null,
-                phase: "ServiceTitan jobs",
+                phase: null,
                 window_start: start,
                 window_end: end,
                 appointment_start: a.start,
@@ -205,6 +206,7 @@ export function stScheduleRoutes(
           "conflict",
           "Project access or ST links changed during refresh. Try again.",
         );
+      await assignAppointmentPhases(ctx.db, rows);
       sendData(ctx.res, {
         configured: !!p.c,
         linkedProjects: p.targets.length,
@@ -305,7 +307,8 @@ async function storedAppointments(
       appointment_id: row.external_appointment_id,
       appointment_number: row.appointment_number,
       title: "ST job " + row.job_number + " · " + row.appointment_number,
-      phase: "ServiceTitan jobs",
+      job_link_id: null as string | null,
+      phase: null as string | null,
       window_start: windowStart,
       window_end: windowEnd,
       appointment_start: start,
@@ -317,6 +320,7 @@ async function storedAppointments(
       read_only: true,
     }];
   });
+  await assignAppointmentPhases(ctx.db, visible);
   return {
     configured: true,
     linkedProjects: new Set(visible.map((row) => row.project_id)).size,
