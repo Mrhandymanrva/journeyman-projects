@@ -290,7 +290,7 @@ export async function readPlanLinkStatus(
     `SELECT p.id::text AS id
        FROM projects.projects p
       WHERE ($1::uuid IS NULL OR p.id = $1)
-        AND ($2::uuid IS NULL OR p.business_unit_id = $2)
+        AND ($2::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id = $2)
         AND (
           EXISTS (
             SELECT 1 FROM projects.st_project_connections s

@@ -74,7 +74,7 @@ export function stScheduleRoutes(
     );
     const targets = (
       await ctx.db.query<Target>(
-        `SELECT p.id,p.name,p.project_number,s.external_project_id,s.connection_key FROM projects.projects p LEFT JOIN projects.st_project_connections s ON s.project_id=p.id AND s.external_system_id=$1 WHERE ($2::uuid IS NULL OR p.id=$2) AND ($3::uuid IS NULL OR p.business_unit_id=$3) AND (s.project_id IS NOT NULL OR EXISTS(SELECT 1 FROM projects.project_job_links j WHERE j.project_id=p.id AND j.external_system_id=$1 AND j.source_active)) ORDER BY p.id`,
+        `SELECT p.id,p.name,p.project_number,s.external_project_id,s.connection_key FROM projects.projects p LEFT JOIN projects.st_project_connections s ON s.project_id=p.id AND s.external_system_id=$1 WHERE ($2::uuid IS NULL OR p.id=$2) AND ($3::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id=$3) AND (s.project_id IS NOT NULL OR EXISTS(SELECT 1 FROM projects.project_job_links j WHERE j.project_id=p.id AND j.external_system_id=$1 AND j.source_active)) ORDER BY p.id`,
         [c.externalSystemId, id, unit],
       )
     ).rows;
@@ -359,7 +359,7 @@ async function storedAppointments(
         AND a.status !~* 'cancel'
         AND a.job_status !~* 'cancel'
         AND ($1::uuid IS NULL OR a.project_id = $1)
-        AND ($2::uuid IS NULL OR p.business_unit_id = $2)
+        AND ($2::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id = $2)
       ORDER BY a.starts_at`,
     [projectId, unit],
   );

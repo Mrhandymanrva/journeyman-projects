@@ -120,6 +120,110 @@ export function portfolioProjectRoutes(
       .catch(next);
   });
 
+  /**
+   * Read-only diagnostic for the plan's stored ServiceTitan appointments.
+   * Token feed only. No ServiceTitan call and no write. Shows what the Plan
+   * GET can see: stored rows, their date span, the last read stamp, the last
+   * refresh's failures/warnings, and the link rows the refresh uses.
+   */
+  router.get("/projects/:id/plan-appointments", (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) {
+      next(new ApiError("not_found", "Project not found."));
+      return;
+    }
+    database
+      .withTenant(config.tenantId, async (db) => {
+        const project = (await db.query<{ id: string; business_unit_id: string | null }>(
+          `SELECT id::text AS id, business_unit_id::text AS business_unit_id FROM projects.projects WHERE id = $1`,
+          [id.data],
+        )).rows[0];
+        if (!project) throw new ApiError("not_found", "Project not found.");
+        const stored = (await db.query<Record<string, unknown>>(
+          `SELECT count(*)::int AS total,
+                  count(*) FILTER (WHERE active AND status !~* 'cancel' AND job_status !~* 'cancel')::int AS plan_eligible,
+                  count(DISTINCT external_job_id)::int AS jobs,
+                  min(starts_at) AS first_start,
+                  max(starts_at) AS last_start,
+                  max(observed_at) AS last_observed_at
+             FROM projects.st_plan_appointments WHERE project_id = $1`,
+          [id.data],
+        )).rows[0];
+        const read = (await db.query<Record<string, unknown>>(
+          `SELECT read_at, skipped, failed_jobs, error
+             FROM projects.st_plan_appointment_reads WHERE project_id = $1`,
+          [id.data],
+        )).rows[0] ?? null;
+        const connection = (await db.query<Record<string, unknown>>(
+          `SELECT external_project_id, observed_at FROM projects.st_project_connections WHERE project_id = $1`,
+          [id.data],
+        )).rows;
+        const links = (await db.query<Record<string, unknown>>(
+          `SELECT count(*)::int AS total, count(*) FILTER (WHERE source_active)::int AS active
+             FROM projects.project_job_links WHERE project_id = $1`,
+          [id.data],
+        )).rows[0];
+        const reconciliation = (await db.query<Record<string, unknown>>(
+          `SELECT observed_at, error FROM projects.st_financial_reconciliation WHERE project_id = $1`,
+          [id.data],
+        )).rows[0] ?? null;
+        // Ids, dates, statuses, and job numbers only. Technician names live in
+        // technicians and are not selected. This table has no customer address.
+        const rows = (await db.query<{
+          external_job_id: string;
+          external_appointment_id: string;
+          job_number: string;
+          appointment_number: string;
+          starts_at: Date;
+          ends_at: Date;
+          status: string;
+          job_status: string;
+          active: boolean;
+          observed_at: Date;
+        }>(
+          `SELECT external_job_id, external_appointment_id, job_number, appointment_number,
+                  starts_at, ends_at, status, job_status, active, observed_at
+             FROM projects.st_plan_appointments WHERE project_id = $1 ORDER BY starts_at`,
+          [id.data],
+        )).rows.map((row) => ({
+          external_job_id: row.external_job_id,
+          external_appointment_id: row.external_appointment_id,
+          job_number: row.job_number,
+          appointment_number: row.appointment_number,
+          starts_at: row.starts_at,
+          ends_at: row.ends_at,
+          status: row.status,
+          job_status: row.job_status,
+          active: row.active,
+          observed_at: row.observed_at,
+        }));
+        return { project, stored, read, connection, links, reconciliation, rows };
+      })
+      .then((r) => sendData(res, {
+        project_id: r.project.id,
+        business_unit_id: r.project.business_unit_id,
+        st_project_connections: r.connection.map((row) => ({
+          external_project_id: row.external_project_id,
+          observed_at: row.observed_at,
+        })),
+        job_links: r.links,
+        stored: r.stored,
+        last_read: r.read
+          ? {
+              read_at: r.read.read_at,
+              skipped: r.read.skipped,
+              failed_jobs: r.read.failed_jobs,
+              error: r.read.error,
+            }
+          : null,
+        last_source_warnings: r.reconciliation
+          ? { observed_at: r.reconciliation.observed_at, error: r.reconciliation.error }
+          : null,
+        rows: r.rows,
+      }))
+      .catch(next);
+  });
+
   router.get("/projects/:id/snapshots", (req, res, next) => {
     const id = z.string().uuid().safeParse(req.params.id);
     if (!id.success) {

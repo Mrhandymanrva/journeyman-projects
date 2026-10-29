@@ -22,8 +22,10 @@ import { bearerMatchesToken, portfolioRoutes } from "./routes/portfolio.js";
 import { stLaborDiagnosticRoutes } from "./routes/stLaborDiagnostic.js";
 import type { PortfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import type { SourceConnections } from "./adapters/sourceConnections.js";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { clientBuildId } from "./http/buildId.js";
 import express, { type Express } from "express";
 import type { Database } from "./db/database.js";
 import { errorHandler } from "./http/envelope.js";
@@ -166,7 +168,8 @@ export function createApp(opts: AppOptions): Express {
   if (opts.sso) app.use(ssoRoutes(opts.database, opts.sso));
 
   app.get("/health", (_req, res) => {
-    res.json({ data: { status: "ok" } });
+    res.set("Cache-Control", "no-store");
+    res.json({ data: { status: "ok", build_id: clientBuildId() } });
   });
 
   // A database ping for Railway restarts. Failure is a 503 and is not alerted.
@@ -261,6 +264,16 @@ export function createApp(opts: AppOptions): Express {
     // Static, no build step. The console is the reference mock ported to live
     // data — vanilla HTML and CSS, which is what it was handed over as.
     const clientDir = path.resolve(here, "../client");
+    const consolePage = () => {
+      const html = readFileSync(path.join(clientDir, "index.html"), "utf8");
+      const meta = `<meta name="app-build" content="${clientBuildId()}">`;
+      if (html.includes('name="app-build"')) return html;
+      return html.replace('<meta charset="utf-8">', `<meta charset="utf-8">\n${meta}`);
+    };
+    app.get(["/", "/index.html"], (_req, res) => {
+      res.set("Cache-Control", "no-cache");
+      res.type("html").send(consolePage());
+    });
     app.use(
       "/pdfjs",
       express.static(path.resolve(here, "../node_modules/pdfjs-dist"), {

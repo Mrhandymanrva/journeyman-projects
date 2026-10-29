@@ -58,16 +58,26 @@ export function createPlanning({
     const button = el("planning-st-refresh");
     button.disabled = true;
     el("planning-st-status").textContent = "Reading this project's ServiceTitan appointments…";
+    let note = "";
     try {
-      await api("/projects/" + project.id + "/plan-appointments/refresh", {
+      const result = await api("/projects/" + project.id + "/plan-appointments/refresh", {
         method: "POST",
         body: "{}",
       });
+      note =
+        "Refresh read " + Number(result?.stored ?? 0) + " ST appointments" +
+        (result?.error ? ". " + result.error : "") + ".";
     } catch (error) {
-      el("planning-st-status").textContent = error.message;
+      note = "Refresh failed: " + error.message;
     }
     refreshing = false;
     await lookahead();
+    // lookahead() rewrites the status line; keep the refresh outcome visible.
+    const status = el("planning-st-status");
+    if (status && note) {
+      status.textContent = note + " " + status.textContent;
+      if (note.startsWith("Refresh failed")) status.className = "hint warn";
+    }
     setTimeout(() => {
       if (el("planning-st-refresh")) el("planning-st-refresh").disabled = false;
     }, 3000);
