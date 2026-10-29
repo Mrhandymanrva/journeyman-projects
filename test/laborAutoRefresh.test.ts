@@ -46,9 +46,22 @@ const connection: NonNullable<SourceConnections["serviceTitan"]> = {
         ],
       };
     },
-    readJob: async () => {
+    readJob: async (jobId: string) => {
       methods.push("GET");
-      throw new Error("appointment fallback should not run");
+      return {
+        job: {
+          id: jobId,
+          jobNumber: jobId,
+          customerId: "1",
+          locationId: "1",
+          jobStatus: "Scheduled",
+          modifiedOn: WHEN,
+        },
+        appointments: [],
+        assignments: [],
+        observedAt: WHEN,
+        skippedAppointments: 0,
+      };
     },
     readJobTimesheets: async (jobId: string) => {
       methods.push("GET");

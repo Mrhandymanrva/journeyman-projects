@@ -38,6 +38,13 @@ import { applyResolvedLaborCode, resolveStLaborCode, type StLaborResolve } from 
 import { AR_READ_REFUSED, storeProjectAr, type ArRead } from "../domain/arMatch.js";
 import type { ServiceTitanReadAdapter } from "../adapters/serviceTitan.js";
 import { applyInboundStatus } from "../domain/stStatusSync.js";
+import {
+  collectPlanAppointments,
+  collectedFromReads,
+  refreshProjectPlanAppointments,
+  type CollectedPlanAppointments,
+  type PlanJobRead,
+} from "../domain/planAppointments.js";
 import { statusSnapshotFromProject, type StStatusCatalog } from "../domain/stStatusMap.js";
 import {
   pickFieldStart,
@@ -299,7 +306,11 @@ export function stProjectRoutes(
           p.manual,
           p.modifiedSince,
         );
-        return { ...read, catalog: await statusCatalog(p.c.client) };
+        return {
+          ...read,
+          catalog: await statusCatalog(p.c.client),
+          planAppointments: read.planAppointments,
+        };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "create_project");
@@ -345,6 +356,7 @@ export function stProjectRoutes(
           id = created.id as string;
         }
         await applySource(ctx, id, c, result.details, result.catalog);
+        await recordPlanAppointments(ctx, id, result.details.jobs, result.planAppointments, result.warnings);
         await storeReadLabor(ctx, id, result.labor, result.directory, result.laborCode);
         await storeReadAr(ctx, id, c.externalSystemId, result.details.jobs.map((job) => job.id), result.ar);
         if (!p.manual && result.fieldStartRead !== "failed") {
@@ -449,7 +461,11 @@ export function stProjectRoutes(
           p.manual,
           p.modifiedSince,
         );
-        return { ...read, catalog: await statusCatalog(p.c.client) };
+        return {
+          ...read,
+          catalog: await statusCatalog(p.c.client),
+          planAppointments: read.planAppointments,
+        };
       },
       async (ctx, p, result) => {
         requireCapability(ctx.staff.role, "advance_stage");
@@ -461,6 +477,7 @@ export function stProjectRoutes(
             "ServiceTitan connection changed; refresh before linking.",
           );
         await applySource(ctx, p.id, c, result.details, result.catalog);
+        await recordPlanAppointments(ctx, p.id, result.details.jobs, result.planAppointments, result.warnings);
         await storeReadLabor(ctx, p.id, result.labor, result.directory, result.laborCode);
         await storeReadAr(
           ctx,
@@ -656,6 +673,31 @@ function sourceText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+async function recordPlanAppointments(
+  ctx: StaffContext,
+  projectId: string,
+  jobs: readonly { id: string }[],
+  collected: CollectedPlanAppointments,
+  warnings: string[],
+): Promise<void> {
+  await ctx.db.query("SAVEPOINT plan_appointments");
+  try {
+    const saved = await refreshProjectPlanAppointments(ctx.db, {
+      tenantId: ctx.staff.tenantId,
+      projectId,
+      jobs: jobs.map((job) => ({ external_job_id: job.id })),
+      collected,
+    });
+    await ctx.db.query("RELEASE SAVEPOINT plan_appointments");
+    for (const warning of saved.warnings) {
+      if (!warnings.includes(warning)) warnings.push(warning);
+    }
+  } catch (err) {
+    await ctx.db.query("ROLLBACK TO SAVEPOINT plan_appointments");
+    warnings.push(`Appointments: ${sourceText(err)}`);
+  }
+}
+
 function laborWindow(jobs: readonly { createdOn?: string | null }[]): { start: string; missingCreatedOn: boolean } {
   let earliest: number | null = null;
   for (const job of jobs) {
@@ -686,10 +728,14 @@ async function readOptionalSources(
   laborCode: StLaborResolve;
   ar: ArRead | null;
   warnings: string[];
+  planAppointments: CollectedPlanAppointments;
 }> {
   const details = await client.readProjectDetails!(externalProjectId);
   const warnings = [...(details.warnings ?? [])];
   const jobIds = details.jobs.map((job) => job.id);
+  const planJobs = jobIds.map((id) => ({ external_job_id: id }));
+  const planReads = new Map<string, PlanJobRead>();
+  const planFailed: { jobId: string; message: string }[] = [];
   let fieldStart: FieldStartPick | null = null;
   let fieldStartRead: "ok" | "failed" = "ok";
   if (!manual) {
@@ -699,10 +745,15 @@ async function readOptionalSources(
         jobIds,
         async (id) => {
           try {
-            if (client.readJobSchedule) return await client.readJobSchedule(id, knownJobs.get(id) ?? null);
-            return await client.readJob(id);
+            const read = client.readJobSchedule
+              ? await client.readJobSchedule(id, knownJobs.get(id) ?? null)
+              : await client.readJob(id);
+            planReads.set(id, read);
+            return read;
           } catch (err) {
-            warnings.push(`Job ${id} appointments: ${sourceText(err)}`);
+            const message = sourceText(err);
+            warnings.push(`Job ${id} appointments: ${message}`);
+            planFailed.push({ jobId: id, message });
             return {
               job: { id, jobStatus: "Unknown", projectId: details.project.id },
               appointments: [],
@@ -717,6 +768,21 @@ async function readOptionalSources(
       warnings.push(`Field start: ${sourceText(err)}`);
     }
   }
+  let planAppointments: CollectedPlanAppointments;
+  try {
+    planAppointments = manual
+      ? await collectPlanAppointments((jobId) => client.readJob(jobId), planJobs)
+      : collectedFromReads(planJobs, planReads, planFailed);
+  } catch (err) {
+    const message = sourceText(err);
+    planAppointments = {
+      appointments: [],
+      skipped: 0,
+      failedJobs: planJobs.map((job) => ({ jobId: job.external_job_id, message })),
+      warnings: [`Appointments: ${message}`],
+    };
+  }
+  warnings.push(...planAppointments.warnings.filter((warning) => !warnings.includes(warning)));
   let labor: LaborJobResult[] | null = null;
   try {
     const window = laborWindow(details.jobs);
@@ -764,7 +830,7 @@ async function readOptionalSources(
   } catch (err) {
     warnings.push(`Invoices: ${sourceText(err)}`);
   }
-  return { details, fieldStart, fieldStartRead, labor, directory, laborCode, ar, warnings };
+  return { details, fieldStart, fieldStartRead, labor, directory, laborCode, ar, warnings, planAppointments };
 }
 
 async function recordSourceWarnings(ctx: StaffContext, projectId: string, warnings: string[]): Promise<void> {
