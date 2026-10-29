@@ -6,6 +6,11 @@ import {
   type FinancialsDashboard,
 } from "./financialsDashboard.js";
 import { loadBudget } from "./projectBudget.js";
+import {
+  countQualifyingBills,
+  readBillCostByKind,
+  readUnlinkedServiceTitanMaterials,
+} from "./projectBillCost.js";
 import { roundMoney, type ProjectMoney } from "./projectFinancials.js";
 import { readStoredProjectMoney, readStoredReconciliation } from "./projectSync.js";
 import type { ServiceTitanSummaryNumbers } from "./stFinancialSummary.js";
@@ -123,11 +128,13 @@ async function loadFinancialFacts(
     [projectId],
   );
   const row = counts.rows[0];
+  const qualifyingBills = await countQualifyingBills(db, projectId);
   const observed =
     reconciliation != null ||
     Number(row?.lines ?? 0) > 0 ||
     Number(row?.orders ?? 0) > 0 ||
-    Number(row?.labor ?? 0) > 0;
+    Number(row?.labor ?? 0) > 0 ||
+    qualifyingBills > 0;
   const stored = await db.query<{
     estimates_read: boolean;
     invoices_read: boolean;
@@ -175,9 +182,24 @@ async function loadFinancialFacts(
   const materialsExpenseRead =
     serviceTitan?.materialsExpenseRead !== false || Number(row?.orders ?? 0) > 0;
   const laborBurden = serviceTitan?.laborBurden ?? money.laborBurden;
-  const materialsExpense = materialsExpenseRead ? money.materialsExpense : null;
+  // Bill cost is added here, not inside readStoredProjectMoney's raw
+  // purchase-order sum. Linked ServiceTitan totals are omitted so a bill
+  // and the purchase order it created are not both actuals. See projectBillCost.ts.
+  const bills = await readBillCostByKind(db, projectId);
+  const unlinkedServiceTitan = materialsExpenseRead
+    ? await readUnlinkedServiceTitanMaterials(db, projectId)
+    : null;
+  const materialsExpense =
+    unlinkedServiceTitan == null
+      ? bills.material > 0
+        ? bills.material
+        : null
+      : roundMoney(unlinkedServiceTitan + bills.material);
+  const subcontractorExpense = observed || bills.subcontract > 0 ? bills.subcontract : null;
   const expenses =
-    materialsExpense == null ? null : roundMoney(laborBurden + materialsExpense);
+    materialsExpense == null
+      ? null
+      : roundMoney(laborBurden + materialsExpense + (subcontractorExpense ?? 0));
   return {
     money,
     observed,
@@ -188,6 +210,7 @@ async function loadFinancialFacts(
       billed: money.billed,
       laborBurden,
       materialsExpense,
+      subcontractorExpense,
       expenses,
     },
   };

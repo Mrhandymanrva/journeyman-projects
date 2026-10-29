@@ -21,6 +21,7 @@ import {
   closeoutSavePayload,
 } from "./closeoutCard.js";
 import { financialsDashboardHtml } from "./financialsDashboard.js";
+import { bindStPoSync, stPoSyncHtml } from "./stPoSync.js";
 import {
   budgetEntryHtml,
   budgetEntryPayload,
@@ -463,6 +464,7 @@ function render(d) {
   renderStageBar(p, p.gates);
   renderGates(p);
   renderFinancialsDashboard(d.financialSummary);
+  void renderStPoSync(p.id);
   renderBudget(d.cost, d.budget);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
@@ -662,6 +664,31 @@ function renderFinancialsDashboard(summary) {
   const node = el("fin-summary");
   if (!node) return;
   node.innerHTML = financialsDashboardHtml(summary);
+}
+
+async function renderStPoSync(projectId) {
+  const host = el("st-po-sync");
+  if (!host) return;
+  if (session?.staff?.role !== "owner") {
+    host.innerHTML = "";
+    return;
+  }
+  host.innerHTML = stPoSyncHtml({ loading: true });
+  try {
+    const data = await api(`/projects/${projectId}/service-titan-purchase-orders`);
+    host.innerHTML = stPoSyncHtml({ orders: data.orders, writesEnabled: data.writes_enabled });
+    bindStPoSync(host, {
+      api,
+      onPreview: (poId) => api(`/purchase-orders/${poId}/service-titan-sync`),
+      onConfirm: (poId) =>
+        api(`/purchase-orders/${poId}/service-titan-sync`, {
+          method: "POST",
+          body: JSON.stringify({ confirm: true }),
+        }),
+    });
+  } catch (err) {
+    host.innerHTML = stPoSyncHtml({ error: err.message || "ServiceTitan sync could not be loaded." });
+  }
 }
 
 function renderBudgetEntry(budget) {

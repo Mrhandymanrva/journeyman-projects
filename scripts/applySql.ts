@@ -68,6 +68,7 @@ const FILES = [
   path.join(repoRoot, "db/055_st_labor_gap.sql"),
   path.join(repoRoot, "db/056_posted_commission.sql"),
   path.join(repoRoot, "db/057_csr_handoff.sql"),
+  path.join(repoRoot, "db/058_vendor_bill_po_sync.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');

@@ -27,6 +27,11 @@ export interface DashboardActuals {
   laborBurden: number;
   /** Null when purchase-order cost was not returned. Zero is a real zero. */
   materialsExpense: number | null;
+  /**
+   * Qualifying subcontract vendor bills. Zero when none have been recorded.
+   * Null only when actuals were not observed.
+   */
+  subcontractorExpense?: number | null;
   /** Null when materials expense was not returned. Labor alone is not the total. */
   expenses: number | null;
 }
@@ -79,8 +84,10 @@ export interface FinancialsDashboard {
   costAdjustments: Figure;
   actualExpense: Figure;
   materialsExpense: Figure;
+  subcontractorExpense: Figure;
   laborExpense: Figure;
   budgetedMaterials: Figure;
+  budgetedSubcontractor: Figure;
   budgetedLaborExpense: Figure;
   actualMargin: Figure;
   actualMarginPercent: Figure;
@@ -190,6 +197,10 @@ export function buildFinancialsDashboard(input: {
     actuals && actuals.materialsExpense != null
       ? reported(actuals.materialsExpense, "actuals")
       : missing();
+  const subcontractorExpense =
+    actuals && actuals.observed && actuals.subcontractorExpense != null
+      ? reported(actuals.subcontractorExpense, "actuals")
+      : missing();
   const laborExpense = actuals ? reported(actuals.laborBurden, "actuals") : missing();
 
   const contractValue = budgeted(budget ? budget.contractValue : null);
@@ -199,6 +210,7 @@ export function buildFinancialsDashboard(input: {
   const budgetedLaborExpense = budgeted(budget ? budget.labor : null);
   const budgetedLaborHours = budgeted(budget ? budget.laborHours : null);
   const budgetedMaterials = budgeted(budget ? budget.materials : null);
+  const budgetedSubcontractor = budgeted(budget ? budget.subcontractor : null);
   const billed = invoices ? reported(invoices.billed, "servicetitan") : missing();
   const openInvoices = invoices ? reported(invoices.openInvoices, "servicetitan") : missing();
   const retainage = st && st.retainage != null ? reported(st.retainage, "servicetitan") : missing();
@@ -226,8 +238,10 @@ export function buildFinancialsDashboard(input: {
     costAdjustments,
     actualExpense,
     materialsExpense,
+    subcontractorExpense,
     laborExpense,
     budgetedMaterials,
+    budgetedSubcontractor,
     budgetedLaborExpense,
     actualMargin: computed(marginDollars, "servicetitan"),
     actualMarginPercent: computed(

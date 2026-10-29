@@ -77,6 +77,7 @@ function barRow(label, actual, budget, color) {
 function expenseChart(dashboard) {
   return `<div class="fin-bars" aria-hidden="true">
     ${barRow("Materials", dashboard.materialsExpense, dashboard.budgetedMaterials, "var(--accent)")}
+    ${barRow("Subcontractor", dashboard.subcontractorExpense, dashboard.budgetedSubcontractor, "var(--bar-progress)")}
     ${barRow("Labor", dashboard.laborExpense, dashboard.budgetedLaborExpense, "var(--status-done)")}
   </div>`;
 }
@@ -166,8 +167,10 @@ export function financialsDashboardHtml(dashboard) {
   const expense = figure("actualExpense");
   const model = {
     materialsExpense: figure("materialsExpense"),
+    subcontractorExpense: figure("subcontractorExpense"),
     laborExpense: figure("laborExpense"),
     budgetedMaterials: figure("budgetedMaterials"),
+    budgetedSubcontractor: figure("budgetedSubcontractor"),
     budgetedLaborExpense: figure("budgetedLaborExpense"),
     actualRevenue: revenue,
     billed: figure("billed"),

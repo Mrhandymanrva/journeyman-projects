@@ -1,12 +1,19 @@
 import {prepareBillAccounting} from "./accounting.js";
 import type {AccountingGateway} from "../adapters/quickbooks.js";
 import { AccountingFailure } from "../adapters/quickbooks.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { Router } from 'express';
 import { z } from 'zod';
 import { sendData } from '../http/envelope.js';
 import { ApiError, notFound } from '../http/errors.js';
 import { can, requireCapability } from '../http/capabilities.js';
 import { staffExternalRoute, staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
+import {
+  previewStPurchaseOrder,
+  stPoSyncSettings,
+  syncIssuedPurchaseOrder,
+  type StInventoryPurchaseOrderClient,
+} from '../domain/stPurchaseOrderSync.js';
 import { grossFromPercent, roundMoney } from '../domain/poMath.js';
 import { payablesAmountBand, payablesAnchor, payablesWindow } from '../domain/payablesWindow.js';
 import { assertReadyToIssue, assertSubcontractCompliance } from '../domain/vendorCompliance.js';
@@ -106,7 +113,51 @@ const lineWriteSchema = z.object({
   budget_line_id: z.string().uuid().nullish(),
 });
 
-export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: AccountingGateway): Router {
+function stWriter(sources?: SourceConnections): StInventoryPurchaseOrderClient | null {
+  const client = sources?.serviceTitan?.client;
+  if (!client?.createInventoryPurchaseOrder || !client.findInventoryPurchaseOrderByMarker) return null;
+  return {
+    createInventoryPurchaseOrder: (body) => client.createInventoryPurchaseOrder!.call(client, body),
+    findInventoryPurchaseOrderByMarker: (jobId, marker) =>
+      client.findInventoryPurchaseOrderByMarker!.call(client, jobId, marker),
+  };
+}
+
+function syncedRoute(
+  deps: StaffRouterDeps,
+  sources: SourceConnections | undefined,
+  handler: (
+    ctx: StaffContext,
+  ) => Promise<{ body: unknown; status?: number; syncPoId: string | null; tenantId: string }>,
+) {
+  return staffExternalRoute(
+    deps,
+    handler,
+    async (prepared) => {
+      if (!prepared.syncPoId) return null;
+      try {
+        return await syncIssuedPurchaseOrder({
+          database: deps.database,
+          tenantId: prepared.tenantId,
+          poId: prepared.syncPoId,
+          settings: stPoSyncSettings(),
+          client: stWriter(sources),
+        });
+      } catch (err) {
+        return { state: 'failed' as const, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    async (ctx, prepared) => {
+      sendData(ctx.res, prepared.body, undefined, prepared.status ?? 200);
+    },
+  );
+}
+
+export function purchaseOrderRoutes(
+  deps: StaffRouterDeps,
+  accounting?: AccountingGateway,
+  sources?: SourceConnections,
+): Router {
   const router = Router();
 
   router.get(
@@ -149,7 +200,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
 
   router.post(
     '/projects/:id/purchase-orders',
-    staffRoute(deps, async (ctx) => {
+    syncedRoute(deps, sources, async (ctx) => {
       requireCapability(ctx.staff.role, 'issue_purchase_order');
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
@@ -238,9 +289,11 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       );
       const matches = budgeted.rows.some((r) => r.cost_type === body.cost_type);
 
-      sendData(
-        ctx.res,
-        {
+      return {
+        status: 201,
+        tenantId: ctx.staff.tenantId,
+        syncPoId: body.issue ? String(rows[0]!.id) : null,
+        body: {
           ...rows[0],
           amount: num(rows[0]!.amount),
           warning: matches
@@ -259,15 +312,13 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
               },
           agreement_warning: agreementWarning,
         },
-        undefined,
-        201,
-      );
+      };
     }),
   );
 
   router.post(
     '/projects/:id/material-bills',
-    staffRoute(deps, async (ctx) => {
+    syncedRoute(deps, sources, async (ctx) => {
       requireCapability(ctx.staff.role, 'issue_purchase_order');
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
@@ -341,9 +392,11 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
             [body.vendor_id],
           )
         : { rows: [] as Array<{ legal_name: string }> };
-      sendData(
-        ctx.res,
-        {
+      return {
+        status: 201,
+        tenantId: ctx.staff.tenantId,
+        syncPoId: poId,
+        body: {
           id: billId,
           po_id: poId,
           po_number: body.order_number,
@@ -367,15 +420,13 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
                 budgeted_as: budgeted.rows.map((row) => row.cost_type),
               },
         },
-        undefined,
-        201,
-      );
+      };
     }),
   );
 
   router.patch(
     '/purchase-orders/:id',
-    staffRoute(deps, async (ctx) => {
+    syncedRoute(deps, sources, async (ctx) => {
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
       const po = await loadVisiblePo(ctx, poId);
       const body = parseBody(patchPoSchema, ctx.req.body);
@@ -500,8 +551,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         fields.push('issued_at = now()');
       }
       if (fields.length === 0) {
-        sendData(ctx.res, presentPo(po));
-        return;
+        return { body: presentPo(po), syncPoId: null, tenantId: ctx.staff.tenantId };
       }
 
       const { rows } = await ctx.db.query<Record<string, unknown>>(
@@ -511,7 +561,12 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
                     project_id, scope_text, exclusions, window_start, window_end, issued_at, vendor_id`,
         [poId, ...values],
       );
-      sendData(ctx.res, { ...presentPo(rows[0]!), agreement_warning: agreementWarning });
+      const issuedNow = body.status === 'issued' && po.status === 'draft';
+      return {
+        tenantId: ctx.staff.tenantId,
+        syncPoId: issuedNow ? poId : null,
+        body: { ...presentPo(rows[0]!), agreement_warning: agreementWarning },
+      };
     }),
   );
 
@@ -872,7 +927,7 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
 
   router.post(
     '/bills/:id/approve',
-    staffRoute(deps, async (ctx) => {
+    syncedRoute(deps, sources, async (ctx) => {
       requireCapability(ctx.staff.role, 'approve_vendor_bill');
       const billId = parseUuidParam(ctx.req.params.id, 'Vendor bill');
 
@@ -886,15 +941,20 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
         throw new ApiError('conflict', 'That bill is already marked paid.');
       }
 
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
+      const { rows } = await ctx.db.query<Record<string, unknown> & { po_id?: string }>(
         `UPDATE projects.vendor_bills
             SET status = 'approved', approved_by = $2, approved_at = now()
           WHERE id = $1
-          RETURNING id, vendor_invoice_number, amount, status::text AS status,
+          RETURNING id, po_id, vendor_invoice_number, amount, status::text AS status,
                     approved_by, approved_at`,
         [billId, ctx.staff.staffId],
       );
-      sendData(ctx.res, { ...rows[0], amount: num(rows[0]!.amount) });
+      const { po_id: syncPoId, ...bill } = rows[0]!;
+      return {
+        tenantId: ctx.staff.tenantId,
+        syncPoId: typeof syncPoId === 'string' ? syncPoId : null,
+        body: { ...bill, amount: num(rows[0]!.amount) },
+      };
     }),
   );
 
@@ -917,6 +977,90 @@ export function purchaseOrderRoutes(deps: StaffRouterDeps, accounting?: Accounti
       if (!rows[0]) throw notFound('Vendor bill not found');
       sendData(ctx.res, rows[0]);
     }),
+  );
+
+  router.get(
+    '/projects/:id/service-titan-purchase-orders',
+    staffRoute(deps, async (ctx) => {
+      if (ctx.staff.role !== 'owner') {
+        throw new ApiError('forbidden', 'Only an owner can review ServiceTitan purchase order sync.');
+      }
+      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
+      await loadVisibleProject(ctx, projectId, 'id');
+      const rows = await ctx.db.query<{
+        id: string;
+        po_number: string;
+        kind: string;
+        status: string;
+        amount: string;
+        st_po_id: string | null;
+        st_po_sync_state: string | null;
+        st_po_sync_error: string | null;
+        vendor: string | null;
+        bill_amount: string;
+      }>(
+        `SELECT po.id, po.po_number, po.kind::text AS kind, po.status::text AS status, po.amount::text AS amount,
+                po.st_po_id, po.st_po_sync_state, po.st_po_sync_error,
+                COALESCE(v.legal_name, po.supplier_name) AS vendor,
+                COALESCE((SELECT SUM(c.amount) FROM projects.v_project_bill_cost c WHERE c.po_id = po.id), 0)::text AS bill_amount
+           FROM projects.purchase_orders po
+           LEFT JOIN projects.vendors v ON v.id = po.vendor_id
+          WHERE po.project_id = $1
+            AND po.kind IN ('material', 'subcontract')
+            AND po.status <> 'void'
+          ORDER BY po.issued_at DESC NULLS LAST, po.po_number`,
+        [projectId],
+      );
+      sendData(ctx.res, {
+        writes_enabled: stPoSyncSettings().enabled,
+        orders: rows.rows.map((row) => ({
+          ...row,
+          amount: num(row.amount),
+          bill_amount: num(row.bill_amount),
+        })),
+      });
+    }),
+  );
+
+  router.get(
+    '/purchase-orders/:id/service-titan-sync',
+    staffRoute(deps, async (ctx) => {
+      if (ctx.staff.role !== 'owner') {
+        throw new ApiError('forbidden', 'Only an owner can preview a ServiceTitan purchase order.');
+      }
+      const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
+      await loadVisiblePo(ctx, poId);
+      const preview = await previewStPurchaseOrder(ctx.db, poId, stPoSyncSettings());
+      if (!preview) throw notFound('Purchase order not found');
+      sendData(ctx.res, preview);
+    }),
+  );
+
+  router.post(
+    '/purchase-orders/:id/service-titan-sync',
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        if (ctx.staff.role !== 'owner') {
+          throw new ApiError('forbidden', 'Only an owner can send a purchase order to ServiceTitan.');
+        }
+        parseBody(z.object({ confirm: z.literal(true) }), ctx.req.body);
+        const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
+        await loadVisiblePo(ctx, poId);
+        return { poId, tenantId: ctx.staff.tenantId };
+      },
+      async (prepared) =>
+        syncIssuedPurchaseOrder({
+          database: deps.database,
+          tenantId: prepared.tenantId,
+          poId: prepared.poId,
+          settings: stPoSyncSettings(),
+          client: stWriter(sources),
+        }),
+      async (ctx, _prepared, result) => {
+        sendData(ctx.res, result);
+      },
+    ),
   );
 
   return router;
