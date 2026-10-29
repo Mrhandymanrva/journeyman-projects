@@ -223,6 +223,26 @@ async function planTask(body: Record<string, unknown>) {
   return created.body.data.id as string;
 }
 
+async function wbsTask(
+  body: Record<string, unknown>,
+  active = true,
+) {
+  const created = await h.db.withTenant(t.id, (db) =>
+    db.query<{ id: string }>(
+      `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data, active)
+       VALUES ($1,$2,'task',$3::jsonb,$4)
+       RETURNING id`,
+      [
+        t.id,
+        id,
+        JSON.stringify({ title: "WBS task", parent_id: null, ...body }),
+        active,
+      ],
+    ),
+  );
+  return created.rows[0]!.id;
+}
+
 async function storeVisit(externalJobId: string, appointmentId: string) {
   await h.db.withTenant(t.id, (db) =>
     db.query(
@@ -299,6 +319,86 @@ it("leaves a visit unphased when linked plan tasks disagree or no plan task stat
   const open = await storedPhase("appt-open");
   expect(open.phase).toBeNull();
   expect(open.job_link_id).toBeNull();
+});
+
+it("places a visit on the phase when every linked WBS task that states one agrees", async () => {
+  const link = await jobLink("900188", "WBS agree");
+  await wbsTask({ title: "Hang board", phase: "Rough-in", job_link_id: link });
+  await wbsTask({ title: "No phase", phase: "  ", job_link_id: link });
+  await wbsTask({ title: "Also rough", phase: " Rough-in ", job_link_id: link });
+  await storeVisit("900188", "appt-wbs-agree");
+  const row = await storedPhase("appt-wbs-agree");
+  expect(row.phase).toBe("Rough-in");
+  expect(row.job_link_id).toBe(link);
+});
+
+it("places a visit on the shared phase when plan tasks and WBS tasks agree", async () => {
+  const link = await jobLink("900189", "Both agree");
+  await planTask({ title: "Rough electrical", phase: "Rough-in", job_link_id: link });
+  await wbsTask({ title: "Pull wire", phase: "Rough-in", job_link_id: link });
+  await storeVisit("900189", "appt-both-agree");
+  expect((await storedPhase("appt-both-agree")).phase).toBe("Rough-in");
+});
+
+it("leaves a visit unphased when plan tasks and WBS tasks name different phases", async () => {
+  const link = await jobLink("900190", "Both disagree");
+  await planTask({ title: "Rough", phase: "Rough-in", job_link_id: link });
+  await wbsTask({ title: "Finish", phase: "Closeout", job_link_id: link });
+  await storeVisit("900190", "appt-both-split");
+  const row = await storedPhase("appt-both-split");
+  expect(row.phase).toBeNull();
+  expect(row.job_link_id).toBe(link);
+});
+
+it("ignores a cancelled plan task and an archived WBS task when the rest agree", async () => {
+  const link = await jobLink("900191", "Cancelled ignored");
+  await planTask({
+    title: "Dropped",
+    phase: "Closeout",
+    status: "cancelled",
+    job_link_id: link,
+  });
+  await wbsTask({ title: "Rough", phase: "Rough-in", job_link_id: link });
+  await wbsTask({ title: "Archived other", phase: "Closeout", job_link_id: link }, false);
+  await storeVisit("900191", "appt-cancel-ok");
+  expect((await storedPhase("appt-cancel-ok")).phase).toBe("Rough-in");
+});
+
+it("leaves a visit unphased when no linked plan task or WBS task states a phase", async () => {
+  const link = await jobLink("900192", "None stated");
+  await planTask({ title: "Open", phase: null, job_link_id: link });
+  await wbsTask({ title: "Blank", phase: null, job_link_id: link });
+  await wbsTask({ title: "Spaces", phase: "   ", job_link_id: link });
+  await storeVisit("900192", "appt-none");
+  const row = await storedPhase("appt-none");
+  expect(row.phase).toBeNull();
+  expect(row.job_link_id).toBe(link);
+});
+
+it("does not take a phase from a parent work package that is not linked to the job", async () => {
+  const link = await jobLink("900193", "Parent package");
+  const parent = await wbsTask({
+    title: "Work package",
+    phase: "Closeout",
+    job_link_id: null,
+  });
+  await wbsTask({
+    title: "Child linked",
+    phase: null,
+    job_link_id: link,
+    parent_id: parent,
+  });
+  await storeVisit("900193", "appt-parent");
+  expect((await storedPhase("appt-parent")).phase).toBeNull();
+});
+
+it("does not use a WBS phase stored on a different job", async () => {
+  const other = await jobLink("900195", "Other job");
+  const link = await jobLink("900196", "This job");
+  await wbsTask({ title: "Other job", phase: "Closeout", job_link_id: other });
+  await wbsTask({ title: "This job", phase: "Installation and trim", job_link_id: link });
+  await storeVisit("900196", "appt-this-job");
+  expect((await storedPhase("appt-this-job")).phase).toBe("Installation and trim");
 });
 
 it("reads the plan-task phase onto a live ServiceTitan appointment", async () => {

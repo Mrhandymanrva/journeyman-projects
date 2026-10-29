@@ -24,6 +24,7 @@ export function createProjectControls({
     staff = [],
     resources = [],
     jobs = [],
+    phases = [],
     page = "plan",
     tab = "tasks",
     folder = "",
@@ -123,9 +124,12 @@ export function createProjectControls({
         api("/staff"),
         api("/resources"),
         api("/projects/" + projectId + "/jobs"),
+        api("/planning-catalog").catch(() => ({ phases: [] })),
       ]);
       if (ticket !== epoch || projectId !== current()?.id) return;
+      const catalog = data[4];
       [state, staff, resources, jobs] = data;
+      phases = Array.isArray(catalog?.phases) ? catalog.phases : [];
       draw(target);
       const params = new URLSearchParams(location.search);
       const linkedDoc = params.get("document");
@@ -188,7 +192,7 @@ export function createProjectControls({
           .map((r) => {
             const d = r.data,
               group = children(r.id).length;
-            return `<tr id="item-${esc(r.id)}" class="${r.active ? "" : "control-archived"}"><td><input aria-label="Complete ${esc(d.title)}" type="checkbox" data-task-check="${r.id}" ${progress(r) === 100 ? "checked" : ""} ${group || !writable("task") || !r.active ? "disabled" : ""}></td><td style="padding-left:${12 + Math.min(r.depth, 8) * 16}px"><small>${r.code}</small> <strong>${esc(d.title)}</strong>${!r.active ? " (archived)" : ""}<small>${d.dependency_ids.length ? "After: " + esc(d.dependency_ids.map(name).join(", ")) : ""}${d.milestone_id ? " · Milestone: " + esc(name(d.milestone_id)) : ""}</small></td><td>${esc(person(d.owner_id))}<small>${esc(resources.find((x) => x.id === d.resource_id)?.name ?? "")}${d.job_link_id ? " · ST job " + esc(jobs.find((j) => j.id === d.job_link_id)?.source_job_number ?? jobs.find((j) => j.id === d.job_link_id)?.external_job_id ?? "") : ""}</small></td><td>${esc(d.start_on)} → ${esc(d.due_on)}<small>${d.completed_on ? "Completed " + esc(d.completed_on) : d.due_on < day() ? "Overdue" : ""}</small></td><td>${group ? progress(r) + "%" : status(d.state)}</td><td>${edits(r)}</td></tr>`;
+            return `<tr id="item-${esc(r.id)}" class="${r.active ? "" : "control-archived"}"><td><input aria-label="Complete ${esc(d.title)}" type="checkbox" data-task-check="${r.id}" ${progress(r) === 100 ? "checked" : ""} ${group || !writable("task") || !r.active ? "disabled" : ""}></td><td style="padding-left:${12 + Math.min(r.depth, 8) * 16}px"><small>${r.code}</small> <strong>${esc(d.title)}</strong>${!r.active ? " (archived)" : ""}<small>${d.dependency_ids.length ? "After: " + esc(d.dependency_ids.map(name).join(", ")) : ""}${d.milestone_id ? " · Milestone: " + esc(name(d.milestone_id)) : ""}${d.phase ? " · Phase: " + esc(d.phase) : ""}</small></td><td>${esc(person(d.owner_id))}<small>${esc(resources.find((x) => x.id === d.resource_id)?.name ?? "")}${d.job_link_id ? " · ST job " + esc(jobs.find((j) => j.id === d.job_link_id)?.source_job_number ?? jobs.find((j) => j.id === d.job_link_id)?.external_job_id ?? "") : ""}</small></td><td>${esc(d.start_on)} → ${esc(d.due_on)}<small>${d.completed_on ? "Completed " + esc(d.completed_on) : d.due_on < day() ? "Overdue" : ""}</small></td><td>${group ? progress(r) + "%" : status(d.state)}</td><td>${edits(r)}</td></tr>`;
           })
           .join("") ||
         '<tr><td colspan="6">No tasks yet. Add a work package, then assign child tasks to it.</td></tr>'
@@ -535,6 +539,12 @@ export function createProjectControls({
     records()
       .filter((r) => r.kind === k)
       .map((r) => [r.id, r.data.title]);
+  const phaseChoices = (currentPhase) => {
+    const text = String(currentPhase ?? "").trim();
+    const values = [...phases];
+    if (text && !values.includes(text)) values.push(text);
+    return values;
+  };
   function form(k, r = null, template = "") {
     formKind = k;
     const d = r?.data ?? {},
@@ -614,6 +624,13 @@ export function createProjectControls({
             .map((x) => [x.id, x.name]),
           d.resource_id,
         ) +
+        select(
+          "phase",
+          "Phase",
+          phaseChoices(d.phase),
+          d.phase || "",
+        ) +
+        '<p class="hint">Same phases as the Gantt. Leave this blank when the task has no phase.</p>' +
         select(
           "job_link_id",
           "Related ST job",
@@ -828,6 +845,7 @@ export function createProjectControls({
         "milestone_id",
         "resource_id",
         "job_link_id",
+        "phase",
         "goal_id",
         "risk_id",
         "completed_on",

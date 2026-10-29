@@ -827,6 +827,70 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
           [linkId, whitfield],
         );
       }
+      // A second visit is linked only through a WBS task that states no phase.
+      // The Gantt leaves it Unphased until a PM picks a phase on that task.
+      const wbsLinked = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title, source_active, source_job_number)
+         VALUES ($1,$2,$3,'900185','Whitfield trim visit', true, 'WBS-185')
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [TENANT_ID, whitfield, systemId],
+      );
+      const wbsLinkId =
+        wbsLinked.rows[0]?.id ??
+        (
+          await c.query<{ id: string }>(
+            `SELECT id FROM projects.project_job_links
+              WHERE project_id = $1 AND external_job_id = '900185'`,
+            [whitfield],
+          )
+        ).rows[0]?.id;
+      if (wbsLinkId) {
+        const asOf = today();
+        await c.query(
+          `INSERT INTO projects.st_plan_appointments
+             (tenant_id, project_id, external_job_id, external_appointment_id,
+              job_number, appointment_number, job_status, starts_at, ends_at,
+              status, active, technicians)
+           VALUES (
+             $1, $2, '900185', 'appt-wbs-185', 'WBS-185', '1', 'Scheduled',
+             (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                + interval '1 day' + interval '13 hours') AT TIME ZONE 'America/New_York',
+             (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                + interval '1 day' + interval '16 hours') AT TIME ZONE 'America/New_York',
+             'Scheduled', true, $3::jsonb
+           )`,
+          [
+            TENANT_ID,
+            whitfield,
+            JSON.stringify([{ id: 'tech-riley', name: 'Riley Cho' }]),
+          ],
+        );
+        await c.query(
+          `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+           VALUES ($1,$2,'task',$3::jsonb)`,
+          [
+            TENANT_ID,
+            whitfield,
+            JSON.stringify({
+              title: 'Trim crew visit',
+              description: 'Linked to the ServiceTitan trim visit. No phase until one is chosen.',
+              owner_id: null,
+              start_on: asOf,
+              due_on: asOf,
+              completed_on: null,
+              state: 'not_started',
+              parent_id: null,
+              dependency_ids: [],
+              milestone_id: null,
+              resource_id: null,
+              job_link_id: wbsLinkId,
+              sort_order: 0,
+            }),
+          ],
+        );
+      }
       await storeProjectAr(c, {
         tenantId: TENANT_ID,
         projectId: whitfield,

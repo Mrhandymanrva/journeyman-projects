@@ -32,6 +32,17 @@ export const controlData = {
       resource_id: link,
       job_link_id: link,
       sort_order: z.number().int().min(0).max(10000).default(0),
+      /**
+       * Same text rule as schedule_items.phase (trimmed, at most 120 characters).
+       * The Gantt and the plan-task picker share this vocabulary via pmCatalog.phases.
+       * Blank, whitespace, and omitted all mean the task states no phase.
+       */
+      phase: z
+        .string()
+        .trim()
+        .max(120)
+        .nullish()
+        .transform((value) => value || null),
     })
     .strict()
     .refine((b) => b.due_on >= b.start_on, "Finish must be on or after start."),

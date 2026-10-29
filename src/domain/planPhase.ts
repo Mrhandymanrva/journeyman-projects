@@ -1,10 +1,10 @@
 import type { SqlClient } from "../db/database.js";
 
 /**
- * Phase of a ServiceTitan visit, taken only from plan tasks (schedule items)
- * that link the same job. Null when no linked plan task states a phase, or
- * when those plan tasks name more than one phase. Callers must not invent a
- * phase from the job title, the appointment date, or a WBS parent.
+ * Agree-or-none rule for a ServiceTitan visit. Pass the phases stated by the
+ * tasks that link the same job (non-cancelled plan tasks and WBS tasks).
+ * Null when none of them states a phase, or when they name more than one.
+ * Callers must not invent a phase from a title, a date, or a parent work package.
  */
 export function phaseFromPlanTaskLinks(
   phases: readonly (string | null | undefined)[],
@@ -26,11 +26,15 @@ export interface AppointmentPhaseRow {
 }
 
 /**
- * Writes `phase` onto each appointment from active job links and the plan
- * tasks that point at them. Also fills `job_link_id` when the project has
- * exactly one active link for that ServiceTitan job.
+ * Writes `phase` onto each appointment from active job links and the tasks
+ * that point at them. Also fills `job_link_id` when the project has exactly
+ * one active link for that ServiceTitan job.
  *
- * WBS tasks store a job link and no phase, so they are not read here.
+ * Plan phases come from non-cancelled schedule items. WBS phases come from
+ * active project-control tasks (`data.phase` on the task that stores
+ * `data.job_link_id`). A blank WBS phase is not a phase. A parent work
+ * package contributes only when that package itself is linked to the job
+ * and states a phase — the child's phase is never copied from its parent.
  */
 export async function assignAppointmentPhases(
   db: SqlClient,
@@ -63,9 +67,37 @@ export async function assignAppointmentPhases(
         [projectIds],
       )
     : { rows: [] };
+  const wbs = projectIds.length
+    ? await db.query<{
+        job_link_id: string;
+        project_id: string;
+        external_job_id: string;
+        phase: string | null;
+      }>(
+        `SELECT j.id::text AS job_link_id,
+                j.project_id::text AS project_id,
+                j.external_job_id,
+                btrim(c.data->>'phase') AS phase
+           FROM projects.project_controls c
+           JOIN projects.project_job_links j
+             ON j.project_id = c.project_id
+            AND j.source_active
+            AND lower(j.id::text) = lower(c.data->>'job_link_id')
+          WHERE c.kind = 'task'
+            AND c.active
+            AND c.project_id = ANY($1::uuid[])
+            AND length(btrim(coalesce(c.data->>'phase', ''))) > 0`,
+        [projectIds],
+      )
+    : { rows: [] };
   const byJob = new Map<string, { links: Set<string>; phases: string[] }>();
   const byLink = new Map<string, string[]>();
-  for (const row of found.rows) {
+  const remember = (row: {
+    job_link_id: string;
+    project_id: string;
+    external_job_id: string;
+    phase: string | null;
+  }) => {
     const key = row.project_id + "\0" + row.external_job_id;
     const bucket = byJob.get(key) ?? { links: new Set<string>(), phases: [] };
     bucket.links.add(row.job_link_id);
@@ -76,7 +108,9 @@ export async function assignAppointmentPhases(
       list.push(row.phase);
       byLink.set(row.job_link_id, list);
     }
-  }
+  };
+  for (const row of found.rows) remember(row);
+  for (const row of wbs.rows) remember(row);
   for (const row of rows) {
     if (row.project_id && row.external_job_id) {
       const bucket = byJob.get(row.project_id + "\0" + row.external_job_id);
