@@ -17,6 +17,11 @@ export interface Figure {
   source: FigureSource;
   /** Why a missing figure is blank. Omitted when the figure has a value. */
   gap?: FigureGap;
+  /**
+   * Replaces the formatted percent when cost-to-cost completion is past the budget.
+   * The numeric value stays capped at 100.
+   */
+  note?: string;
 }
 
 export interface DashboardActuals {
@@ -123,6 +128,12 @@ function computed(value: number | null, gap: FigureGap = "computed"): Figure {
   return { value: roundMoney(value), source: "computed" };
 }
 
+function withOverBudgetNote(figure: Figure, actual: number | null, budget: number | null): Figure {
+  if (actual == null || budget == null) return figure;
+  const note = overBudgetNote(actual, budget);
+  return note ? { ...figure, note } : figure;
+}
+
 function budgeted(value: number | null | undefined): Figure {
   if (value == null || !Number.isFinite(value)) return missing("budget");
   return { value: roundMoney(value), source: "journeyman" };
@@ -171,12 +182,39 @@ export function costToComplete(budget: number, actualExpense: number): number {
 }
 
 /**
- * Earned revenue is contract value times actual expense over total budgeted expense.
- * Percent complete is that same ratio. A zero budget does not produce a percent.
+ * Cost-to-cost percent complete, two decimal places, never above 100.
+ * A zero, missing, or non-finite budget does not produce a percent.
+ */
+export function percentComplete(actualExpense: number, budget: number): number | null {
+  const raw = percentOf(actualExpense, budget);
+  if (raw == null) return null;
+  return raw > 100 ? 100 : raw;
+}
+
+/**
+ * Earned revenue is contract value times cost-to-cost percent complete.
+ * The percent is capped at 100, so earned revenue never exceeds contract value.
+ * A zero, missing, or non-finite budget does not produce a number.
  */
 export function earnedRevenue(contract: number, actualExpense: number, budget: number): number | null {
-  if (!(budget > 0)) return null;
+  if (!(budget > 0) || !Number.isFinite(contract) || !Number.isFinite(actualExpense)) return null;
+  if (actualExpense >= budget) return roundMoney(contract);
   return roundMoney(contract * (actualExpense / budget));
+}
+
+/** Shown instead of a percent above 100. Null when the job is not over budget. */
+export function overBudgetNote(actualExpense: number, budget: number): string | null {
+  if (!(budget > 0) || !Number.isFinite(actualExpense) || !Number.isFinite(budget)) return null;
+  if (!(actualExpense > budget)) return null;
+  return `Over budget · actual ${formatDashboardMoney(actualExpense)} vs budget ${formatDashboardMoney(budget)}`;
+}
+
+function formatDashboardMoney(value: number): string {
+  const rounded = roundMoney(value);
+  const sign = rounded < 0 ? "-" : "";
+  const [whole, frac] = Math.abs(rounded).toFixed(2).split(".");
+  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${sign}$${grouped}.${frac}`;
 }
 
 export function buildFinancialsDashboard(input: {
@@ -264,10 +302,14 @@ export function buildFinancialsDashboard(input: {
         ? earnedRevenue(contractValue.value, actualExpense.value, totalBudgetedExpense.value)
         : null,
     ),
-    percentOfWorkCompleted: computed(
-      actualExpense.value != null && totalBudgetedExpense.value != null
-        ? percentOf(actualExpense.value, totalBudgetedExpense.value)
-        : null,
+    percentOfWorkCompleted: withOverBudgetNote(
+      computed(
+        actualExpense.value != null && totalBudgetedExpense.value != null
+          ? percentComplete(actualExpense.value, totalBudgetedExpense.value)
+          : null,
+      ),
+      actualExpense.value,
+      totalBudgetedExpense.value,
     ),
     retainage,
     openInvoices,

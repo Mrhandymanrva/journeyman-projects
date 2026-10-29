@@ -36,11 +36,22 @@ function hours(value) {
 }
 
 function show(figure, kind) {
+  if (kind === "percent" && figure && figure.note) {
+    return `<span class="fin-over-budget">${escHtml(figure.note)}</span>`;
+  }
   const value = figure && figure.value != null ? figure.value : null;
   if (value == null) return dash(figure && figure.gap);
   if (kind === "percent") return percent(value);
   if (kind === "hours") return hours(value);
   return money(value);
+}
+
+function escHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function pair(leftLabel, left, leftKind, rightLabel, right, rightKind) {

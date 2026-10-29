@@ -429,6 +429,7 @@ body{
 .fin-tile h3{margin:0 0 6px;font-size:13px;font-weight:650;color:var(--ink)}
 .fin-pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .fin-figure{font-family:var(--mono);font-size:22px;font-weight:650;line-height:1.2}
+.fin-over-budget{font-family:var(--sans);font-size:14px;font-weight:650;line-height:1.35}
 .fin-dash{color:var(--muted);cursor:help}
 .fin-margin{display:grid;grid-template-columns:auto minmax(0,1fr);gap:16px;align-items:center}
 .fin-donut{display:block}
