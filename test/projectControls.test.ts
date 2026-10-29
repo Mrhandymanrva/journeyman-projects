@@ -86,6 +86,53 @@ it("maintains task completion dates, WBS leaves, dependency checks and immutable
     ).status,
   ).toBe(409);
 });
+it("saves a WBS task phase and treats a blank phase as none", async () => {
+  const created = await create("task", {
+    ...task("Phased task"),
+    phase: "  Rough-in ",
+  });
+  expect(created.data.phase).toBe("Rough-in");
+  const listed = (await owner().get(url())).body.data.records.find(
+    (row: { id: string }) => row.id === created.id,
+  );
+  expect(listed.data.phase).toBe("Rough-in");
+  const cleared = await owner()
+    .patch(url() + "/" + created.id)
+    .send({ version: 1, data: { ...created.data, phase: "" } });
+  expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+  expect(cleared.body.data.data.phase).toBeNull();
+  expect(cleared.body.data.data.title).toBe("Phased task");
+  const blank = await create("task", { ...task("Unphased task"), phase: null });
+  expect(blank.data.phase).toBeNull();
+  const omitted = await create("task", task("Omitted phase"));
+  expect(omitted.data.phase).toBeNull();
+  expect(
+    (
+      await owner()
+        .post(url())
+        .send({
+          kind: "task",
+          data: { ...task("Too long"), phase: "x".repeat(121) },
+        })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await owner()
+        .post(url())
+        .send({ kind: "task", data: { ...task("Not text"), phase: 4 } })
+    ).status,
+  ).toBe(400);
+  const again = await owner()
+    .patch(url() + "/" + created.id)
+    .send({
+      version: cleared.body.data.version,
+      data: { ...cleared.body.data.data, phase: "Closeout" },
+    });
+  expect(again.status, JSON.stringify(again.body)).toBe(200);
+  expect(again.body.data.data.phase).toBe("Closeout");
+  expect(again.body.data.data.title).toBe("Phased task");
+});
 it("rejects hierarchy cycles, foreign task references and invalid completion dates", async () => {
   const a = await create("task", task("Parent A")),
     b = await create("task", { ...task("Child B"), parent_id: a.id });
