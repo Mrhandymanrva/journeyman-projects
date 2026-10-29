@@ -196,3 +196,119 @@ it("rejects membership drift instead of mixing jobs from different projects", as
     ).status,
   ).toBe(502);
 });
+
+async function jobLink(externalJobId: string, title: string) {
+  const created = await h.db.withTenant(t.id, (db) =>
+    db.query<{ id: string }>(
+      `INSERT INTO projects.project_job_links
+         (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
+       VALUES ($1,$2,$3,$4,$5,true)
+       RETURNING id`,
+      [t.id, id, sources.serviceTitan!.externalSystemId, externalJobId, title],
+    ),
+  );
+  return created.rows[0]!.id;
+}
+
+async function planTask(body: Record<string, unknown>) {
+  const created = await owner()
+    .post(base + "/projects/" + id + "/schedule")
+    .send({
+      title: "Plan task",
+      window_start: "2026-09-18",
+      window_end: "2026-09-19",
+      ...body,
+    });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  return created.body.data.id as string;
+}
+
+async function storeVisit(externalJobId: string, appointmentId: string) {
+  await h.db.withTenant(t.id, (db) =>
+    db.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id,
+          job_number, appointment_number, job_status, starts_at, ends_at, status, technicians)
+       VALUES ($1,$2,$3,$4,$3,'1','Scheduled',$5,$6,'Scheduled','[]'::jsonb)`,
+      [t.id, id, externalJobId, appointmentId, "2026-09-18T14:00:00Z", "2026-09-18T17:00:00Z"],
+    ),
+  );
+}
+
+async function storedPhase(appointmentId: string) {
+  const response = await owner().get(base + "/projects/" + id + "/plan-appointments" + query);
+  expect(response.status, JSON.stringify(response.body)).toBe(200);
+  return response.body.data.rows.find(
+    (row: { appointment_id: string }) => row.appointment_id === appointmentId,
+  );
+}
+
+it("places a stored ServiceTitan visit on the phase of the plan task linked to its job", async () => {
+  const link = await jobLink("900184", "Tile job");
+  await planTask({
+    title: "Set tile",
+    phase: "Waterproofing and finishes",
+    job_link_id: link,
+  });
+  await planTask({ title: "No phase stated", phase: null, job_link_id: link });
+  await planTask({
+    title: "Cancelled other phase",
+    phase: "Closeout",
+    status: "cancelled",
+    job_link_id: link,
+  });
+  await storeVisit("900184", "appt-linked");
+  const row = await storedPhase("appt-linked");
+  expect(row.phase).toBe("Waterproofing and finishes");
+  expect(row.job_link_id).toBe(link);
+  expect(row.source).toBe("servicetitan");
+  expect(row.read_only).toBe(true);
+});
+
+it("leaves a visit unphased when linked plan tasks disagree or no plan task states a phase", async () => {
+  const split = await jobLink("900185", "Split job");
+  await planTask({ title: "Rough", phase: "Rough-in", job_link_id: split });
+  await planTask({ title: "Finish", phase: "Closeout", job_link_id: split });
+  await storeVisit("900185", "appt-split");
+  const disagreed = await storedPhase("appt-split");
+  expect(disagreed.phase).toBeNull();
+  expect(disagreed.job_link_id).toBe(split);
+
+  const wbsOnly = await jobLink("900186", "WBS job");
+  await h.db.withTenant(t.id, (db) =>
+    db.query(
+      `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+       VALUES ($1,$2,'task',$3::jsonb)`,
+      [
+        t.id,
+        id,
+        JSON.stringify({
+          title: "Hang board",
+          job_link_id: wbsOnly,
+          parent_id: null,
+        }),
+      ],
+    ),
+  );
+  await storeVisit("900186", "appt-wbs");
+  const wbs = await storedPhase("appt-wbs");
+  expect(wbs.phase).toBeNull();
+  expect(wbs.job_link_id).toBe(wbsOnly);
+
+  await storeVisit("900187", "appt-open");
+  const open = await storedPhase("appt-open");
+  expect(open.phase).toBeNull();
+  expect(open.job_link_id).toBeNull();
+});
+
+it("reads the plan-task phase onto a live ServiceTitan appointment", async () => {
+  const link = await jobLink("101", "Live job");
+  await planTask({ title: "Rough electrical", phase: "Rough-in", job_link_id: link });
+  const live = await owner().get(base + "/projects/" + id + "/servicetitan/schedule" + query);
+  expect(live.status, JSON.stringify(live.body)).toBe(200);
+  const row = live.body.data.rows[0];
+  expect(row.external_job_id).toBe("101");
+  expect(row.phase).toBe("Rough-in");
+  expect(row.job_link_id).toBe(link);
+  expect(row.phase).not.toBe("ServiceTitan jobs");
+});
