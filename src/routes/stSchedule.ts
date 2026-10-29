@@ -6,12 +6,20 @@ import {
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
-import { unitFilter } from "../http/capabilities.js";
+import { requireCapability, unitFilter } from "../http/capabilities.js";
 import { ApiError } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseBody, parseUuidParam } from "./shared.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
 import { assignAppointmentPhases } from "../domain/planPhase.js";
+import {
+  appointmentSkipWarning,
+  claimPlanAppointmentRefresh,
+  finishPlanAppointmentRefresh,
+  planAppointmentMessage,
+  readPlanLinkStatus,
+  refreshProjectPlanAppointments,
+} from "../domain/planAppointments.js";
 type Target = {
   id: string;
   name: string;
@@ -232,6 +240,77 @@ export function stScheduleRoutes(
       sendData(ctx.res, await storedAppointments(ctx, null, ctx.req.query));
     }),
   );
+  router.post(
+    "/projects/:id/plan-appointments/refresh",
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        await loadVisibleProject(ctx, id, "id");
+        requireCapability(ctx.staff.role, "refresh_labor");
+        const source = sources.serviceTitan;
+        if (!source || source.tenantId !== ctx.staff.tenantId || !source.client.readJob) {
+          throw new ApiError(
+            "conflict",
+            "ServiceTitan is not configured for this account. Existing appointments were left as they are.",
+          );
+        }
+        const link = await readPlanLinkStatus(ctx.db, id, null);
+        if (!link.linkedProjects) {
+          throw new ApiError(
+            "conflict",
+            "Connect this project to ServiceTitan to include technician jobs.",
+          );
+        }
+        const jobs = await ctx.db.query<{ external_job_id: string }>(
+          `SELECT external_job_id
+             FROM projects.project_job_links
+            WHERE project_id = $1
+              AND external_system_id = $2
+              AND source_active
+            ORDER BY external_job_id`,
+          [id, source.externalSystemId],
+        );
+        const gate = claimPlanAppointmentRefresh(`${ctx.staff.tenantId}:${id}`);
+        if (gate !== "ok") {
+          throw new ApiError(
+            "rate_limited",
+            "Wait a few seconds before refreshing ServiceTitan jobs again.",
+          );
+        }
+        return {
+          id,
+          tenantId: ctx.staff.tenantId,
+          jobs: jobs.rows,
+          readJob: (jobId: string) => source.client.readJob(jobId),
+        };
+      },
+      async (prepared) => {
+        try {
+          return await refreshProjectPlanAppointments(deps.database, {
+            tenantId: prepared.tenantId,
+            projectId: prepared.id,
+            jobs: prepared.jobs,
+            readJob: prepared.readJob,
+          });
+        } finally {
+          finishPlanAppointmentRefresh(`${prepared.tenantId}:${prepared.id}`);
+        }
+      },
+      async (ctx, prepared, result) => {
+        requireCapability(ctx.staff.role, "refresh_labor");
+        await loadVisibleProject(ctx, prepared.id, "id");
+        sendData(ctx.res, {
+          stored: result.stored,
+          skipped: result.skipped,
+          failedJobs: result.failedJobs,
+          warnings: result.warnings,
+          readAt: result.readAt,
+          error: result.error,
+        });
+      },
+    ),
+  );
   return router;
 }
 
@@ -321,11 +400,31 @@ async function storedAppointments(
     }];
   });
   await assignAppointmentPhases(ctx.db, visible);
+  const link = await readPlanLinkStatus(ctx.db, projectId, unit);
+  const message = planAppointmentMessage({
+    configured: link.configured,
+    linkedProjects: link.linkedProjects,
+    inRange: visible.length,
+    readAt: link.readAt,
+    skipped: link.skipped,
+    failedJobs: link.failedJobs,
+    readError: link.readError,
+  });
   return {
-    configured: true,
-    linkedProjects: new Set(visible.map((row) => row.project_id)).size,
+    configured: link.configured,
+    linkedProjects: link.linkedProjects,
     rows: visible,
-    observedAt: new Date().toISOString(),
+    observedAt: link.readAt,
+    appointmentsReadAt: link.readAt,
+    skippedAppointments: link.skipped,
+    failedJobs: link.failedJobs,
+    warnings: [
+      appointmentSkipWarning(link.skipped),
+      ...link.failedJobs.map((job) => `Job ${job.jobId} appointments: ${job.message}`),
+      link.failedJobs.length === 0 ? link.readError : null,
+    ].filter((warning): warning is string => !!warning),
+    readError: link.readError,
+    message,
     timeZone: zone,
     readOnly: true,
   };

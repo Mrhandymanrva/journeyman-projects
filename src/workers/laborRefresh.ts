@@ -33,7 +33,7 @@ import {
   type ReconciliationLine,
 } from "../domain/projectFinancials.js";
 import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
-import { isBeforeSourceFloor, sourceWindowStart } from "../domain/sourceFloor.js";
+import { sourceWindowStart } from "../domain/sourceFloor.js";
 import { pickServiceTitanContact } from "../domain/stCustomerContacts.js";
 import { grossPayItemTooOld } from "../domain/grossPay.js";
 import {
@@ -50,16 +50,15 @@ import {
   type StLaborBreakdown,
 } from "../domain/stLabor.js";
 import type { GrossPayItem } from "../adapters/serviceTitan.js";
+import { refreshProjectPlanAppointments, type PlanAppointmentRefresh } from "../domain/planAppointments.js";
 import {
   readStoredProjectMoney,
   readStoredReconciliation,
   replaceInvoiceLines,
   replaceMaterialExpenses,
-  replacePlanAppointments,
   replaceProjectJobs,
   writeFinancialReconciliation,
   type ReconciliationTechnician,
-  type StoredAppointment,
   type StoredInvoiceLine,
 } from "../domain/projectSync.js";
 import {
@@ -276,46 +275,18 @@ async function storeOperationalReads(
   observedAt: Date,
 ): Promise<OperationalRead> {
   const warnings: string[] = [];
-  const appointments: StoredAppointment[] = [];
   const lines: StoredInvoiceLine[] = [];
   const orders: Array<{ id: string; externalJobId: string; total: number }> = [];
   const invoiceTotals: number[] = [];
-  let appointmentsFailed = false;
   const invoiceFailedJobs: string[] = [];
   let ordersFailed = false;
-  const readJob = connection.client.readJob.bind(connection.client);
   const reads = await mapPool(jobs, 4, async (job) => {
     const jobWarnings: string[] = [];
-    const jobAppointments: StoredAppointment[] = [];
     const jobLines: StoredInvoiceLine[] = [];
     const jobOrders: Array<{ id: string; externalJobId: string; total: number }> = [];
     const jobInvoiceTotals: number[] = [];
-    let appointmentsFailed = false;
     let invoiceFailed = false;
     let ordersFailed = false;
-    try {
-      const read = await readJob(job.external_job_id);
-      for (const appointment of read.appointments) {
-        if (isBeforeSourceFloor(appointment.start)) continue;
-        jobAppointments.push({
-          externalJobId: read.job.id,
-          externalAppointmentId: appointment.id,
-          jobNumber: read.job.jobNumber,
-          appointmentNumber: appointment.appointmentNumber,
-          jobStatus: read.job.jobStatus,
-          startsAt: appointment.start,
-          endsAt: appointment.end,
-          status: appointment.status,
-          active: appointment.active,
-          technicians: read.assignments
-            .filter((assignment) => assignment.appointmentId === appointment.id && assignment.active)
-            .map((assignment) => ({ id: assignment.technicianId, name: assignment.technicianName })),
-        });
-      }
-    } catch (err) {
-      appointmentsFailed = true;
-      jobWarnings.push(`Job ${job.external_job_id} appointments: ${errorText(err)}`);
-    }
     if (connection.client.readJobInvoiceLines) {
       try {
         const invoiceRead = await connection.client.readJobInvoiceLines.call(
@@ -364,11 +335,9 @@ async function storeOperationalReads(
     }
     return {
       jobWarnings,
-      jobAppointments,
       jobLines,
       jobOrders,
       jobInvoiceTotals,
-      appointmentsFailed,
       invoiceFailed,
       ordersFailed,
       jobId: job.external_job_id,
@@ -376,18 +345,13 @@ async function storeOperationalReads(
   });
   for (const read of reads) {
     warnings.push(...read.jobWarnings);
-    appointments.push(...read.jobAppointments);
     lines.push(...read.jobLines);
     orders.push(...read.jobOrders);
     invoiceTotals.push(...read.jobInvoiceTotals);
-    if (read.appointmentsFailed) appointmentsFailed = true;
     if (read.invoiceFailed) invoiceFailedJobs.push(read.jobId);
     if (read.ordersFailed) ordersFailed = true;
   }
   await db.withTenant(tenantId, async (client) => {
-    if (!appointmentsFailed) {
-      await replacePlanAppointments(client, { tenantId, projectId, appointments, observedAt });
-    }
     if (connection.client.readJobInvoiceLines) {
       await replaceInvoiceLines(client, {
         tenantId,
@@ -412,11 +376,7 @@ export async function refreshLinkedProject(
   observedAt: Date,
   laborCode: StLaborResolve,
   source: "manual" | "scheduled" = "scheduled",
-): Promise<{ warnings: string[] }> {
-  const readJobTimesheets = connection.client.readJobTimesheets;
-  if (!readJobTimesheets) {
-    throw new Error("ServiceTitan timesheet read is not configured.");
-  }
+): Promise<{ warnings: string[]; planAppointments: PlanAppointmentRefresh | null }> {
   const warnings: string[] = [];
   const connectionRow = await db.withTenant(tenantId, (client) =>
     client.query<{ external_project_id: string }>(
@@ -465,6 +425,23 @@ export async function refreshLinkedProject(
       [projectId, connection.externalSystemId],
     ),
   );
+  let planAppointments: PlanAppointmentRefresh | null = null;
+  try {
+    planAppointments = await refreshProjectPlanAppointments(db, {
+      tenantId,
+      projectId,
+      jobs: jobs.rows,
+      readJob: (jobId) => connection.client.readJob(jobId),
+      observedAt,
+    });
+    warnings.push(...planAppointments.warnings);
+  } catch (err) {
+    warnings.push(`Appointments: ${errorText(err)}`);
+  }
+  const readJobTimesheets = connection.client.readJobTimesheets;
+  if (!readJobTimesheets) {
+    throw new Error("ServiceTitan timesheet read is not configured.");
+  }
   let operational: OperationalRead = { warnings: [], lines: [], orders: [], invoiceTotals: [] };
   if (readProjectJobs) {
     try {
@@ -478,9 +455,12 @@ export async function refreshLinkedProject(
       );
       warnings.push(...operational.warnings);
     } catch (err) {
-      warnings.push(`Appointments, invoices, or purchase orders: ${errorText(err)}`);
+      warnings.push(`Invoices or purchase orders: ${errorText(err)}`);
     }
   }
+  // Payroll and reconciliation warnings must not undo the appointment write
+  // above. That write already committed in its own transaction.
+  try {
   // Gross pay items have no job filter: read from a day before the
   // project's first job, or the last PAID_LABOR_LOOKBACK_DAYS.
   const windowStart = sourceWindowStart(
@@ -644,6 +624,9 @@ export async function refreshLinkedProject(
       stLabor,
     });
   });
+  } catch (err) {
+    warnings.push(`Payroll or reconciliation: ${errorText(err)}`);
+  }
   try {
     await storeProjectCustomerContacts(db, connection, tenantId, projectId, externalProjectId, warnings);
   } catch (err) {
@@ -663,7 +646,7 @@ export async function refreshLinkedProject(
   } catch (err) {
     warnings.push(`Project summary: ${errorText(err)}`);
   }
-  return { warnings };
+  return { warnings, planAppointments };
 }
 
 function textId(value: unknown): string | null {

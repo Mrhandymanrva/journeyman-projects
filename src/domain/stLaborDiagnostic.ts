@@ -206,6 +206,9 @@ export interface StLaborDiagnostic {
   activity_burden: ActivityBurdenReport;
   /** Adjustments tied to this project's jobs, and untied adjustments for its technicians. */
   technician_adjustments: TechnicianAdjustmentReport;
+  /** Appointment rows the shared format check dropped on this diagnostic read. */
+  skipped_appointments: number;
+  appointment_record_warning: string | null;
   notes: string[];
 }
 
@@ -397,6 +400,11 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     rangeStart: range.start,
     rangeEnd: range.end,
   });
+  const skippedAppointments = input.candidates?.appointments.skipped ?? 0;
+  const appointmentRecordWarning =
+    skippedAppointments > 0
+      ? `${skippedAppointments} ST appointment record${skippedAppointments === 1 ? "" : "s"} skipped because they failed the format check.`
+      : null;
 
   return {
     st_project_id: input.stProjectId,
@@ -503,6 +511,8 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
     commission_breakdown: breakdown,
     activity_burden: activity,
     technician_adjustments: technicianAdjustments,
+    skipped_appointments: skippedAppointments,
+    appointment_record_warning: appointmentRecordWarning,
     notes: [
       PROJECT_AGE_RULE,
       "Commission is the sum of InvoiceRelatedBonus on the project's jobs. When none exist, commission is 25% of reconciled billed labor.",
@@ -511,6 +521,7 @@ export function buildStLaborDiagnostic(input: StLaborDiagnosticRead, generatedAt
       PROJECT_LABOR_EXPENSE_UNAVAILABLE,
       "Rows dated before 2022-08-02 are omitted. Paid time off is excluded from posted commission.",
       "commission_breakdown, activity_burden, and technician_adjustments are diagnostic aggregates. They do not change labor, commission, or burden.",
+      ...(appointmentRecordWarning ? [appointmentRecordWarning] : []),
     ],
   };
 }
@@ -941,6 +952,7 @@ export async function readStLaborDiagnostic(
           available: false,
           endpoint: "GET jpm/v2/tenant/{tenant}/appointments",
           appointments: [],
+          skipped: 0,
           note: message,
         },
         assignments: {

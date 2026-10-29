@@ -63,11 +63,23 @@ export interface StoredAppointment {
 
 export async function replacePlanAppointments(
   db: SqlClient,
-  input: { tenantId: string; projectId: string; appointments: readonly StoredAppointment[]; observedAt: Date },
+  input: {
+    tenantId: string;
+    projectId: string;
+    appointments: readonly StoredAppointment[];
+    observedAt: Date;
+    /**
+     * Jobs whose appointment read failed. Their stored rows stay.
+     * Every other job on the project is replaced by `appointments`.
+     */
+    keepJobIds?: readonly string[];
+  },
 ): Promise<void> {
   await db.query(
-    `DELETE FROM projects.st_plan_appointments WHERE tenant_id = $1 AND project_id = $2`,
-    [input.tenantId, input.projectId],
+    `DELETE FROM projects.st_plan_appointments
+      WHERE tenant_id = $1 AND project_id = $2
+        AND NOT (external_job_id = ANY($3::text[]))`,
+    [input.tenantId, input.projectId, [...(input.keepJobIds ?? [])]],
   );
   for (const row of input.appointments) {
     await db.query(

@@ -94,6 +94,7 @@ export const TENANT_SCOPED_TABLES = [
   'schedule_dependencies',
   'dispatch_changes',
   'st_project_connections',
+  'st_plan_appointment_reads',
   'bid_requests',
   'bid_request_lines',
   'bid_quote_lines',

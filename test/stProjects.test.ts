@@ -510,3 +510,101 @@ it('lets office staff browse ST projects for their permitted import workflow',as
  listProjects.mockResolvedValueOnce({data:[st],hasMore:false,page:1});
  expect((await h.as(t.staff.office!.token).get(base+'/servicetitan/projects')).status).toBe(200);
 });
+
+it("stores appointments when a project is added or refreshed, and a failed read does not undo the add", async () => {
+  const readJob = sources.serviceTitan!.client.readJob as ReturnType<typeof vi.fn>;
+  const visit = async (id: string) => ({
+    job: {
+      id,
+      jobNumber: "J-" + id,
+      projectId: "920",
+      customerId: "300",
+      locationId: "400",
+      jobStatus: "Scheduled",
+      modifiedOn: "2026-11-01T00:00:00Z",
+      summary: null,
+    },
+    appointments: [
+      {
+        id: id + "-a",
+        appointmentNumber: "1",
+        start: "2026-11-02T14:00:00Z",
+        end: "2026-11-02T18:00:00Z",
+        status: "Scheduled",
+        active: true,
+      },
+    ],
+    assignments: [
+      { appointmentId: id + "-a", technicianId: "5", technicianName: "Alex", active: true, status: "Assigned" },
+    ],
+    observedAt: "2026-11-01T00:00:00.000Z",
+    skippedAppointments: 1,
+  });
+  readJob.mockImplementation(visit);
+  const data = snapshot();
+  data.project = { ...st, id: "920", number: "P-920", name: "Blanton add", jobIds: ["921"] };
+  data.jobs = [{ ...data.jobs[0]!, id: "921", jobNumber: "J921", projectId: "920" }];
+  readProject.mockResolvedValueOnce(data);
+  const created = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "920" });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  expect(created.body.data.warnings.join(" ")).toMatch(/1 ST appointment record skipped/);
+  const projectId = created.body.data.id as string;
+  const stored = await h.db.withTenant(t.id, (db) =>
+    db.query<{ external_appointment_id: string }>(
+      `SELECT external_appointment_id FROM projects.st_plan_appointments WHERE project_id = $1`,
+      [projectId],
+    ),
+  );
+  expect(stored.rows.map((row) => row.external_appointment_id)).toEqual(["921-a"]);
+
+  readProject.mockResolvedValueOnce({ ...snapshot(), ...data, observedAt: "2026-11-04T00:00:00.000Z" });
+  const refreshed = await owner()
+    .post(base + "/projects/" + projectId + "/servicetitan")
+    .send({ external_project_id: "920" });
+  expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+  const afterRefresh = await h.db.withTenant(t.id, (db) =>
+    db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM projects.st_plan_appointments WHERE project_id = $1`,
+      [projectId],
+    ),
+  );
+  expect(afterRefresh.rows[0]?.n).toBe("1");
+
+  readJob.mockImplementation(async () => {
+    throw new Error("appointments unavailable");
+  });
+  const fail = snapshot();
+  fail.project = { ...st, id: "930", number: "P-930", name: "Add survives", jobIds: ["931"] };
+  fail.jobs = [{ ...fail.jobs[0]!, id: "931", jobNumber: "J931", projectId: "930" }];
+  readProject.mockResolvedValueOnce(fail);
+  const failedAdd = await owner()
+    .post(base + "/servicetitan/projects/import")
+    .send({ external_project_id: "930" });
+  expect(failedAdd.status, JSON.stringify(failedAdd.body)).toBe(201);
+  expect(failedAdd.body.data.warnings.join(" ")).toMatch(/appointments unavailable/);
+  const empty = await h.db.withTenant(t.id, (db) =>
+    db.query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM projects.st_plan_appointments WHERE project_id = $1`,
+      [failedAdd.body.data.id],
+    ),
+  );
+  expect(empty.rows[0]?.n).toBe("0");
+
+  readJob.mockImplementation(async (id: string) => ({
+    job: {
+      id,
+      jobNumber: "J-" + id,
+      projectId: null,
+      customerId: "300",
+      locationId: "400",
+      jobStatus: "Scheduled",
+      modifiedOn: "2026-09-15T00:00:00Z",
+      summary: null,
+    },
+    appointments: [],
+    assignments: [],
+    observedAt: "2026-09-15T00:00:00.000Z",
+  }));
+});
