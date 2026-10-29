@@ -33,6 +33,7 @@ import {
   type ReconciliationLine,
 } from "../domain/projectFinancials.js";
 import { writeProjectSummary } from "../domain/financialsDashboardStore.js";
+import { linkUnlinkedServiceTitanPurchaseOrders } from "../domain/stPurchaseOrderSync.js";
 import { sourceWindowStart } from "../domain/sourceFloor.js";
 import { pickServiceTitanContact } from "../domain/stCustomerContacts.js";
 import { grossPayItemTooOld } from "../domain/grossPay.js";
@@ -261,7 +262,7 @@ export async function runHourlyLaborRefresh(
 interface OperationalRead {
   warnings: string[];
   lines: StoredInvoiceLine[];
-  orders: Array<{ id: string; externalJobId: string; total: number }>;
+  orders: Array<{ id: string; externalJobId: string; total: number; memo?: string | null }>;
   /** ServiceTitan invoice header totals, one per invoice. */
   invoiceTotals: number[];
 }
@@ -276,14 +277,14 @@ async function storeOperationalReads(
 ): Promise<OperationalRead> {
   const warnings: string[] = [];
   const lines: StoredInvoiceLine[] = [];
-  const orders: Array<{ id: string; externalJobId: string; total: number }> = [];
+  const orders: Array<{ id: string; externalJobId: string; total: number; memo?: string | null }> = [];
   const invoiceTotals: number[] = [];
   const invoiceFailedJobs: string[] = [];
   let ordersFailed = false;
   const reads = await mapPool(jobs, 4, async (job) => {
     const jobWarnings: string[] = [];
     const jobLines: StoredInvoiceLine[] = [];
-    const jobOrders: Array<{ id: string; externalJobId: string; total: number }> = [];
+    const jobOrders: Array<{ id: string; externalJobId: string; total: number; memo?: string | null }> = [];
     const jobInvoiceTotals: number[] = [];
     let invoiceFailed = false;
     let ordersFailed = false;
@@ -326,6 +327,7 @@ async function storeOperationalReads(
             id: order.id,
             externalJobId: job.external_job_id,
             total: order.total,
+            memo: order.memo ?? null,
           })),
         );
       } catch (err) {
@@ -363,6 +365,12 @@ async function storeOperationalReads(
     }
     if (connection.client.readJobPurchaseOrders && !ordersFailed) {
       await replaceMaterialExpenses(client, { tenantId, projectId, orders, observedAt });
+      // Inbound only. This does not create a ServiceTitan purchase order.
+      try {
+        await linkUnlinkedServiceTitanPurchaseOrders(client, { tenantId, projectId, orders });
+      } catch (err) {
+        warnings.push(`Purchase order link: ${errorText(err)}`);
+      }
     }
   });
   return { warnings, lines, orders, invoiceTotals };

@@ -431,6 +431,7 @@ body{
 .fin-tile h3{margin:0 0 6px;font-size:13px;font-weight:650;color:var(--ink)}
 .fin-pair{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .fin-figure{font-family:var(--mono);font-size:22px;font-weight:650;line-height:1.2}
+.fin-over-budget{font-family:var(--sans);font-size:14px;font-weight:650;line-height:1.35}
 .fin-dash{color:var(--muted);cursor:help}
 .fin-margin{display:grid;grid-template-columns:auto minmax(0,1fr);gap:16px;align-items:center}
 .fin-donut{display:block}
@@ -438,7 +439,12 @@ body{
 .fin-margin th{text-align:left;font-weight:650;color:var(--muted);padding:4px 8px 4px 0}
 .fin-margin td{text-align:right;font-family:var(--mono);padding:4px 0}
 .fin-bars{display:grid;gap:8px;margin-top:12px}
-.fin-bar-row{display:grid;grid-template-columns:88px minmax(0,1fr) 96px;gap:8px;align-items:center;font-size:12px}
+.fin-bar-row{display:grid;grid-template-columns:118px minmax(0,1fr) 112px;gap:8px;align-items:center;font-size:12px}
+#st-po-sync{margin:0 0 18px}
+#st-po-sync table{width:100%;border-collapse:collapse}
+#st-po-sync th,#st-po-sync td{padding:8px 12px 8px 0;text-align:left;vertical-align:top}
+#st-po-preview{margin-top:14px}
+#st-po-preview pre{white-space:pre-wrap;background:var(--surface);padding:12px;font-size:12px;overflow:auto}
 .fin-bar-row strong{text-align:right;font-family:var(--mono)}
 .fin-bar-track{position:relative;height:10px;background:var(--surface);border-radius:2px;overflow:hidden}
 .fin-bar-budget{position:absolute;inset:0 auto 0 0;background:var(--track)}

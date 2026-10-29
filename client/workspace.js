@@ -199,7 +199,7 @@ export function createWorkspace({
   if (!el("fin-summary")) {
     el("page-financials").insertAdjacentHTML(
       "afterbegin",
-      '<div id="fin-summary" class="fin-summary" aria-label="Project financials"></div>',
+      '<div id="fin-summary" class="fin-summary" aria-label="Project financials"></div><div id="st-po-sync"></div>',
     );
   }
   bindFinancialSections(el("page-financials"));

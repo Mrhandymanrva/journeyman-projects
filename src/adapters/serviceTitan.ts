@@ -20,6 +20,7 @@ import type { BurdenCandidateRead, PayrollAdjustmentRow } from "../domain/stLabo
 import { classifyActivityEvent } from "../domain/stLaborDiagnosticDetail.js";
 import type { ActivityEvent, PayrollPeriodFact } from "../domain/stLaborDiagnosticDetail.js";
 import { LABOR_SERVICE_CODE } from "../domain/stLaborCode.js";
+import { PURCHASE_ORDERS_WRITE_SCOPE } from "../domain/stPurchaseOrderSync.js";
 import {
   scopeNamesFromAuthBody,
   PROJECTS_WRITE_SCOPE,
@@ -2706,7 +2707,93 @@ export class ServiceTitanReadAdapter {
   }
 
   /** Purchase orders on one job. GET only. Canceled orders are omitted. */
-  async readJobPurchaseOrders(jobId: string): Promise<Array<{ id: string; total: number }>> {
+  async readJobPurchaseOrders(
+    jobId: string,
+  ): Promise<Array<{ id: string; total: number; memo?: string | null }>> {
+    const page = await this.listInventoryPurchaseOrders(jobId);
+    return page.map((row) => ({ id: row.id, total: row.total, memo: row.memo }));
+  }
+
+  /**
+   * POST inventory/v2/tenant/{tenant}/purchase-orders.
+   * Called only by the purchase-order sync, and only when PM_ST_PO_SYNC_ENABLED
+   * is true. A timeout or HTTP 5xx is uncertain: the purchase order may exist.
+   */
+  async createInventoryPurchaseOrder(body: Record<string, unknown>): Promise<{ id: string }> {
+    await this.accessToken();
+    if (this.scopeNames.length > 0 && !this.scopeNames.includes(PURCHASE_ORDERS_WRITE_SCOPE)) {
+      throw new ServiceTitanStatusWriteError(
+        403,
+        `ServiceTitan token is missing ${PURCHASE_ORDERS_WRITE_SCOPE}. Nothing else was sent.`,
+        false,
+      );
+    }
+    const token = await this.accessToken();
+    let response: Response;
+    try {
+      response = await this.fetcher(
+        `${this.apiHost}/inventory/v2/tenant/${this.config.tenantId}/purchase-orders`,
+        {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(30000),
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${token}`,
+            "ST-App-Key": this.config.appKey,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        },
+      );
+    } catch {
+      throw new ServiceTitanStatusWriteError(null, "ServiceTitan purchase order create timed out.", true);
+    }
+    if (response.status === 401) this.token = undefined;
+    if (response.status === 408 || response.status >= 500) {
+      throw new ServiceTitanStatusWriteError(
+        response.status,
+        `HTTP ${response.status}`,
+        true,
+      );
+    }
+    if (!response.ok) {
+      throw new ServiceTitanStatusWriteError(response.status, `HTTP ${response.status}`, false);
+    }
+    const text = await response.text();
+    let parsed: unknown = null;
+    if (text) {
+      try {
+        parsed = JSON.parse(text) as unknown;
+      } catch {
+        parsed = null;
+      }
+    }
+    const id = z
+      .object({ id: sourceId })
+      .safeParse(parsed);
+    const wrapped = z.object({ data: z.object({ id: sourceId }) }).safeParse(parsed);
+    const stId = id.success ? id.data.id : wrapped.success ? wrapped.data.data.id : null;
+    if (!stId) {
+      throw new ServiceTitanStatusWriteError(
+        response.status,
+        "ServiceTitan did not return a purchase order id.",
+        true,
+      );
+    }
+    return { id: stId };
+  }
+
+  /** GET purchase orders on the job and return the one whose memo contains the marker. */
+  async findInventoryPurchaseOrderByMarker(jobId: string, marker: string): Promise<{ id: string } | null> {
+    const rows = await this.listInventoryPurchaseOrders(jobId);
+    const found = rows.find((row) => (row.memo ?? "").includes(marker));
+    return found ? { id: found.id } : null;
+  }
+
+  private async listInventoryPurchaseOrders(jobId: string): Promise<
+    Array<{ id: string; total: number; memo: string | null; status: string | null; dated: string | null }>
+  > {
     if (!/^\d+$/.test(jobId))
       throw new ServiceTitanReadError("Use a numeric ServiceTitan job ID.");
     const rowSchema = z.object({
@@ -2715,8 +2802,9 @@ export class ServiceTitanReadAdapter {
       total: z.coerce.number().nullish(),
       date: z.string().nullish(),
       createdOn: z.string().nullish(),
+      memo: z.string().nullish(),
     }).passthrough();
-    const orders: Array<{ id: string; total: number }> = [];
+    const orders: Array<{ id: string; total: number; memo: string | null; status: string | null; dated: string | null }> = [];
     for (let page = 1; page <= 100; page += 1) {
       const raw = await this.get(
         "inventory",
@@ -2730,13 +2818,17 @@ export class ServiceTitanReadAdapter {
       if (!parsed.success)
         throw new ServiceTitanReadError("Unexpected ServiceTitan purchase orders.");
       for (const row of parsed.data.data) {
-        if (/cancel/i.test(row.status ?? "")) continue;
-        if (isBeforeSourceFloor(row.date ?? row.createdOn)) continue;
-        orders.push({ id: row.id, total: row.total ?? 0 });
+        orders.push({
+          id: row.id,
+          total: row.total ?? 0,
+          memo: row.memo ?? null,
+          status: row.status ?? null,
+          dated: row.date ?? row.createdOn ?? null,
+        });
       }
       if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
     }
-    return orders;
+    return orders.filter((row) => !/cancel/i.test(row.status ?? "") && !isBeforeSourceFloor(row.dated));
   }
 
   /**

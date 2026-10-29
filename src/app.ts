@@ -231,7 +231,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(preconTaskRoutes(deps));
   staff.use(budgetRoutes(deps));
   staff.use(accountingRoutes(deps,opts.accounting));
-  staff.use(purchaseOrderRoutes(deps,opts.accounting));
+  staff.use(purchaseOrderRoutes(deps, opts.accounting, opts.sources));
   staff.use(vendorRoutes(deps));
   staff.use(vendorIntakeRoutes(deps));
   staff.use(bidRequestRoutes(deps, opts.bidMail ?? bidMailConfig()));

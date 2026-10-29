@@ -1,6 +1,7 @@
 import type { SqlClient } from "../db/database.js";
 import type { ListedJob, ReconciliationLine } from "./projectFinancials.js";
 import type { HoursPayrollSource, StLaborBreakdown } from "./stLabor.js";
+import { readBillCostByKind, readUnlinkedServiceTitanMaterials } from "./projectBillCost.js";
 import { financialsFromReads, type ProjectMoney } from "./projectFinancials.js";
 
 export async function replaceProjectJobs(
@@ -191,14 +192,15 @@ export async function readStoredProjectMoney(db: SqlClient, projectId: string): 
        FROM projects.labor_actuals WHERE project_id = $1`,
     [projectId],
   );
-  const orders = await db.query<{ total: string }>(
-    `SELECT total::text AS total FROM projects.st_material_expenses WHERE project_id = $1`,
-    [projectId],
-  );
+  // Same double-count rule as the Financials dashboard. See projectBillCost.ts.
+  // Subcontract bills stay off this materials line. They are their own
+  // dashboard bar, and the ServiceTitan reconciliation line is materials.
+  const unlinked = await readUnlinkedServiceTitanMaterials(db, projectId);
+  const bills = await readBillCostByKind(db, projectId);
   const fromLines = financialsFromReads({
     invoiceLines: lines.rows.map((row) => ({ kind: row.kind, total: Number(row.total) })),
     timesheets: [],
-    purchaseOrders: orders.rows.map((row) => ({ total: Number(row.total) })),
+    purchaseOrders: [{ total: unlinked + bills.material }],
   });
   const laborBurden = Math.round(Number(burden.rows[0]?.total ?? 0) * 100) / 100;
   const expenses = Math.round((laborBurden + fromLines.materialsExpense) * 100) / 100;

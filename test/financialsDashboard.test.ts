@@ -4,6 +4,8 @@ import {
   buildFinancialsDashboard,
   costToComplete,
   earnedRevenue,
+  overBudgetNote,
+  percentComplete,
   percentOf,
   type DashboardActuals,
   type DashboardBudget,
@@ -242,6 +244,72 @@ describe("financials dashboard tiles", () => {
     expect(dashboard.costToComplete.value).toBeNull();
     expect(dashboard.openInvoices).toEqual({ value: 3930.32, source: "servicetitan" });
     expect(dashboard.retainage.value).toBeNull();
+  });
+
+  it("caps cost-to-cost completion at 100 percent so earned revenue stays within the contract", () => {
+    const over = buildFinancialsDashboard({
+      actuals: {
+        observed: true,
+        billed: 4200,
+        laborBurden: 180,
+        materialsExpense: 26720.88,
+        subcontractorExpense: 0,
+        expenses: 26900.88,
+      },
+      serviceTitan,
+      budget: {
+        entered: true,
+        contractValue: 62000,
+        laborHours: 16,
+        labor: 2400,
+        materials: null,
+        subcontractor: null,
+        other: null,
+        totalBudgetedExpense: 2400,
+      },
+    });
+    expect(percentComplete(26900.88, 2400)).toBe(100);
+    expect(earnedRevenue(62000, 26900.88, 2400)).toBe(62000);
+    expect(over.percentOfWorkCompleted.value).toBe(100);
+    expect(over.percentOfWorkCompleted.note).toBe("Over budget · actual $26,900.88 vs budget $2,400.00");
+    expect(over.earnedRevenue.value).toBe(62000);
+    expect(over.earnedRevenue.value).toBe(over.contractValue.value);
+    const html = financialsDashboardHtml(over);
+    expect(visible(html)).toContain("Over budget · actual $26,900.88 vs budget $2,400.00");
+    expect(html).not.toContain("1,120");
+    expect(html).not.toContain("694,939");
+    expect(html).not.toContain("Infinity");
+    expect(html).not.toContain("NaN");
+  });
+
+  it("leaves an under-budget percent and earned revenue unchanged", () => {
+    expect(percentComplete(448, 25920)).toBe(1.73);
+    expect(overBudgetNote(448, 25920)).toBeNull();
+    expect(earnedRevenue(41800, 448, 25920)).toBe(722.47);
+    const dashboard = buildFinancialsDashboard({ actuals, serviceTitan, budget });
+    expect(dashboard.percentOfWorkCompleted).toEqual({ value: 1.73, source: "computed" });
+    expect(dashboard.earnedRevenue.value).toBe(722.47);
+    expect(financialsDashboardHtml(dashboard)).not.toContain("Over budget");
+  });
+
+  it("does not divide by a zero budget", () => {
+    expect(percentComplete(26900.88, 0)).toBeNull();
+    expect(percentComplete(10, Number.NaN)).toBeNull();
+    expect(earnedRevenue(62000, 26900.88, 0)).toBeNull();
+    expect(earnedRevenue(Number.POSITIVE_INFINITY, 10, 100)).toBeNull();
+    expect(overBudgetNote(10, 0)).toBeNull();
+    const dashboard = buildFinancialsDashboard({
+      actuals,
+      serviceTitan: null,
+      budget: { ...budget, totalBudgetedExpense: 0, labor: 0, materials: 0, subcontractor: 0, other: 0 },
+    });
+    expect(dashboard.percentOfWorkCompleted.value).toBeNull();
+    expect(dashboard.percentOfWorkCompleted.note).toBeUndefined();
+    expect(dashboard.earnedRevenue.value).toBeNull();
+    const html = financialsDashboardHtml(dashboard);
+    expect(html).not.toContain("Infinity");
+    expect(html).not.toContain("NaN");
+    expect(html).not.toContain("Over budget");
   });
 
   it("does not invent a margin percent when actual revenue is zero", () => {

@@ -1119,6 +1119,105 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
   await seedDraws(delaney, 3, 0, 57200, '117980');
 log('project: Delaney — Basement Finish (healthy)');
 
+  // Blanton: an approved cabinet bill on a cost code with no budget line.
+  // Financials used to show only the small ServiceTitan purchase order plus labor.
+  const blantonBudget: BudgetSpec[] = [
+    { code: 'MHM.25PLFE', budget: 2400, billed: 0, committed: 0 },
+  ];
+  const blanton = await buildProject({
+    number: 'DMO-2026-0260',
+    name: 'Blanton — Cabinets',
+    address: '1904 Maplewood Lane',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 62000,
+    target: 0.32,
+    stage: 'execution',
+    approvedGates: 3,
+    startedDaysAgo: 12,
+    lengthDays: 30,
+    budget: blantonBudget,
+    customer: 'Helen Blanton',
+  });
+  await db.withTenant(TENANT_ID, async (c) => {
+    await c.query(
+      `UPDATE projects.projects SET postal_code = '23221' WHERE id = $1`,
+      [blanton],
+    );
+    const cabinetCode = ids.costCodes.get('1110');
+    if (!cabinetCode) throw new Error('demo seed missing cost code 1110');
+    const laborCode = ids.costCodes.get('MHM.25PLFE');
+    if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
+    const po = await c.query<{ id: string }>(
+      `INSERT INTO projects.purchase_orders
+         (tenant_id, project_id, po_number, vendor_id, cost_code_id, cost_type,
+          amount, scope_text, status, issued_by, issued_at, kind)
+       VALUES ($1,$2,'PO-BLANTON-CAB',$3,$4,'M',26080.88,
+               'Kitchen cabinet package','issued',$5, now() - interval '6 days', 'material')
+       RETURNING id`,
+      [TENANT_ID, blanton, vendors.counter, cabinetCode, ids.staff.manager],
+    );
+    await c.query(
+      `INSERT INTO projects.po_lines
+         (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount)
+       VALUES ($1,$2,1,$3,'M','Kitchen cabinet package',26080.88)`,
+      [TENANT_ID, po.rows[0]!.id, cabinetCode],
+    );
+    await c.query(
+      `INSERT INTO projects.vendor_bills
+         (tenant_id, po_id, vendor_invoice_number, amount, status, approved_by, approved_at, description)
+       VALUES ($1,$2,'CAB-26080',26080.88,'approved',$3, now() - interval '4 days',
+               'Approved cabinet package')`,
+      [TENANT_ID, po.rows[0]!.id, ids.staff.bookkeeper],
+    );
+    await c.query(
+      `INSERT INTO projects.labor_actuals
+         (tenant_id, project_id, external_job_id, external_timesheet_id,
+          external_technician_id, technician_name, work_date, hours, source,
+          cost_code_id, observed_at, labor_amount, burden_amount, pay_basis, burden_unset)
+       VALUES ($1,$2,'260260','blanton-ts','tech-casey','Casey Nguyen',
+               CURRENT_DATE - 2, 6.00, 'timesheet', $3, now(), 900.00, 180.00,
+               'hourly', false)`,
+      [TENANT_ID, blanton, laborCode],
+    );
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key, sku, kind, quantity, total)
+       VALUES ($1,$2,'blanton-inv','260260','labor','MHM.25PLFE','labor',6,4200.00)`,
+      [TENANT_ID, blanton],
+    );
+    await c.query(
+      `INSERT INTO projects.st_material_expenses
+         (tenant_id, project_id, external_job_id, external_po_id, total)
+       VALUES ($1,$2,'260260','blanton-st-small',640.00)`,
+      [TENANT_ID, blanton],
+    );
+    await c.query(
+      `INSERT INTO projects.st_project_summary
+         (tenant_id, project_id, contract_value, total_budgeted_expense, change_orders,
+          cost_adjustments, budgeted_labor_expense, budgeted_labor_hours, budgeted_materials,
+          invoice_billed, open_invoices, retainage, estimates_read, invoices_read,
+          materials_expense_read, labor_burden, observed_at)
+       VALUES ($1,$2,62000,2400,0,0,2400,16,NULL,4200,0,0,true,true,true,180, now())`,
+      [TENANT_ID, blanton],
+    );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
+    );
+    if (system.rows[0]?.id) {
+      await c.query(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
+         VALUES ($1,$2,$3,'260260','Blanton cabinets', true)
+         ON CONFLICT DO NOTHING`,
+        [TENANT_ID, blanton, system.rows[0].id],
+      );
+    }
+  });
+  log('project: Blanton — Cabinets (approved cabinet bill, small ServiceTitan purchase order, labor)');
+
   // CSR hand-offs. Nguyen is still a draft on the form, prefilled from the
   // linked project. Brooks and Hale are submitted and waiting on Home.
   // Gate 0 is already complete on the two that were submitted.

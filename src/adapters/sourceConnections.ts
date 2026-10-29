@@ -34,6 +34,8 @@ export interface SourceConnections {
           | "readProjectJobs"
           | "readJobInvoiceLines"
           | "readJobPurchaseOrders"
+          | "createInventoryPurchaseOrder"
+          | "findInventoryPurchaseOrderByMarker"
           | "readAllowlistedGet"
           | "readLaborService"
           | "readInvoices"
