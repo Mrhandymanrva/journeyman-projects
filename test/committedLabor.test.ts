@@ -471,6 +471,15 @@ describe("committed labor on the financials summary", () => {
     const committed = res.body.data.committedLabor;
     expect(committed.hours).toBe(180);
     expect(committed.cost).toBe(7712);
+    expect(res.body.data.committedCost.value).toBe(committed.cost);
+    expect(res.body.data.projectedCost.value).toBe(
+      Math.round((res.body.data.actualExpense.value + committed.cost) * 100) / 100,
+    );
+    expect(res.body.data.costToComplete.value).toBe(
+      Math.round(
+        (res.body.data.totalBudgetedExpense.value - res.body.data.actualExpense.value - committed.cost) * 100,
+      ) / 100,
+    );
     expect(committed.revenue).toBe(23360);
     expect(committed.actualHours).toBe(6);
     expect(committed.actualCost).toBe(1080);
