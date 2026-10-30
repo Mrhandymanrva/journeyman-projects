@@ -6,6 +6,7 @@
  * number, and nothing writes to ServiceTitan.
  */
 
+import type { CommittedLabor } from "./committedLabor.js";
 import { roundMoney } from "./projectFinancials.js";
 
 export type FigureSource = "journeyman" | "servicetitan" | "actuals" | "computed" | "missing";
@@ -104,6 +105,11 @@ export interface FinancialsDashboard {
   retainage: Figure;
   openInvoices: Figure;
   budgetedLaborHours: Figure;
+  /**
+   * Scheduled labor still committed against the budget. Absent on callers
+   * that only build tiles from budget and actuals.
+   */
+  committedLabor?: CommittedLabor | null;
 }
 
 export const MISSING_FIGURE_TOOLTIP =

@@ -28,6 +28,7 @@ import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
 import { seedPreconTasks } from '../domain/preconTasks.js';
 import { today } from '../domain/projectControls.js';
+import { blantonCommittedAppointments } from './blantonCommittedFixture.js';
 import {
   SEGRETO_DASHBOARD_FIXTURE,
   segretoDashboardInput,
@@ -704,7 +705,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          (tenant_id, external_technician_id, technician_name, active,
           hourly_rate, burden_rate, pay_basis, burden_unset, is_field_tech)
        VALUES
-         ($1, 'tech-casey', 'Casey Nguyen', true, NULL, NULL, 'commission', false, true),
+         ($1, 'tech-casey', 'Casey Nguyen', true, NULL, 12.00, 'commission', false, true),
          ($1, 'tech-justin', 'Justin M.', true, NULL, NULL, 'hourly', true, true),
          ($1, 'tech-mason', 'Mason', true, NULL, NULL, 'missing', true, false),
          ($1, 'tech-riley', 'Riley Cho', true, NULL, NULL, 'missing', true, true),
@@ -1143,7 +1144,11 @@ log('project: Delaney — Basement Finish (healthy)');
   });
   await db.withTenant(TENANT_ID, async (c) => {
     await c.query(
-      `UPDATE projects.projects SET postal_code = '23221' WHERE id = $1`,
+      `UPDATE projects.projects
+          SET postal_code = '23221',
+              business_unit_id = NULL,
+              budgeted_labor_hours = 16
+        WHERE id = $1`,
       [blanton],
     );
     const cabinetCode = ids.costCodes.get('1110');
@@ -1207,14 +1212,57 @@ log('project: Delaney — Basement Finish (healthy)');
       `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
     );
     if (system.rows[0]?.id) {
+      const systemId = system.rows[0].id;
       await c.query(
         `INSERT INTO projects.project_job_links
-           (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
-         VALUES ($1,$2,$3,'260260','Blanton cabinets', true)
+           (tenant_id, project_id, external_system_id, external_job_id, title,
+            source_active, source_job_number, source_job_status)
+         VALUES
+           ($1,$2,$3,'260260','Blanton cabinets', true, '260260', 'Completed'),
+           ($1,$2,$3,'261001','Blanton scheduled labor', true, '261001', 'Scheduled'),
+           ($1,$2,$3,'261002','Blanton in-progress labor', true, '261002', 'InProgress')
          ON CONFLICT DO NOTHING`,
-        [TENANT_ID, blanton, system.rows[0].id],
+        [TENANT_ID, blanton, systemId],
+      );
+      await c.query(
+        `UPDATE projects.project_job_links
+            SET source_job_number = '260260', source_job_status = 'Completed', source_active = true
+          WHERE project_id = $1 AND external_job_id = '260260'`,
+        [blanton],
       );
     }
+    for (const visit of blantonCommittedAppointments()) {
+      await c.query(
+        `INSERT INTO projects.st_plan_appointments
+           (tenant_id, project_id, external_job_id, external_appointment_id,
+            job_number, appointment_number, job_status, starts_at, ends_at,
+            status, active, technicians)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11::jsonb)
+         ON CONFLICT (tenant_id, project_id, external_appointment_id) DO NOTHING`,
+        [
+          TENANT_ID,
+          blanton,
+          visit.externalJobId,
+          visit.externalAppointmentId,
+          visit.jobNumber,
+          visit.appointmentNumber,
+          visit.jobStatus,
+          visit.startsAt,
+          visit.endsAt,
+          visit.status,
+          JSON.stringify(visit.technicians),
+        ],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key, sku, kind, quantity, total)
+       VALUES
+         ($1,$2,'blanton-open-inv','261002','labor','MHM.25PLFE','labor',8,800.00),
+         ($1,$2,'blanton-open-inv','261002','materials','TILE','material',1,50.00)
+       ON CONFLICT DO NOTHING`,
+      [TENANT_ID, blanton],
+    );
   });
   log('project: Blanton — Cabinets (approved cabinet bill, small ServiceTitan purchase order, labor)');
 
