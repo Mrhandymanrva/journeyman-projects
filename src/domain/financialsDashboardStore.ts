@@ -223,13 +223,13 @@ export async function readFinancialsDashboard(
 ): Promise<FinancialsDashboard> {
   const facts = await loadFinancialFacts(db, projectId);
   const budget = await loadBudget(db, projectId);
-  const dashboard = buildFinancialsDashboard({
+  const committedLabor = await readCommittedLabor(db, projectId);
+  return buildFinancialsDashboard({
     actuals: facts.actuals,
     serviceTitan: facts.serviceTitan,
     budget,
+    committedLabor,
   });
-  dashboard.committedLabor = await readCommittedLabor(db, projectId);
-  return dashboard;
 }
 
 /** Detail card under the dashboard. A missing materials read stays null, not zero. */

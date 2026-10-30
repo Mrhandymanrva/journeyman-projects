@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { financialsDashboardHtml } from "../client/financialsDashboard.js";
+import { buildCommittedLabor, zonedLocalToUtc } from "../src/domain/committedLabor.js";
 import {
+  ACTUAL_MARGIN_TIP,
   buildFinancialsDashboard,
+  COMMITTED_COST_TIP,
+  COST_TO_COMPLETE_TIP,
   costToComplete,
   earnedRevenue,
   overBudgetNote,
   percentComplete,
   percentOf,
+  PROJECTED_COST_TIP,
   type DashboardActuals,
   type DashboardBudget,
   type DashboardServiceTitan,
@@ -319,5 +324,134 @@ describe("financials dashboard tiles", () => {
     });
     expect(dashboard.actualMargin.value).toBe(-10);
     expect(dashboard.actualMarginPercent.value).toBeNull();
+  });
+});
+
+function figureText(html: string, id: string): string {
+  const start = html.indexOf(`id="${id}"`);
+  expect(start).toBeGreaterThan(-1);
+  const content = html.indexOf(">", start) + 1;
+  const end = html.indexOf(id.endsWith("panel") ? "</strong>" : "</div>", content);
+  return html.slice(content, end).replace(/<[^>]+>/g, "").trim();
+}
+
+describe("committed cost on the financials summary", () => {
+  const labor = buildCommittedLabor({
+    links: [
+      { externalJobId: "open", jobNumber: "OPEN-1", jobStatus: "Scheduled", active: true },
+      { externalJobId: "closed", jobNumber: "CLOSED-99", jobStatus: "Completed", active: true },
+    ],
+    appointments: [
+      {
+        externalJobId: "open",
+        externalAppointmentId: "open-1",
+        jobNumber: "OPEN-1",
+        jobStatus: "Scheduled",
+        startsAt: zonedLocalToUtc("2026-10-29", 8, 0),
+        endsAt: zonedLocalToUtc("2026-10-29", 12, 0),
+        status: "Scheduled",
+        active: true,
+        technicians: [{ id: "tech-casey", name: "Casey Nguyen" }],
+      },
+      {
+        externalJobId: "closed",
+        externalAppointmentId: "closed-1",
+        jobNumber: "CLOSED-99",
+        jobStatus: "Completed",
+        startsAt: zonedLocalToUtc("2026-11-16", 8, 0),
+        endsAt: zonedLocalToUtc("2026-11-16", 12, 0),
+        status: "Done",
+        active: true,
+        technicians: [{ id: "tech-casey", name: "Casey Nguyen" }],
+      },
+    ],
+    invoiceLines: [{ externalJobId: "closed", sku: "MHM.25PLFE", kind: "labor", total: 1000 }],
+    actuals: [
+      {
+        externalJobId: "closed",
+        technicianId: "tech-casey",
+        hours: 6,
+        laborAmount: 250,
+        burdenAmount: 72,
+        burdenUnset: false,
+      },
+    ],
+    rates: [{ technicianId: "tech-casey", burdenRate: 12 }],
+    billableRate: 188,
+  });
+
+  const dashboard = buildFinancialsDashboard({
+    actuals: {
+      observed: true,
+      billed: 2000,
+      laborBurden: 322,
+      materialsExpense: 678,
+      expenses: 1000,
+    },
+    serviceTitan,
+    budget,
+    committedLabor: labor,
+  });
+
+  it("uses the labor panel committed cost for the tile, the card, and the formulas", () => {
+    expect(labor.jobs.map((job) => job.jobId)).toEqual(["open"]);
+    expect(labor.cost).toBe(236);
+    expect(labor.actualCost).toBe(322);
+    expect(dashboard.committedCost?.value).toBe(labor.cost);
+    expect(dashboard.projectedCost?.value).toBe(1236);
+    expect(dashboard.costToComplete.value).toBe(costToComplete(25920, 1000, labor.cost));
+    expect(dashboard.costToComplete.value).toBe(24684);
+    expect(dashboard.actualMargin.value).toBe(764);
+    expect(dashboard.actualMarginPercent.value).toBe(percentOf(764, 2000));
+    expect(dashboard.costToComplete.tip).toBe(COST_TO_COMPLETE_TIP);
+    expect(dashboard.actualMargin.tip).toBe(ACTUAL_MARGIN_TIP);
+    expect(dashboard.committedCost?.tip).toBe(COMMITTED_COST_TIP);
+    expect(dashboard.projectedCost?.tip).toBe(PROJECTED_COST_TIP);
+    expect(dashboard.budgetedMargin.value).toBe(15880);
+    expect(dashboard.budgetedMargin.tip).toContain("not subtracted again");
+
+    const html = financialsDashboardHtml(dashboard);
+    const tile = figureText(html, "committed-cost-tile");
+    const headline = figureText(html, "committed-cost-headline");
+    const panel = figureText(html, "committed-cost-panel");
+    expect(tile).toBe("$236.00");
+    expect(headline).toBe(tile);
+    expect(panel).toBe(tile);
+    expect(figureText(html, "projected-cost")).toBe("$1,236.00");
+    expect(figureText(html, "actual-expense-actual")).toBe("$1,000.00");
+    expect(html).toContain("Actual + committed");
+    expect(html).toContain(COST_TO_COMPLETE_TIP);
+    expect(html).toContain(ACTUAL_MARGIN_TIP);
+    expect(html).not.toContain("CLOSED-99");
+    expect(html).toContain("OPEN-1");
+    expect(html).not.toContain('type="date"');
+  });
+
+  it("keeps a completed invoiced job out of committed when the summary is rebuilt from the same labor", () => {
+    const moved = buildFinancialsDashboard({
+      actuals: dashboard && {
+        observed: true,
+        billed: 2000,
+        laborBurden: 322,
+        materialsExpense: 678,
+        expenses: 1000,
+      },
+      serviceTitan: null,
+      budget: {
+        entered: true,
+        contractValue: 10000,
+        laborHours: 40,
+        labor: 5000,
+        materials: 1000,
+        subcontractor: null,
+        other: null,
+        totalBudgetedExpense: 6000,
+      },
+      committedLabor: labor,
+    });
+    expect(moved.committedCost?.value).toBe(labor.cost);
+    expect(moved.committedCost?.value).not.toBe(labor.cost + labor.actualCost);
+    expect(moved.projectedCost?.value).toBe(1000 + labor.cost);
+    expect(moved.costToComplete.value).toBe(6000 - 1000 - labor.cost);
   });
 });

@@ -36,14 +36,14 @@ function hours(value) {
 }
 
 function show(figure, kind) {
+  const tip = figure && figure.tip ? ` title="${escHtml(figure.tip)}"` : "";
   if (kind === "percent" && figure && figure.note) {
-    return `<span class="fin-over-budget">${escHtml(figure.note)}</span>`;
+    return `<span class="fin-over-budget fin-tip"${tip}>${escHtml(figure.note)}</span>`;
   }
   const value = figure && figure.value != null ? figure.value : null;
   if (value == null) return dash(figure && figure.gap);
-  if (kind === "percent") return percent(value);
-  if (kind === "hours") return hours(value);
-  return money(value);
+  const rendered = kind === "percent" ? percent(value) : kind === "hours" ? hours(value) : money(value);
+  return tip ? `<span class="fin-tip"${tip}>${rendered}</span>` : rendered;
 }
 
 function escHtml(value) {
@@ -224,7 +224,7 @@ function laborCommitment(dashboard) {
       <span></span><span>Budget</span><span>Committed</span><span>Actual</span><span>Remaining</span>
       <span>Dollars</span>
       <strong>${show(budgetMoney, "money")}</strong>
-      <strong title="${method}">${show(committedMoney, "money")}</strong>
+      <strong id="committed-cost-panel" title="${method}">${show(committedMoney, "money")}</strong>
       <strong>${show(actualMoney, "money")}</strong>
       <strong>${show(remainingMoney, "money")}</strong>
       <span>Hours</span>
@@ -243,6 +243,31 @@ function laborCommitment(dashboard) {
       }
     </details>
   </article>`;
+}
+
+function committedSummary(dashboard) {
+  if (!dashboard.committedLabor || !dashboard.committedCost) return "";
+  const projected = dashboard.projectedCost || { value: null, source: "missing", gap: "computed" };
+  return `<article class="fin-tile"><div class="fin-pair">
+    <div><h3>Committed cost</h3><div class="fin-figure" id="committed-cost-tile">${show(dashboard.committedCost, "money")}</div></div>
+    <div><h3>Projected cost</h3><div class="fin-figure" id="projected-cost-tile">${show(projected, "money")}</div></div>
+  </div></article>`;
+}
+
+function actualExpenseCard(dashboard) {
+  const expense = dashboard.actualExpense || empty;
+  const chart = expenseChart(dashboard);
+  if (!dashboard.committedLabor || !dashboard.committedCost) {
+    return `<article class="fin-tile wide"><h3>Actual expense</h3><div class="fin-figure">${show(expense, "money")}</div>${chart}</article>`;
+  }
+  const projected = dashboard.projectedCost || { value: null, source: "missing", gap: "computed" };
+  return `<article class="fin-tile wide" id="actual-expense"><h3>Actual expense</h3>
+    <div class="fin-expense-head">
+      <div><h3>Actual</h3><div class="fin-figure" id="actual-expense-actual">${show(expense, "money")}</div></div>
+      <div><h3>Committed</h3><div class="fin-figure" id="committed-cost-headline">${show(dashboard.committedCost, "money")}</div></div>
+      <div><h3>Actual + committed</h3><div class="fin-figure" id="projected-cost">${show(projected, "money")}</div></div>
+    </div>
+    ${chart}</article>`;
 }
 
 function soldReference(sold) {
@@ -293,7 +318,8 @@ export function financialsDashboardHtml(dashboard) {
     ${pair("Contract value", contract, "money", "Actual revenue", revenue, "money")}
     ${pair("Total budgeted expense", budget, "money", "Cost to complete", remaining, "money")}
     ${pair("Change orders", changes, "money", "Cost adjustments", adjustments, "money")}
-    <article class="fin-tile wide"><h3>Actual expense</h3><div class="fin-figure">${show(expense, "money")}</div>${expenseChart(model)}</article>
+    ${committedSummary(d)}
+    ${actualExpenseCard(d)}
     <article class="fin-tile wide"><h3>Actual margin</h3><div class="fin-margin">${donut(model.actualMarginPercent.value)}<div><div class="fin-figure">${show(model.actualMarginPercent, "percent")}</div>${marginTable(model)}</div></div></article>
     ${pair("Budgeted margin", figure("budgetedMargin"), "money", "Budgeted margin %", figure("budgetedMarginPercent"), "percent")}
     <article class="fin-tile wide"><div class="fin-pair">
