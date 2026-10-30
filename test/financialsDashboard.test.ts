@@ -401,14 +401,21 @@ describe("committed cost on the financials summary", () => {
     expect(dashboard.projectedCost?.value).toBe(1236);
     expect(dashboard.costToComplete.value).toBe(costToComplete(25920, 1000, labor.cost));
     expect(dashboard.costToComplete.value).toBe(24684);
-    expect(dashboard.actualMargin.value).toBe(764);
-    expect(dashboard.actualMarginPercent.value).toBe(percentOf(764, 2000));
+    expect(dashboard.actualMargin.value).toBe(1000);
+    expect(dashboard.actualMargin.value).not.toBe(1000 - labor.cost);
+    expect(dashboard.actualMarginPercent.value).toBe(percentOf(1000, 2000));
+    expect(dashboard.percentOfWorkCompleted.value).toBe(percentComplete(1000, 25920));
+    expect(dashboard.percentOfWorkCompleted.value).not.toBe(percentOf(1000 + labor.cost, 25920));
+    expect(dashboard.earnedRevenue.value).toBe(earnedRevenue(41800, 1000, 25920));
+    expect(dashboard.percentOfWorkCompleted.tip).toContain("Committed labor is not included");
+    expect(dashboard.earnedRevenue.tip).toContain("Committed labor is not included");
     expect(dashboard.costToComplete.tip).toBe(COST_TO_COMPLETE_TIP);
     expect(dashboard.actualMargin.tip).toBe(ACTUAL_MARGIN_TIP);
+    expect(dashboard.actualMargin.tip).not.toContain("minus committed");
     expect(dashboard.committedCost?.tip).toBe(COMMITTED_COST_TIP);
     expect(dashboard.projectedCost?.tip).toBe(PROJECTED_COST_TIP);
     expect(dashboard.budgetedMargin.value).toBe(15880);
-    expect(dashboard.budgetedMargin.tip).toContain("not subtracted again");
+    expect(dashboard.budgetedMargin.tip).toContain("not part of this figure");
 
     const html = financialsDashboardHtml(dashboard);
     const tile = figureText(html, "committed-cost-tile");
@@ -422,6 +429,7 @@ describe("committed cost on the financials summary", () => {
     expect(html).toContain("Actual + committed");
     expect(html).toContain(COST_TO_COMPLETE_TIP);
     expect(html).toContain(ACTUAL_MARGIN_TIP);
+    expect(html).not.toContain("Projected margin");
     expect(html).not.toContain("CLOSED-99");
     expect(html).toContain("OPEN-1");
     expect(html).not.toContain('type="date"');
@@ -453,5 +461,8 @@ describe("committed cost on the financials summary", () => {
     expect(moved.committedCost?.value).not.toBe(labor.cost + labor.actualCost);
     expect(moved.projectedCost?.value).toBe(1000 + labor.cost);
     expect(moved.costToComplete.value).toBe(6000 - 1000 - labor.cost);
+    expect(moved.actualMargin.value).toBe(2000 - 1000);
+    expect(moved.percentOfWorkCompleted.value).toBe(percentComplete(1000, 6000));
+    expect(moved.earnedRevenue.value).toBe(earnedRevenue(10000, 1000, 6000));
   });
 });

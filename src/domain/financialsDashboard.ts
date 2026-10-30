@@ -133,19 +133,19 @@ export const COST_TO_COMPLETE_TIP =
   "Total budgeted expense minus actual expense minus committed labor. Committed labor is the Labor commitment total and is not already inside actual expense.";
 
 export const ACTUAL_MARGIN_TIP =
-  "Actual revenue minus actual expense minus committed labor. Committed labor is the Labor commitment total and is not already inside actual expense.";
+  "Actual revenue minus actual expense. Committed labor is not subtracted. Margin stays on actuals only.";
 
 export const ACTUAL_MARGIN_PERCENT_TIP =
-  "Actual margin divided by actual revenue. Actual margin is actual revenue minus actual expense minus committed labor.";
+  "Actual margin divided by actual revenue. Actual margin is actual revenue minus actual expense. Committed labor is not subtracted.";
 
 export const PERCENT_COMPLETE_TIP =
-  "Actual expense plus committed labor, divided by total budgeted expense, and never shown above 100%. Committed labor is not already inside actual expense.";
+  "Actual expense divided by total budgeted expense, and never shown above 100%. Committed labor is not included. Completion stays on actuals only.";
 
 export const EARNED_REVENUE_TIP =
-  "Contract value times percent of work completed. That percent is actual expense plus committed labor, divided by total budgeted expense, and capped at 100%.";
+  "Contract value times percent of work completed. That percent is actual expense divided by total budgeted expense, and capped at 100%. Committed labor is not included.";
 
 export const BUDGETED_MARGIN_TIP =
-  "Contract value minus total budgeted expense. Committed labor is not subtracted again, because it is a use of this budget, not a change to the budget.";
+  "Contract value minus total budgeted expense. Committed labor is not part of this figure.";
 
 export const MISSING_FIGURE_TOOLTIP =
   "ServiceTitan did not return this figure. Nothing is estimated.";
@@ -230,31 +230,25 @@ export function costToComplete(budget: number, actualExpense: number, committed 
 }
 
 /**
- * Cost-to-cost percent complete, two decimal places, never above 100.
- * A zero, missing, or non-finite budget does not produce a percent.
+ * Cost-to-cost percent complete from actual expense only, two decimal places, never above 100.
+ * Committed labor is not included. A zero, missing, or non-finite budget does not produce a percent.
  */
-export function percentComplete(actualExpense: number, budget: number, committed = 0): number | null {
-  const spent = roundMoney(actualExpense + committed);
-  const raw = percentOf(spent, budget);
+export function percentComplete(actualExpense: number, budget: number): number | null {
+  const raw = percentOf(actualExpense, budget);
   if (raw == null) return null;
   return raw > 100 ? 100 : raw;
 }
 
 /**
  * Earned revenue is contract value times cost-to-cost percent complete.
- * The percent is capped at 100, so earned revenue never exceeds contract value.
+ * The percent uses actual expense only and is capped at 100, so earned revenue
+ * never exceeds contract value. Committed labor is not included.
  * A zero, missing, or non-finite budget does not produce a number.
  */
-export function earnedRevenue(
-  contract: number,
-  actualExpense: number,
-  budget: number,
-  committed = 0,
-): number | null {
-  const spent = roundMoney(actualExpense + committed);
-  if (!(budget > 0) || !Number.isFinite(contract) || !Number.isFinite(spent)) return null;
-  if (spent >= budget) return roundMoney(contract);
-  return roundMoney(contract * (spent / budget));
+export function earnedRevenue(contract: number, actualExpense: number, budget: number): number | null {
+  if (!(budget > 0) || !Number.isFinite(contract) || !Number.isFinite(actualExpense)) return null;
+  if (actualExpense >= budget) return roundMoney(contract);
+  return roundMoney(contract * (actualExpense / budget));
 }
 
 /** Shown instead of a percent above 100. Null when the job is not over budget. */
@@ -325,10 +319,10 @@ export function buildFinancialsDashboard(input: {
 
   const committed = committedLaborCost(input.committedLabor);
   const committedAmount = committed ?? 0;
-  const spent =
-    actualExpense.value == null ? null : roundMoney(actualExpense.value + committedAmount);
   const marginDollars =
-    actualRevenue.value != null && spent != null ? roundMoney(actualRevenue.value - spent) : null;
+    actualRevenue.value != null && actualExpense.value != null
+      ? roundMoney(actualRevenue.value - actualExpense.value)
+      : null;
   const budgetMarginDollars =
     contractValue.value != null && totalBudgetedExpense.value != null
       ? roundMoney(contractValue.value - totalBudgetedExpense.value)
@@ -375,8 +369,10 @@ export function buildFinancialsDashboard(input: {
     ),
     earnedRevenue: withTip(
       computed(
-        contractValue.value != null && spent != null && totalBudgetedExpense.value != null
-          ? earnedRevenue(contractValue.value, actualExpense.value ?? 0, totalBudgetedExpense.value, committedAmount)
+        contractValue.value != null &&
+          actualExpense.value != null &&
+          totalBudgetedExpense.value != null
+          ? earnedRevenue(contractValue.value, actualExpense.value, totalBudgetedExpense.value)
           : null,
       ),
       committedTips ? EARNED_REVENUE_TIP : null,
@@ -384,13 +380,12 @@ export function buildFinancialsDashboard(input: {
     percentOfWorkCompleted: withTip(
       withOverBudgetNote(
         computed(
-          spent != null && totalBudgetedExpense.value != null
-            ? percentComplete(actualExpense.value ?? 0, totalBudgetedExpense.value, committedAmount)
+          actualExpense.value != null && totalBudgetedExpense.value != null
+            ? percentComplete(actualExpense.value, totalBudgetedExpense.value)
             : null,
         ),
-        spent,
+        actualExpense.value,
         totalBudgetedExpense.value,
-        committedAmount,
       ),
       committedTips ? PERCENT_COMPLETE_TIP : null,
     ),
