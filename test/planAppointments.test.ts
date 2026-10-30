@@ -350,3 +350,99 @@ it("reapplies every migration twice after the appointment read stamp exists", as
   );
   expect(stamped.rows).toEqual([{ project_id: linkedId }]);
 });
+
+it("shows a blank business unit to a scoped reader and still hides a different unit", async () => {
+  const hidden = (
+    await owner().post(base + "/projects").send(projectBody({ name: "Other unit", project_number: "OTHER-UNIT" }))
+  ).body.data.id as string;
+  await h.db.withTenant(t.id, async (db) => {
+    const unit = (
+      await db.query<{ id: string }>(
+        `SELECT id::text AS id FROM projects.business_units ORDER BY name LIMIT 1`,
+      )
+    ).rows[0]!.id;
+    const other = (
+      await db.query<{ id: string }>(
+        `INSERT INTO projects.business_units (tenant_id, name) VALUES ($1, 'Other office') RETURNING id::text AS id`,
+        [t.id],
+      )
+    ).rows[0]!.id;
+    await db.query(`UPDATE projects.projects SET business_unit_id = NULL WHERE id = $1`, [linkedId]);
+    await db.query(`UPDATE projects.projects SET business_unit_id = $2 WHERE id <> $1`, [linkedId, other]);
+    await db.query(
+      `INSERT INTO projects.st_project_connections
+         (project_id, tenant_id, external_system_id, external_project_id, connection_key, snapshot, observed_at, linked_by)
+       VALUES ($1,$2,$3,'88002','test','{}','2026-10-20T15:00:00Z',$4)`,
+      [hidden, t.id, systemId, t.staff.owner!.id],
+    );
+    await db.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id, job_number, appointment_number,
+          job_status, starts_at, ends_at, status, active, technicians, observed_at)
+       VALUES
+         ($1,$2,'blank-job','appt-blank','B-1','1','Scheduled','2026-10-12T13:00:00Z','2026-10-12T17:00:00Z','Scheduled',true,'[]'::jsonb,'2026-10-20T15:00:00Z'),
+         ($1,$3,'hidden','appt-hidden','H-1','1','Scheduled','2026-10-12T13:00:00Z','2026-10-12T17:00:00Z','Scheduled',true,'[]'::jsonb,'2026-10-20T15:00:00Z')`,
+      [t.id, linkedId, hidden],
+    );
+    await db.query(
+      `UPDATE projects.tenant_settings SET enforce_business_unit_scoping = true WHERE tenant_id = $1`,
+      [t.id],
+    );
+    await db.query(`UPDATE projects.staff SET business_unit_id = $2 WHERE id = $1`, [t.staff.owner!.id, unit]);
+  });
+
+  const stored = await owner().get(
+    base + "/projects/" + linkedId + "/plan-appointments?from=2026-10-01&to=2026-10-28",
+  );
+  expect(stored.status, JSON.stringify(stored.body)).toBe(200);
+  expect(stored.body.data.linkedProjects).toBe(1);
+  expect(
+    stored.body.data.rows.some((row: { appointment_id: string }) => row.appointment_id === "appt-blank"),
+  ).toBe(true);
+
+  const denied = await owner().get(
+    base + "/projects/" + hidden + "/plan-appointments?from=2026-10-01&to=2026-10-28",
+  );
+  expect(denied.status).toBe(404);
+
+  const all = await owner().get(base + "/plan-appointments?from=2026-10-01&to=2026-10-28");
+  expect(all.status, JSON.stringify(all.body)).toBe(200);
+  expect(all.body.data.linkedProjects).toBe(1);
+  expect(all.body.data.rows.some((row: { project_id: string }) => row.project_id === hidden)).toBe(false);
+  expect(all.body.data.rows.some((row: { project_id: string }) => row.project_id === linkedId)).toBe(true);
+
+  sources.serviceTitan!.client.readProject = async (projectId: string) => ({
+    project: {
+      id: projectId,
+      number: projectId,
+      customerId: "1",
+      locationId: "1",
+      jobIds: projectId === "88002" ? ["hidden"] : ["701"],
+    },
+    observedAt: "2026-10-29T00:00:00.000Z",
+  });
+  readJob.mockImplementation(async (jobId: string) => ({
+    job: {
+      id: jobId,
+      jobNumber: "J-" + jobId,
+      jobStatus: "Scheduled",
+      projectId: jobId === "hidden" ? "88002" : "88001",
+    },
+    appointments: [
+      {
+        id: "live-" + jobId,
+        appointmentNumber: "1",
+        start: "2026-10-12T13:00:00Z",
+        end: "2026-10-12T17:00:00Z",
+        status: "Scheduled",
+        active: true,
+      },
+    ],
+    assignments: [],
+  }));
+  const live = await owner().get(base + "/servicetitan/schedule?from=2026-10-01&to=2026-10-28");
+  expect(live.status, JSON.stringify(live.body)).toBe(200);
+  const projectIds = live.body.data.rows.map((row: { project_id: string }) => row.project_id);
+  expect(projectIds).toContain(linkedId);
+  expect(projectIds).not.toContain(hidden);
+});

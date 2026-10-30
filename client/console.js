@@ -2828,4 +2828,41 @@ const workspace = createWorkspace({
   },
 });
 
+const loadedBuildId = (
+  document.querySelector('meta[name="app-build"]')?.getAttribute("content") || ""
+).trim();
+
+function showNewVersionBanner() {
+  if (document.getElementById("build-reload-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "build-reload-banner";
+  banner.className = "banner warn";
+  banner.setAttribute("role", "status");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "New version available, reload";
+  button.addEventListener("click", () => location.reload());
+  banner.append(button);
+  document.body.prepend(banner);
+}
+
+async function checkLoadedBuild() {
+  if (!loadedBuildId) return;
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    if (!res.ok) return;
+    const body = await res.json();
+    const serverBuild = String(body?.data?.build_id ?? "").trim();
+    if (serverBuild && serverBuild !== loadedBuildId) showNewVersionBanner();
+  } catch {
+    // A failed health check is not a new version.
+  }
+}
+
+void checkLoadedBuild();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void checkLoadedBuild();
+});
+setInterval(() => void checkLoadedBuild(), 60_000);
+
 void boot();

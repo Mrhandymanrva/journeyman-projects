@@ -425,6 +425,11 @@ body{
 .budget-entry .hint{margin:0 0 12px;color:var(--muted);font-size:12.5px}
 #planning-st-status.hint{margin:8px 0;color:var(--muted);font-size:13px}
 #planning-st-status.hint.warn{color:var(--orange);font-weight:600}
+#build-reload-banner{position:sticky;top:0;z-index:40;margin:0}
+#build-reload-banner button{
+  font:inherit;font-weight:650;background:transparent;border:0;padding:0;
+  color:inherit;cursor:pointer;text-align:left;
+}
 .budget-total{font-family:var(--mono);font-size:16px;font-weight:650}
 .fin-tile{background:var(--card);border:1px solid var(--rule);border-radius:2px;padding:14px 16px;min-width:0}
 .fin-tile.wide{grid-column:span 2}

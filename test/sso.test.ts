@@ -207,7 +207,9 @@ describe("readiness", () => {
     const request = supertest(createApp({ database, staffSessions: new MemoryStaffSessions(), serveConsole: false }));
     const health = await request.get("/health");
     expect(health.status).toBe(200);
-    expect(health.body).toEqual({ data: { status: "ok" } });
+    expect(health.body.data.status).toBe("ok");
+    expect(health.body.data.build_id).toEqual(expect.any(String));
+    expect(health.body.data.build_id.length).toBeGreaterThan(0);
     expect(sql).toEqual([]);
     const ready = await request.get("/health/ready");
     expect(ready.status).toBe(200);
@@ -222,7 +224,8 @@ describe("readiness", () => {
     };
     const shallow = await supertest(createApp({ database: down, staffSessions: new MemoryStaffSessions(), serveConsole: false })).get("/health");
     expect(shallow.status).toBe(200);
-    expect(shallow.body).toEqual({ data: { status: "ok" } });
+    expect(shallow.body.data.status).toBe("ok");
+    expect(shallow.body.data.build_id).toBe(health.body.data.build_id);
     const notReady = await supertest(createApp({ database: down, staffSessions: new MemoryStaffSessions(), serveConsole: false })).get("/health/ready");
     expect(notReady.status).toBe(503);
     expect(notReady.body).toEqual({ data: { status: "unavailable" } });
