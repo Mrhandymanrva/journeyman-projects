@@ -79,7 +79,10 @@ export function budgetRoutes(deps: StaffRouterDeps): Router {
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
       const body = parseBody(budgetEntrySchema, ctx.req.body);
-      await assertBaselineNotFrozen(ctx.db, projectId);
+      const current = await readBudgetEntry(ctx.db, projectId);
+      // A freeze gate with no Journeyman budget still shows "No budget entered".
+      // The first save is the baseline. Later edits stay on a change order.
+      if (current.entered) await assertBaselineNotFrozen(ctx.db, projectId);
       sendData(
         ctx.res,
         await saveBudgetEntry(ctx.db, {
