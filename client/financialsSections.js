@@ -100,8 +100,61 @@ export function setSectionExpanded(button, expanded) {
   if (!button) return;
   button.setAttribute("aria-expanded", expanded ? "true" : "false");
   const bodyId = button.getAttribute("aria-controls");
-  const body = bodyId ? document.getElementById(bodyId) : null;
+  const doc = button.ownerDocument || document;
+  const body = bodyId ? doc.getElementById(bodyId) : null;
   if (body) body.hidden = !expanded;
+}
+
+function cssEscape(value) {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(value);
+  return String(value).replace(/(["\\])/g, "\\$1");
+}
+
+/**
+ * Open the budget form and any collapsed parent, then scroll Contract value into view.
+ * focus() scrolls only a control that can take focus. A disabled field leaves the
+ * opened section below the financials banner, so the click looks like it did nothing.
+ */
+export function openBudgetEntry(doc) {
+  const root = doc || document;
+  const contract = root.getElementById("budget-contract");
+  const body = root.getElementById("fin-body-budget");
+  const start = contract || body;
+  if (!start) return false;
+
+  const toggles = [];
+  let node = start;
+  while (node && node !== root) {
+    if (node.hidden) node.hidden = false;
+    if (node.id) {
+      const toggle = root.querySelector(`[aria-controls="${cssEscape(node.id)}"]`);
+      if (toggle) toggles.push(toggle);
+    }
+    node = node.parentElement;
+  }
+  for (let i = toggles.length - 1; i >= 0; i -= 1) setSectionExpanded(toggles[i], true);
+
+  const scrollTarget = contract || body;
+  if (scrollTarget && typeof scrollTarget.scrollIntoView === "function") {
+    scrollTarget.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+  if (contract && !contract.disabled && !contract.readOnly) {
+    contract.focus({ preventScroll: true });
+    return true;
+  }
+  return false;
+}
+
+export function bindEnterBudget(doc) {
+  const root = doc || document;
+  const marker = root.documentElement;
+  if (!marker || marker.dataset.enterBudgetBound === "true") return;
+  marker.dataset.enterBudgetBound = "true";
+  root.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("#enter-budget");
+    if (!button || (root.contains && !root.contains(button))) return;
+    openBudgetEntry(root);
+  });
 }
 
 export function bindFinancialSections(root) {

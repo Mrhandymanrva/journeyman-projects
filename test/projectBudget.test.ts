@@ -196,6 +196,46 @@ describe("project budget entry", () => {
     expect(rows.some((line) => line.code === "JP.BUDGET" && line.cost_type === "L")).toBe(false);
   });
 
+  it("lets the owner save the first budget after the freeze gate when nothing was entered", async () => {
+    const projectId = await project();
+    const owner = h.as(tenant.staff.owner!.token);
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(`UPDATE projects.projects SET contract_value = NULL WHERE id = $1`, [projectId]),
+    );
+    await h.db.withTenant(tenant.id, (db) =>
+      db.query(
+        `UPDATE projects.stage_gates
+            SET status = 'approved', approved_by = $2, approved_at = now()
+          WHERE project_id = $1 AND gate_number = 1`,
+        [projectId, tenant.staff.owner!.id],
+      ),
+    );
+    const before = await owner.get(`/api/v1/projects/projects/${projectId}/budget`);
+    expect(before.body.data.baseline_frozen).toBe(true);
+    expect(before.body.data.entry.entered).toBe(false);
+
+    const path = `/api/v1/projects/projects/${projectId}/budget/entry`;
+    const first = {
+      contract_value: 83432.65,
+      labor: 0,
+      labor_hours: 0,
+      materials: 29096.57,
+      subcontractor: null,
+      other: null,
+    };
+    const saved = await owner.put(path).send(first);
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.data.entered).toBe(true);
+    expect(saved.body.data.contract_value).toBe(83432.65);
+    expect(saved.body.data.materials).toBe(29096.57);
+
+    const office = await h.as(tenant.staff.office!.token).put(path).send(first);
+    expect(office.status).toBe(403);
+    const again = await owner.put(path).send({ ...first, contract_value: 90000 });
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe("baseline_frozen");
+  });
+
   it("blocks a budget change after the baseline is frozen", async () => {
     const projectId = await project();
     const owner = h.as(tenant.staff.owner!.token);

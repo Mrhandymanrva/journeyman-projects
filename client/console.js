@@ -23,18 +23,20 @@ import {
 import { financialsDashboardHtml } from "./financialsDashboard.js";
 import { bindStPoSync, stPoSyncHtml } from "./stPoSync.js";
 import {
+  bindSoldEstimateButton,
   budgetEntryHtml,
   budgetEntryPayload,
   budgetEntryTotal,
+  budgetFormEditable,
   formatBudgetMoney,
 } from "./budgetEntry.js";
 import {
+  bindEnterBudget,
   budgetSummary,
   changeOrderSummary,
   drawSummary,
   laborSummary,
   purchaseOrderSummary,
-  setSectionExpanded,
   stDetailSummary,
 } from "./financialsSections.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
@@ -465,7 +467,7 @@ function render(d) {
   renderGates(p);
   renderFinancialsDashboard(d.financialSummary);
   void renderStPoSync(p.id);
-  renderBudget(d.cost, d.budget);
+  renderBudget(d.cost, d.budget, d.financialSummary?.soldEstimate);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
   renderCloseout(d.closeout);
@@ -560,7 +562,7 @@ function renderStats(p, margin, cost) {
 
 function renderNotice(budget, drawData) {
   const notices = [];
-  if (budget.baseline_frozen) {
+  if (budget.baseline_frozen && budget.entry?.entered) {
     notices.push(
       `<div class="banner warn"><b>Budget baseline frozen</b>Gate ${budget.frozen_by_gate} was approved, so budget lines are locked. Changes after the freeze belong on a change order.</div>`,
     );
@@ -691,14 +693,22 @@ async function renderStPoSync(projectId) {
   }
 }
 
-function renderBudgetEntry(budget) {
+function renderBudgetEntry(budget, soldEstimate) {
   const host = el("budget-entry");
   if (!host) return;
-  const editable = can("edit_budget_before_freeze") && !budget?.baseline_frozen;
+  const frozen = Boolean(budget?.baseline_frozen);
+  const entered = Boolean(budget?.entry?.entered);
+  const editable = budgetFormEditable({
+    canEdit: can("edit_budget_before_freeze"),
+    frozen,
+    entered,
+  });
   host.innerHTML = budgetEntryHtml(budget?.entry, {
     editable,
-    frozen: Boolean(budget?.baseline_frozen),
+    frozen: frozen && entered,
+    soldEstimate,
   });
+  bindSoldEstimateButton(document);
   const form = el("budget-entry-form");
   if (!form || !editable) return;
   const refresh = () => {
@@ -747,9 +757,9 @@ function renderBudgetEntry(budget) {
   });
 }
 
-function renderBudget(cost, budget) {
+function renderBudget(cost, budget, soldEstimate) {
   setFinSummary("budget", budgetSummary(cost, budget?.entry));
-  renderBudgetEntry(budget);
+  renderBudgetEntry(budget, soldEstimate);
   const freeze = {
     frozen: Boolean(budget?.baseline_frozen),
     gateNumber: budget?.frozen_by_gate,
@@ -2259,13 +2269,7 @@ async function newProjectDrawer() {
 el("project-new").textContent = "Add from ServiceTitan";
 el("project-new").addEventListener("click", newProjectDrawer);
 el("budget-add").addEventListener("click", addBudgetLineDrawer);
-document.addEventListener("click", (event) => {
-  const button = event.target?.closest?.("#enter-budget");
-  if (!button) return;
-  const toggle = document.querySelector('[aria-controls="fin-body-budget"]');
-  setSectionExpanded(toggle, true);
-  el("budget-contract")?.focus();
-});
+bindEnterBudget(document);
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
 el("log-new").addEventListener("click", dailyLogDrawer);

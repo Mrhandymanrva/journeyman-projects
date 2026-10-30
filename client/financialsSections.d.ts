@@ -66,3 +66,28 @@ type SectionRoot = {
 };
 export function setSectionExpanded(button: SectionButton | null, expanded: boolean): void;
 export function bindFinancialSections(root: SectionRoot | null): void;
+
+type BudgetDomNode = {
+  id?: string;
+  hidden?: boolean;
+  disabled?: boolean;
+  readOnly?: boolean;
+  parentElement?: BudgetDomNode | null;
+  focus?: (options?: { preventScroll?: boolean }) => void;
+  scrollIntoView?: (options?: { block?: string; inline?: string }) => void;
+};
+type BudgetDocument = {
+  documentElement?: { dataset: { enterBudgetBound?: string } } | null;
+  activeElement?: BudgetDomNode | null;
+  contains?: (node: unknown) => boolean;
+  getElementById(id: string): BudgetDomNode | null;
+  querySelector(selector: string): SectionButton | null;
+  addEventListener?: (
+    type: string,
+    listener: (event: {
+      target?: { closest?: (selector: string) => unknown } | null;
+    }) => void,
+  ) => void;
+};
+export function openBudgetEntry(doc?: BudgetDocument): boolean;
+export function bindEnterBudget(doc?: BudgetDocument): void;
