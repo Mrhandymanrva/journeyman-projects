@@ -65,31 +65,46 @@ function single(label, figure, kind) {
   return `<article class="fin-tile"><h3>${label}</h3><div class="fin-figure">${show(figure, kind)}</div></article>`;
 }
 
-function barRow(label, actual, budget, color) {
+function barRow(label, actual, budget, color, committed) {
   const actualValue = actual?.value;
   const budgetValue = budget?.value;
-  const max = Math.max(
-    Number.isFinite(actualValue) ? actualValue : 0,
-    Number.isFinite(budgetValue) ? budgetValue : 0,
-    1,
-  );
-  const actualWidth = Number.isFinite(actualValue) ? Math.max(0, (actualValue / max) * 100) : 0;
-  const budgetWidth = Number.isFinite(budgetValue) ? Math.max(0, (budgetValue / max) * 100) : 0;
+  const committedValue = committed == null ? null : Number(committed);
+  const actualN = Number.isFinite(actualValue) ? Math.max(0, actualValue) : 0;
+  const budgetN = Number.isFinite(budgetValue) ? Math.max(0, budgetValue) : 0;
+  const committedN = committedValue != null && Number.isFinite(committedValue) ? Math.max(0, committedValue) : 0;
+  const max = Math.max(actualN + committedN, budgetN, 1);
+  const actualWidth = (actualN / max) * 100;
+  const budgetWidth = Number.isFinite(budgetValue) ? Math.max(0, (budgetN / max) * 100) : 0;
+  const committedWidth = (committedN / max) * 100;
+  const amount =
+    committedValue == null
+      ? money(actualValue ?? null)
+      : `${money(actualValue ?? null)}<span class="fin-bar-committed-amt">committed ${money(committedValue)}</span>`;
   return `<div class="fin-bar-row">
     <span>${label}</span>
     <div class="fin-bar-track">
       ${budgetValue != null ? `<div class="fin-bar-budget" style="width:${budgetWidth.toFixed(2)}%"></div>` : ""}
       <div class="fin-bar-fill" style="width:${actualWidth.toFixed(2)}%;background:${color}"></div>
+      ${
+        committedValue == null
+          ? ""
+          : `<div class="fin-bar-committed" style="left:${actualWidth.toFixed(2)}%;width:${committedWidth.toFixed(2)}%"></div>`
+      }
     </div>
-    <strong>${money(actualValue ?? null)}</strong>
+    <strong>${amount}</strong>
   </div>`;
 }
 
 function expenseChart(dashboard) {
-  return `<div class="fin-bars" aria-hidden="true">
+  const committed = dashboard.committedLabor ? dashboard.committedLabor.cost : null;
+  const legend = dashboard.committedLabor
+    ? `<p class="fin-bar-legend"><i class="fin-swatch-budget"></i><span>Budget</span><i class="fin-swatch-actual"></i><span>Actual labor expense</span><i class="fin-swatch-committed"></i><span>Committed labor</span></p>`
+    : "";
+  return `<div class="fin-bars">
     ${barRow("Materials", dashboard.materialsExpense, dashboard.budgetedMaterials, "var(--accent)")}
     ${barRow("Subcontractor", dashboard.subcontractorExpense, dashboard.budgetedSubcontractor, "var(--bar-progress)")}
-    ${barRow("Labor", dashboard.laborExpense, dashboard.budgetedLaborExpense, "var(--status-done)")}
+    ${barRow("Labor", dashboard.laborExpense, dashboard.budgetedLaborExpense, "var(--status-done)", committed)}
+    ${legend}
   </div>`;
 }
 
@@ -151,6 +166,85 @@ function stacked(dashboard) {
 
 const empty = { value: null, source: "missing" };
 
+function subtractMoney(budget, actual, committed) {
+  if (budget == null || !Number.isFinite(Number(budget))) return null;
+  return Math.round((Number(budget) - Number(actual || 0) - Number(committed || 0)) * 100) / 100;
+}
+
+function laborCommitment(dashboard) {
+  const committed = dashboard.committedLabor;
+  if (!committed) return "";
+  const budgetMoney = dashboard.budgetedLaborExpense || empty;
+  const budgetHours = dashboard.budgetedLaborHours || empty;
+  const actualMoney = { value: committed.actualCost, source: "actuals" };
+  const actualHours = { value: committed.actualHours, source: "actuals" };
+  const committedMoney = { value: committed.cost, source: "computed" };
+  const committedHours = { value: committed.hours, source: "computed" };
+  const remainingMoney = {
+    value: subtractMoney(budgetMoney.value, committed.actualCost, committed.cost),
+    source: budgetMoney.value == null ? "missing" : "computed",
+    gap: budgetMoney.value == null ? budgetMoney.gap || "budget" : undefined,
+  };
+  const remainingHours = {
+    value: subtractMoney(budgetHours.value, committed.actualHours, committed.hours),
+    source: budgetHours.value == null ? "missing" : "computed",
+    gap: budgetHours.value == null ? budgetHours.gap || "budget" : undefined,
+  };
+  const jobs = Array.isArray(committed.jobs) ? committed.jobs : [];
+  const rows = jobs
+    .map((job) => {
+      const dates =
+        job.startsOn && job.endsOn && job.startsOn !== job.endsOn
+          ? `${escHtml(job.startsOn)} – ${escHtml(job.endsOn)}`
+          : escHtml(job.startsOn || job.endsOn || "—");
+      const revenue =
+        job.revenueSource === "estimated"
+          ? `${money(job.revenue)} <span class="fin-flag">estimated</span>`
+          : money(job.revenue);
+      const flags = (job.flags || []).map((flag) => `<span class="fin-flag">${escHtml(flag)}</span>`).join(" ");
+      return `<tr>
+        <td>${escHtml(job.jobNumber || job.jobId)}</td>
+        <td>${dates}</td>
+        <td class="num">${hours(job.hours)}</td>
+        <td>${escHtml((job.technicians || []).join(", ") || "—")}</td>
+        <td class="num">${revenue}</td>
+        <td class="num">${money(job.cost)}</td>
+        <td>${flags || "—"}</td>
+      </tr>`;
+    })
+    .join("");
+  const method = escHtml(committed.method || "");
+  const summary =
+    jobs.length === 0
+      ? "No committed jobs"
+      : `${jobs.length} job${jobs.length === 1 ? "" : "s"} · ${hours(committed.hours)} hours · ${money(committed.cost)}`;
+  return `<article class="fin-tile wide" id="labor-commitment">
+    <h3>Labor commitment <span class="fin-dash" title="${method}">how this is counted</span></h3>
+    <div class="fin-commit">
+      <span></span><span>Budget</span><span>Committed</span><span>Actual</span><span>Remaining</span>
+      <span>Dollars</span>
+      <strong>${show(budgetMoney, "money")}</strong>
+      <strong title="${method}">${show(committedMoney, "money")}</strong>
+      <strong>${show(actualMoney, "money")}</strong>
+      <strong>${show(remainingMoney, "money")}</strong>
+      <span>Hours</span>
+      <strong>${show(budgetHours, "hours")}</strong>
+      <strong>${show(committedHours, "hours")}</strong>
+      <strong>${show(actualHours, "hours")}</strong>
+      <strong>${show(remainingHours, "hours")}</strong>
+    </div>
+    <p class="fin-commit-method" title="${method}">${method}</p>
+    <details class="fin-committed-jobs">
+      <summary>${summary}</summary>
+      ${
+        rows
+          ? `<table><thead><tr><th>Job</th><th>Dates</th><th>Hours</th><th>Techs</th><th>Revenue</th><th>Cost</th><th>Flags</th></tr></thead><tbody>${rows}</tbody></table>`
+          : `<p class="note">No scheduled or in-progress jobs are waiting to be invoiced.</p>`
+      }
+    </details>
+  </article>`;
+}
+
 function soldReference(sold) {
   if (!sold) return "";
   const parts = [];
@@ -191,6 +285,7 @@ export function financialsDashboardHtml(dashboard) {
     retainage: figure("retainage"),
     contractValue: contract,
     earnedRevenue: figure("earnedRevenue"),
+    committedLabor: d.committedLabor || null,
   };
   return `<h2 class="fin-summary-title">Project financials</h2>
     ${emptyState}
@@ -206,5 +301,6 @@ export function financialsDashboardHtml(dashboard) {
       <div><h3>% of work completed</h3><div class="fin-figure">${show(figure("percentOfWorkCompleted"), "percent")}</div></div>
     </div>${stacked(model)}</article>
     ${pair("Open invoices", figure("openInvoices"), "money", "Budgeted labor expense", figure("budgetedLaborExpense"), "money")}
-    ${single("Budgeted labor hours", figure("budgetedLaborHours"), "hours")}`;
+    ${single("Budgeted labor hours", figure("budgetedLaborHours"), "hours")}
+    ${laborCommitment(d)}`;
 }

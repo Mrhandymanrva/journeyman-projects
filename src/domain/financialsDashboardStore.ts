@@ -13,6 +13,7 @@ import {
 } from "./projectBillCost.js";
 import { roundMoney, type ProjectMoney } from "./projectFinancials.js";
 import { readStoredProjectMoney, readStoredReconciliation } from "./projectSync.js";
+import { readCommittedLabor } from "./committedLaborStore.js";
 import type { ServiceTitanSummaryNumbers } from "./stFinancialSummary.js";
 
 function num(value: string | number | null | undefined): number | null {
@@ -222,11 +223,13 @@ export async function readFinancialsDashboard(
 ): Promise<FinancialsDashboard> {
   const facts = await loadFinancialFacts(db, projectId);
   const budget = await loadBudget(db, projectId);
-  return buildFinancialsDashboard({
+  const dashboard = buildFinancialsDashboard({
     actuals: facts.actuals,
     serviceTitan: facts.serviceTitan,
     budget,
   });
+  dashboard.committedLabor = await readCommittedLabor(db, projectId);
+  return dashboard;
 }
 
 /** Detail card under the dashboard. A missing materials read stays null, not zero. */
