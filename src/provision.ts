@@ -26,6 +26,7 @@ import {
   splitSqlStatements,
   strippedSql,
 } from "./db/splitSql.js";
+import { stPoEnvSeedSql } from "./domain/stPurchaseOrderSync.js";
 import {
   NON_TENANT_SCOPED_TABLES,
   TENANT_SCOPED_TABLES,
@@ -203,8 +204,12 @@ for (const file of [
   "db/057_csr_handoff.sql",
   "db/058_vendor_bill_po_sync.sql",
   "db/059_st_plan_appointment_reads.sql",
+  "db/060_st_po_preview_defaults.sql",
 ]) {
   const full = path.join(repoRoot, file);
+  if (file.endsWith("060_st_po_preview_defaults.sql")) {
+    await owner.query(stPoEnvSeedSql());
+  }
   const statements = splitSqlStatements(readFileSync(full, "utf8"));
   let applied = 0;
   for (const stmt of statements) {

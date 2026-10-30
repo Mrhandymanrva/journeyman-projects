@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { splitSqlStatements } from '../src/db/splitSql.js';
+import { stPoEnvSeedSql } from '../src/domain/stPurchaseOrderSync.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
@@ -70,6 +71,7 @@ const FILES = [
   path.join(repoRoot, "db/057_csr_handoff.sql"),
   path.join(repoRoot, "db/058_vendor_bill_po_sync.sql"),
   path.join(repoRoot, "db/059_st_plan_appointment_reads.sql"),
+  path.join(repoRoot, "db/060_st_po_preview_defaults.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');
@@ -121,6 +123,9 @@ const runner = await makeRunner();
 let applied = 0;
 
 for (const file of FILES) {
+  if (file.endsWith('060_st_po_preview_defaults.sql')) {
+    await runner.exec(stPoEnvSeedSql());
+  }
   const statements = splitSqlStatements(readFileSync(file, 'utf8'));
   for (const stmt of statements) {
     try {

@@ -3,6 +3,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { citext } from '@electric-sql/pglite/contrib/citext';
 import type { AdvisoryLock, Database, SqlClient } from '../../src/db/database.js';
 import { splitSqlStatements } from '../../src/db/splitSql.js';
+import { stPoEnvSeedSql } from '../../src/domain/stPurchaseOrderSync.js';
 
 /**
  * A real PostgreSQL, in process.
@@ -35,6 +36,9 @@ export class PgliteDatabase implements Database {
     });
 
     for (const file of sqlFiles) {
+      if (file.endsWith('060_st_po_preview_defaults.sql')) {
+        await pg.exec(stPoEnvSeedSql());
+      }
       for (const stmt of splitSqlStatements(readFileSync(file, 'utf8'))) {
         await pg.exec(stmt.text);
       }

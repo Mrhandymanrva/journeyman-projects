@@ -671,7 +671,8 @@ function renderFinancialsDashboard(summary) {
 async function renderStPoSync(projectId) {
   const host = el("st-po-sync");
   if (!host) return;
-  if (session?.staff?.role !== "owner") {
+  const stPoRole = session?.staff?.role;
+  if (stPoRole !== "owner" && stPoRole !== "manager" && stPoRole !== "project_manager") {
     host.innerHTML = "";
     return;
   }
@@ -682,10 +683,17 @@ async function renderStPoSync(projectId) {
     bindStPoSync(host, {
       api,
       onPreview: (poId) => api(`/purchase-orders/${poId}/service-titan-sync`),
-      onConfirm: (poId) =>
+      onSave: (poId, choices) =>
+        api(`/purchase-orders/${poId}/service-titan-choices`, {
+          method: "PUT",
+          body: JSON.stringify(choices),
+        }),
+      onSearchSkus: (poId, query) =>
+        api(`/purchase-orders/${poId}/service-titan-skus?q=${encodeURIComponent(query)}`),
+      onConfirm: (poId, choices) =>
         api(`/purchase-orders/${poId}/service-titan-sync`, {
           method: "POST",
-          body: JSON.stringify({ confirm: true }),
+          body: JSON.stringify({ confirm: true, choices }),
         }),
     });
   } catch (err) {

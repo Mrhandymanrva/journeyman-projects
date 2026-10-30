@@ -7,8 +7,8 @@ import { hasExecutableSql, splitSqlStatements } from "../src/db/splitSql.js";
 import {
   buildStPurchaseOrderPlan,
   linkUnlinkedServiceTitanPurchaseOrders,
+  stPoEnvSeedSql,
   stPoMarker,
-  stPoSyncSettings,
   syncIssuedPurchaseOrder,
   type StInventoryPurchaseOrderClient,
 } from "../src/domain/stPurchaseOrderSync.js";
@@ -233,9 +233,14 @@ describe("vendor bill cost and ServiceTitan purchase order sync", () => {
   });
 
   it("builds a ServiceTitan payload from known fields and names every gap", () => {
-    expect(stPoSyncSettings({}).enabled).toBe(false);
-    expect(stPoSyncSettings({ PM_ST_PO_SYNC_ENABLED: "TRUE" }).enabled).toBe(false);
-    expect(stPoSyncSettings({ PM_ST_PO_SYNC_ENABLED: "true" }).enabled).toBe(true);
+    const seeded = stPoEnvSeedSql({
+      PM_ST_PO_SYNC_ENABLED: "true",
+      PM_ST_PO_TYPE_ID: "11",
+      PM_ST_BUSINESS_UNIT_ID: "not-a-number",
+    });
+    expect(seeded).toContain("'11'");
+    expect(seeded).not.toMatch(/SYNC_ENABLED/);
+    expect(seeded).not.toContain("not-a-number");
     const missing = buildStPurchaseOrderPlan({
       poId: "11111111-1111-4111-8111-111111111111",
       poNumber: "PO-1",
@@ -328,17 +333,27 @@ describe("vendor bill cost and ServiceTitan purchase order sync", () => {
     expect(preview.status, JSON.stringify(preview.body)).toBe(200);
     expect(preview.body.data.writes_enabled).toBe(false);
     expect(creates).toHaveLength(before);
-    const denied = await h.as(t.staff.pm!.token).post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
+    const denied = await h.as(t.staff.bookkeeper!.token).post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
     expect(denied.status).toBe(403);
     expect(creates).toHaveLength(before);
     const unconfirmed = await owner().post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({});
     expect(unconfirmed.status).toBe(400);
     expect(creates).toHaveLength(before);
     process.env.PM_ST_PO_SYNC_ENABLED = "true";
+    const ignored = await owner().post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
+    expect(ignored.status, JSON.stringify(ignored.body)).toBe(200);
+    expect(ignored.body.data.state).toBe("flag_off");
+    expect(creates).toHaveLength(before);
+    await h.db.withTenant(t.id, (db) =>
+      db.query(`UPDATE projects.tenant_settings SET st_po_sync_enabled = true WHERE tenant_id = $1`, [t.id]),
+    );
     const blocked = await owner().post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
     expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
     expect(blocked.body.data.state).toBe("blocked");
     expect(creates).toHaveLength(before);
+    await h.db.withTenant(t.id, (db) =>
+      db.query(`UPDATE projects.tenant_settings SET st_po_sync_enabled = false WHERE tenant_id = $1`, [t.id]),
+    );
     delete process.env.PM_ST_PO_SYNC_ENABLED;
   });
 
@@ -347,6 +362,17 @@ describe("vendor bill cost and ServiceTitan purchase order sync", () => {
     process.env.PM_ST_PO_TYPE_ID = "11";
     process.env.PM_ST_INVENTORY_LOCATION_ID = "22";
     process.env.PM_ST_BUSINESS_UNIT_ID = "33";
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `UPDATE projects.tenant_settings
+            SET st_po_sync_enabled = true,
+                st_po_type_id = '11',
+                st_po_business_unit_id = '33',
+                st_po_inventory_location_id = '22'
+          WHERE tenant_id = $1`,
+        [t.id],
+      ),
+    );
     const projectId = await project("FLAG-ON");
     const { material } = await codes();
     const system = await h.db.withTenant(t.id, (db) =>
@@ -386,6 +412,10 @@ describe("vendor bill cost and ServiceTitan purchase order sync", () => {
     });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     const poId = created.body.data.id as string;
+    expect(creates).toHaveLength(0);
+    const sent = await owner().post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(sent.body.data.state).toBe("created");
     expect(creates).toHaveLength(1);
     expect(creates[0]).toMatchObject({ vendorId: 77, jobId: 260260, typeId: 11, items: [{ skuId: 555, cost: 26080.88 }] });
     const again = await owner().post(`${base}/purchase-orders/${poId}/service-titan-sync`).send({ confirm: true });
@@ -409,7 +439,12 @@ describe("vendor bill cost and ServiceTitan purchase order sync", () => {
       );
       return row.rows[0]!.id;
     });
-    const settings = stPoSyncSettings();
+    const settings = {
+      enabled: true,
+      purchaseOrderTypeId: "11",
+      inventoryLocationId: "22",
+      businessUnitId: "33",
+    };
     await expect(
       syncIssuedPurchaseOrder({
         database: h.db,
