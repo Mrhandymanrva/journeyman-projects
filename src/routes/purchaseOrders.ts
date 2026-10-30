@@ -9,11 +9,24 @@ import { ApiError, notFound } from '../http/errors.js';
 import { can, requireCapability } from '../http/capabilities.js';
 import { staffExternalRoute, staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
 import {
-  previewStPurchaseOrder,
-  stPoSyncSettings,
+  loadStPoPreviewRecord,
+  loadStPoSyncSettings,
+  saveStPoChoices,
+  noteStPurchaseOrderReadiness,
   syncIssuedPurchaseOrder,
   type StInventoryPurchaseOrderClient,
+  type StPoChoiceInput,
 } from '../domain/stPurchaseOrderSync.js';
+import {
+  assembleStPoPreview,
+  loadStPoCatalog,
+  lookupJobBusinessUnit,
+  skuChoices,
+  skuLabel,
+  ST_PO_SKU_NOTE,
+  ST_PO_SKU_REQUIRED,
+  type StPoCatalogClient,
+} from '../domain/stPoLookups.js';
 import { grossFromPercent, roundMoney } from '../domain/poMath.js';
 import { payablesAmountBand, payablesAnchor, payablesWindow } from '../domain/payablesWindow.js';
 import { assertReadyToIssue, assertSubcontractCompliance } from '../domain/vendorCompliance.js';
@@ -123,9 +136,76 @@ function stWriter(sources?: SourceConnections): StInventoryPurchaseOrderClient |
   };
 }
 
-function syncedRoute(
+function stCatalog(sources?: SourceConnections): StPoCatalogClient | null {
+  const client = sources?.serviceTitan?.client;
+  if (
+    !client?.listPoVendors ||
+    !client.listPoTypes ||
+    !client.listBusinessUnits ||
+    !client.listInventoryLocations ||
+    !client.listPoSkus ||
+    !client.readPoJob
+  ) {
+    return null;
+  }
+  return {
+    listPoVendors: () => client.listPoVendors!.call(client),
+    listPoTypes: () => client.listPoTypes!.call(client),
+    listBusinessUnits: () => client.listBusinessUnits!.call(client),
+    listInventoryLocations: () => client.listInventoryLocations!.call(client),
+    listPoSkus: () => client.listPoSkus!.call(client),
+    readPoJob: (jobId) => client.readPoJob!.call(client, jobId),
+  };
+}
+
+const ST_PO_REVIEW_ROLES = new Set(['owner', 'manager', 'project_manager']);
+
+function assertCanReviewStPo(role: string): void {
+  if (!ST_PO_REVIEW_ROLES.has(role)) {
+    throw new ApiError(
+      'forbidden',
+      'An owner, manager, or project manager can review and send a ServiceTitan purchase order.',
+    );
+  }
+}
+
+const numericChoice = z.string().regex(/^\d+$/).nullable();
+
+const stPoChoicesSchema = z.object({
+  vendor_id: numericChoice.optional(),
+  type_id: numericChoice.optional(),
+  business_unit_id: numericChoice.optional(),
+  inventory_location_id: numericChoice.optional(),
+  job_id: numericChoice.optional(),
+  lines: z
+    .array(
+      z.object({
+        line_id: z.string().uuid(),
+        sku_id: z.string().regex(/^\d+$/).nullable(),
+      }),
+    )
+    .max(50)
+    .optional(),
+});
+
+function choicesFromBody(body: z.infer<typeof stPoChoicesSchema>): StPoChoiceInput {
+  const choices: StPoChoiceInput = {};
+  if (body.vendor_id !== undefined) choices.vendorStId = body.vendor_id;
+  if (body.type_id !== undefined) choices.typeId = body.type_id;
+  if (body.business_unit_id !== undefined) choices.businessUnitId = body.business_unit_id;
+  if (body.inventory_location_id !== undefined) choices.inventoryLocationId = body.inventory_location_id;
+  if (body.job_id !== undefined) choices.jobId = body.job_id;
+  if (body.lines) choices.lines = body.lines.map((line) => ({ lineId: line.line_id, skuId: line.sku_id }));
+  return choices;
+}
+
+/**
+ * Create, material-bill post, purchase-order update, and bill approve.
+ * Refreshes local readiness and does not receive a ServiceTitan client,
+ * so none of these can create or update a purchase order in ServiceTitan.
+ */
+function readinessRoute(
   deps: StaffRouterDeps,
-  sources: SourceConnections | undefined,
   handler: (
     ctx: StaffContext,
   ) => Promise<{ body: unknown; status?: number; syncPoId: string | null; tenantId: string }>,
@@ -136,15 +216,13 @@ function syncedRoute(
     async (prepared) => {
       if (!prepared.syncPoId) return null;
       try {
-        return await syncIssuedPurchaseOrder({
+        return await noteStPurchaseOrderReadiness({
           database: deps.database,
           tenantId: prepared.tenantId,
           poId: prepared.syncPoId,
-          settings: stPoSyncSettings(),
-          client: stWriter(sources),
         });
       } catch (err) {
-        return { state: 'failed' as const, error: err instanceof Error ? err.message : String(err) };
+        return { state: 'skipped' as const, error: err instanceof Error ? err.message : String(err) };
       }
     },
     async (ctx, prepared) => {
@@ -200,7 +278,7 @@ export function purchaseOrderRoutes(
 
   router.post(
     '/projects/:id/purchase-orders',
-    syncedRoute(deps, sources, async (ctx) => {
+    readinessRoute(deps, async (ctx) => {
       requireCapability(ctx.staff.role, 'issue_purchase_order');
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
@@ -318,7 +396,7 @@ export function purchaseOrderRoutes(
 
   router.post(
     '/projects/:id/material-bills',
-    syncedRoute(deps, sources, async (ctx) => {
+    readinessRoute(deps, async (ctx) => {
       requireCapability(ctx.staff.role, 'issue_purchase_order');
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
@@ -426,7 +504,7 @@ export function purchaseOrderRoutes(
 
   router.patch(
     '/purchase-orders/:id',
-    syncedRoute(deps, sources, async (ctx) => {
+    readinessRoute(deps, async (ctx) => {
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
       const po = await loadVisiblePo(ctx, poId);
       const body = parseBody(patchPoSchema, ctx.req.body);
@@ -927,7 +1005,7 @@ export function purchaseOrderRoutes(
 
   router.post(
     '/bills/:id/approve',
-    syncedRoute(deps, sources, async (ctx) => {
+    readinessRoute(deps, async (ctx) => {
       requireCapability(ctx.staff.role, 'approve_vendor_bill');
       const billId = parseUuidParam(ctx.req.params.id, 'Vendor bill');
 
@@ -982,11 +1060,10 @@ export function purchaseOrderRoutes(
   router.get(
     '/projects/:id/service-titan-purchase-orders',
     staffRoute(deps, async (ctx) => {
-      if (ctx.staff.role !== 'owner') {
-        throw new ApiError('forbidden', 'Only an owner can review ServiceTitan purchase order sync.');
-      }
+      assertCanReviewStPo(ctx.staff.role);
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
+      const settings = await loadStPoSyncSettings(ctx.db);
       const rows = await ctx.db.query<{
         id: string;
         po_number: string;
@@ -1012,7 +1089,7 @@ export function purchaseOrderRoutes(
         [projectId],
       );
       sendData(ctx.res, {
-        writes_enabled: stPoSyncSettings().enabled,
+        writes_enabled: settings.enabled,
         orders: rows.rows.map((row) => ({
           ...row,
           amount: num(row.amount),
@@ -1023,16 +1100,159 @@ export function purchaseOrderRoutes(
   );
 
   router.get(
-    '/purchase-orders/:id/service-titan-sync',
+    '/settings/service-titan-purchase-orders',
     staffRoute(deps, async (ctx) => {
-      if (ctx.staff.role !== 'owner') {
-        throw new ApiError('forbidden', 'Only an owner can preview a ServiceTitan purchase order.');
+      requireCapability(ctx.staff.role, 'manage_company_settings');
+      const settings = await loadStPoSyncSettings(ctx.db);
+      sendData(ctx.res, {
+        enabled: settings.enabled,
+        can_toggle: ctx.staff.role === 'owner',
+        purchase_order_type_id: settings.purchaseOrderTypeId,
+        business_unit_id: settings.businessUnitId,
+        inventory_location_id: settings.inventoryLocationId,
+      });
+    }),
+  );
+
+  router.patch(
+    '/settings/service-titan-purchase-orders',
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, 'manage_company_settings');
+      const body = parseBody(
+        z.object({
+          enabled: z.boolean().optional(),
+          purchase_order_type_id: numericChoice.optional(),
+          business_unit_id: numericChoice.optional(),
+          inventory_location_id: numericChoice.optional(),
+        }),
+        ctx.req.body,
+      );
+      if (body.enabled !== undefined && ctx.staff.role !== 'owner') {
+        throw new ApiError('forbidden', 'Only an owner can turn ServiceTitan purchase order sending on or off.');
       }
+      const sets: string[] = [];
+      const values: unknown[] = [ctx.staff.tenantId];
+      const set = (column: string, value: unknown) => {
+        values.push(value);
+        sets.push(`${column} = $${values.length}`);
+      };
+      if (body.enabled !== undefined) set('st_po_sync_enabled', body.enabled);
+      if (body.purchase_order_type_id !== undefined) set('st_po_type_id', body.purchase_order_type_id);
+      if (body.business_unit_id !== undefined) set('st_po_business_unit_id', body.business_unit_id);
+      if (body.inventory_location_id !== undefined) set('st_po_inventory_location_id', body.inventory_location_id);
+      if (sets.length === 0) {
+        throw new ApiError('validation_failed', 'Choose a default or the sending switch.');
+      }
+      const updated = await ctx.db.query(
+        `UPDATE projects.tenant_settings SET ${sets.join(', ')}, updated_at = now() WHERE tenant_id = $1`,
+        values,
+      );
+      if ((updated.rowCount ?? 0) === 0) {
+        throw new ApiError('conflict', 'Company settings are not initialized.');
+      }
+      const settings = await loadStPoSyncSettings(ctx.db);
+      sendData(ctx.res, {
+        enabled: settings.enabled,
+        can_toggle: ctx.staff.role === 'owner',
+        purchase_order_type_id: settings.purchaseOrderTypeId,
+        business_unit_id: settings.businessUnitId,
+        inventory_location_id: settings.inventoryLocationId,
+      });
+    }),
+  );
+
+  router.get(
+    '/settings/service-titan-purchase-order-options',
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        requireCapability(ctx.staff.role, 'manage_company_settings');
+        return { scope: sources?.serviceTitan?.key ?? ctx.staff.tenantId };
+      },
+      async (prepared) => {
+        const catalog = await loadStPoCatalog(prepared.scope, stCatalog(sources));
+        const error =
+          catalog.types.error ?? catalog.businessUnits.error ?? catalog.locations.error;
+        return {
+          types: catalog.types.options.map((row) => ({ id: row.id, label: row.name })),
+          business_units: catalog.businessUnits.options.map((row) => ({ id: row.id, label: row.name })),
+          locations: catalog.locations.options.map((row) => ({ id: row.id, label: row.name })),
+          lookup_error: error,
+        };
+      },
+      async (ctx, _prepared, result) => {
+        sendData(ctx.res, result);
+      },
+    ),
+  );
+
+  router.get(
+    '/purchase-orders/:id/service-titan-sync',
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        assertCanReviewStPo(ctx.staff.role);
+        const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
+        await loadVisiblePo(ctx, poId);
+        const settings = await loadStPoSyncSettings(ctx.db);
+        const snapshot = await loadStPoPreviewRecord(ctx.db, poId, settings);
+        if (!snapshot) throw notFound('Purchase order not found');
+        return { snapshot, scope: sources?.serviceTitan?.key ?? ctx.staff.tenantId };
+      },
+      async (prepared) => {
+        const catalogClient = stCatalog(sources);
+        const catalog = await loadStPoCatalog(prepared.scope, catalogClient);
+        const jobBusinessUnitId = prepared.snapshot.settings.businessUnitId
+          ? null
+          : await lookupJobBusinessUnit(prepared.scope, catalogClient, prepared.snapshot.resolved_job_id);
+        return assembleStPoPreview(prepared.snapshot, catalog, jobBusinessUnitId);
+      },
+      async (ctx, _prepared, result) => {
+        sendData(ctx.res, result);
+      },
+    ),
+  );
+
+  router.get(
+    '/purchase-orders/:id/service-titan-skus',
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        assertCanReviewStPo(ctx.staff.role);
+        const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
+        await loadVisiblePo(ctx, poId);
+        const query = typeof ctx.req.query.q === 'string' ? ctx.req.query.q : '';
+        return { query, scope: sources?.serviceTitan?.key ?? ctx.staff.tenantId };
+      },
+      async (prepared) => {
+        const catalog = await loadStPoCatalog(prepared.scope, stCatalog(sources));
+        return {
+          sku_required: ST_PO_SKU_REQUIRED,
+          generic_item: null,
+          sku_note: ST_PO_SKU_NOTE,
+          lookup_error: catalog.skus.error,
+          skus: skuChoices(catalog.skus.options, prepared.query).map((sku) => ({
+            id: sku.id,
+            label: skuLabel(sku),
+            non_inventory: sku.nonInventory,
+          })),
+        };
+      },
+      async (ctx, _prepared, result) => {
+        sendData(ctx.res, result);
+      },
+    ),
+  );
+
+  router.put(
+    '/purchase-orders/:id/service-titan-choices',
+    staffRoute(deps, async (ctx) => {
+      assertCanReviewStPo(ctx.staff.role);
       const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
       await loadVisiblePo(ctx, poId);
-      const preview = await previewStPurchaseOrder(ctx.db, poId, stPoSyncSettings());
-      if (!preview) throw notFound('Purchase order not found');
-      sendData(ctx.res, preview);
+      const body = parseBody(stPoChoicesSchema, ctx.req.body);
+      await saveStPoChoices(ctx.db, poId, choicesFromBody(body));
+      sendData(ctx.res, { saved: true });
     }),
   );
 
@@ -1041,22 +1261,26 @@ export function purchaseOrderRoutes(
     staffExternalRoute(
       deps,
       async (ctx) => {
-        if (ctx.staff.role !== 'owner') {
-          throw new ApiError('forbidden', 'Only an owner can send a purchase order to ServiceTitan.');
-        }
-        parseBody(z.object({ confirm: z.literal(true) }), ctx.req.body);
+        assertCanReviewStPo(ctx.staff.role);
+        const body = parseBody(
+          z.object({ confirm: z.literal(true), choices: stPoChoicesSchema.optional() }),
+          ctx.req.body,
+        );
         const poId = parseUuidParam(ctx.req.params.id, 'Purchase order');
         await loadVisiblePo(ctx, poId);
+        if (body.choices) await saveStPoChoices(ctx.db, poId, choicesFromBody(body.choices));
         return { poId, tenantId: ctx.staff.tenantId };
       },
-      async (prepared) =>
-        syncIssuedPurchaseOrder({
+      async (prepared) => {
+        const settings = await deps.database.withTenant(prepared.tenantId, (db) => loadStPoSyncSettings(db));
+        return syncIssuedPurchaseOrder({
           database: deps.database,
           tenantId: prepared.tenantId,
           poId: prepared.poId,
-          settings: stPoSyncSettings(),
-          client: stWriter(sources),
-        }),
+          settings,
+          client: settings.enabled ? stWriter(sources) : null,
+        });
+      },
       async (ctx, _prepared, result) => {
         sendData(ctx.res, result);
       },

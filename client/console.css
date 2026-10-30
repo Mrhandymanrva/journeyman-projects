@@ -572,4 +572,11 @@ body{
 .csr-error:empty{display:none}
 .csr-actions{display:flex;gap:8px;margin-top:12px}
 @media(max-width:700px){.csr-grid{grid-template-columns:1fr}}
+.st-po-fields{display:grid;gap:12px;margin:12px 0}
+.st-po-fields label,.st-po-fields fieldset{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--muted)}
+.st-po-fields select,.st-po-fields input{font:inherit;font-weight:500;color:var(--ink);background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:8px}
+.st-po-fields .btn{align-self:start;width:auto}
+.st-po-fields fieldset{border:1px solid var(--rule);border-radius:6px;padding:10px}
+#st-po-preview pre{white-space:pre-wrap;font-size:12px;background:var(--paper);padding:12px;border-radius:6px;overflow:auto}
+#st-po-sync-card{margin-top:16px}
 #switch{display:flex;flex-direction:column;gap:4px;min-width:220px;max-width:440px;flex:1}.project-menu-label{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}#active-project{width:100%;padding:9px 30px 9px 10px;border:1px solid var(--rule);border-radius:4px;background:var(--card);font:inherit;color:var(--ink)}#st-project-open{margin-top:12px}@media(max-width:700px){#switch{max-width:none;min-width:180px}.rail-in{flex-wrap:wrap}}

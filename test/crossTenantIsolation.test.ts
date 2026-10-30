@@ -752,6 +752,17 @@ const ROUTES: RouteCase[] = [
     body: () => ({ confirm: true }),
   },
   {
+    method: "get",
+    template: `${BASE}/purchase-orders/:id/service-titan-skus`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-skus`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/purchase-orders/:id/service-titan-choices`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-choices`,
+    body: () => ({ vendor_id: "77" }),
+  },
+  {
     method: "post",
     template: `${BASE}/bills/:id/link-qbo`,
     path: (f) => `${BASE}/bills/${f.billId}/link-qbo`,

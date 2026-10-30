@@ -2716,8 +2716,9 @@ export class ServiceTitanReadAdapter {
 
   /**
    * POST inventory/v2/tenant/{tenant}/purchase-orders.
-   * Called only by the purchase-order sync, and only when PM_ST_PO_SYNC_ENABLED
-   * is true. A timeout or HTTP 5xx is uncertain: the purchase order may exist.
+   * Called only by Apply / Send to ServiceTitan, and only when the owner
+   * switch in Setup is on. A timeout or HTTP 5xx is uncertain: the purchase
+   * order may exist.
    */
   async createInventoryPurchaseOrder(body: Record<string, unknown>): Promise<{ id: string }> {
     await this.accessToken();
@@ -2789,6 +2790,162 @@ export class ServiceTitanReadAdapter {
     const rows = await this.listInventoryPurchaseOrders(jobId);
     const found = rows.find((row) => (row.memo ?? "").includes(marker));
     return found ? { id: found.id } : null;
+  }
+
+  /**
+   * GET inventory vendors. Used to fill the purchase-order preview.
+   * Does not create or update anything in ServiceTitan.
+   */
+  async listPoVendors(): Promise<Array<{ id: string; name: string }>> {
+    return this.namedPages("inventory", "vendors");
+  }
+
+  /** GET inventory purchase-order types. Read only. */
+  async listPoTypes(): Promise<Array<{ id: string; name: string }>> {
+    return this.namedPages("inventory", "purchase-order-types");
+  }
+
+  /** GET settings business units. Read only. */
+  async listBusinessUnits(): Promise<Array<{ id: string; name: string }>> {
+    return this.namedPages("settings", "business-units");
+  }
+
+  /**
+   * GET warehouses and trucks. A truck listing that fails still returns
+   * warehouses. Read only.
+   */
+  async listInventoryLocations(): Promise<Array<{ id: string; name: string }>> {
+    const warehouses = await this.namedPages("inventory", "warehouses");
+    let trucks: Array<{ id: string; name: string }> = [];
+    try {
+      trucks = await this.namedPages("inventory", "trucks");
+    } catch {
+      trucks = [];
+    }
+    return [
+      ...warehouses.map((row) => ({ id: row.id, name: `Warehouse · ${row.name}` })),
+      ...trucks.map((row) => ({ id: row.id, name: `Truck · ${row.name}` })),
+    ];
+  }
+
+  /**
+   * GET pricebook materials and equipment. A material with isInventory false
+   * is still a SKU id. Read only. There is no generic item in this list.
+   */
+  async listPoSkus(): Promise<Array<{ id: string; name: string; code: string | null; nonInventory: boolean }>> {
+    const materials = await this.skuPages("materials");
+    const equipment = await this.skuPages("equipment");
+    return [...materials, ...equipment];
+  }
+
+  /**
+   * GET one job for its number, summary, and business unit.
+   * Does not read appointments. Read only.
+   */
+  async readPoJob(
+    jobId: string,
+  ): Promise<{ id: string; jobNumber: string | null; summary: string | null; businessUnitId: string | null } | null> {
+    if (!/^\d+$/.test(jobId)) return null;
+    const raw = await this.get("jpm", `jobs/${jobId}`);
+    const parsed = z
+      .object({
+        id: sourceId,
+        jobNumber: z.string().nullish(),
+        summary: z.string().nullish(),
+        businessUnitId: sourceId.nullish(),
+      })
+      .passthrough()
+      .safeParse(raw);
+    if (!parsed.success || parsed.data.id !== jobId) {
+      throw new ServiceTitanReadError("Unexpected ServiceTitan job.");
+    }
+    return {
+      id: parsed.data.id,
+      jobNumber: parsed.data.jobNumber?.trim() || null,
+      summary: parsed.data.summary?.trim() || null,
+      businessUnitId: parsed.data.businessUnitId ?? null,
+    };
+  }
+
+  private async namedPages(
+    family: "inventory" | "settings" | "pricebook",
+    resource: string,
+  ): Promise<Array<{ id: string; name: string }>> {
+    const schema = z
+      .object({
+        id: sourceId,
+        name: z.string().nullish(),
+        displayName: z.string().nullish(),
+        active: z.boolean().optional(),
+      })
+      .passthrough();
+    const rows = await this.readPages(family, resource, new URLSearchParams());
+    const named: Array<{ id: string; name: string }> = [];
+    for (const row of rows) {
+      const parsed = schema.safeParse(row);
+      if (!parsed.success || parsed.data.active === false) continue;
+      const name = parsed.data.name?.trim() || parsed.data.displayName?.trim() || parsed.data.id;
+      named.push({ id: parsed.data.id, name });
+    }
+    if (rows.length > 0 && named.length === 0) {
+      throw new ServiceTitanReadError(`Unexpected ServiceTitan ${resource}.`);
+    }
+    return named;
+  }
+
+  private async skuPages(
+    resource: "materials" | "equipment",
+  ): Promise<Array<{ id: string; name: string; code: string | null; nonInventory: boolean }>> {
+    const schema = z
+      .object({
+        id: sourceId,
+        code: z.string().nullish(),
+        displayName: z.string().nullish(),
+        description: z.string().nullish(),
+        active: z.boolean().optional(),
+        isInventory: z.boolean().optional(),
+      })
+      .passthrough();
+    const rows = await this.readPages("pricebook", resource, new URLSearchParams({ active: "True" }));
+    const skus: Array<{ id: string; name: string; code: string | null; nonInventory: boolean }> = [];
+    for (const row of rows) {
+      const parsed = schema.safeParse(row);
+      if (!parsed.success || parsed.data.active === false) continue;
+      const name =
+        parsed.data.displayName?.trim() || parsed.data.description?.trim() || parsed.data.code?.trim() || parsed.data.id;
+      skus.push({
+        id: parsed.data.id,
+        name,
+        code: parsed.data.code?.trim() || null,
+        nonInventory: parsed.data.isInventory === false,
+      });
+    }
+    return skus;
+  }
+
+  /** GET pages only. Stops after 20 pages so a preview cannot walk the whole catalog. */
+  private async readPages(
+    family: "inventory" | "settings" | "pricebook" | "jpm",
+    resource: string,
+    base: URLSearchParams,
+  ): Promise<unknown[]> {
+    const rows: unknown[] = [];
+    for (let page = 1; page <= 20; page += 1) {
+      const query = new URLSearchParams(base);
+      query.set("page", String(page));
+      query.set("pageSize", "200");
+      const raw = await this.get(family, resource, query);
+      const parsed = z
+        .object({
+          data: z.array(z.unknown()),
+          hasMore: z.boolean().optional(),
+        })
+        .safeParse(raw);
+      if (!parsed.success) throw new ServiceTitanReadError(`Unexpected ServiceTitan ${resource}.`);
+      rows.push(...parsed.data.data);
+      if (parsed.data.hasMore !== true && parsed.data.data.length < 200) break;
+    }
+    return rows;
   }
 
   private async listInventoryPurchaseOrders(jobId: string): Promise<

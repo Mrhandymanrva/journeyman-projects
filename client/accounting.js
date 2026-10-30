@@ -368,6 +368,29 @@ export function createAccounting({
     };
     return `<div class="card acct-map"><div class="card-h"><div><h3>Cost type accounts</h3></div></div><div class="card-b"><p class="note">Map each cost type to a QuickBooks account from the stored chart. An empty row uses the account chosen when that bill is approved. Use copies a suggestion into that row. Nothing is saved until Save.</p><div class="acct-map-table" role="table"><div class="acct-head" role="row"><span role="columnheader">Cost type</span><span role="columnheader">QuickBooks account</span><span role="columnheader">Suggestion</span></div>${rows.map(row).join("")}</div><div class="acct-grace"><label for="ap-grace">Agreement grace days</label><input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"><p class="note">Days a subcontract can be issued before a signed master agreement is required. The default is 14.</p></div><button class="btn primary" id="ap-save-accounts" type="button">Save</button></div></div>`;
   }
+  function stSelect(id, saved, options) {
+    const known = Array.isArray(options) ? options.slice() : [];
+    if (saved && !known.some((option) => String(option.id) === String(saved))) {
+      known.unshift({ id: saved, label: saved });
+    }
+    return `<select id="${id}"><option value="">Not set</option>${known
+      .map(
+        (option) =>
+          `<option value="${esc(option.id)}"${String(option.id) === String(saved || "") ? " selected" : ""}>${esc(option.label)}</option>`,
+      )
+      .join("")}</select>`;
+  }
+  function stPoSettingsCard(settings, options) {
+    if (!settings) return "";
+    if (settings.load_error) {
+      return `<div class="card" id="st-po-settings"><div class="card-h"><h3>ServiceTitan purchase orders</h3></div><div class="card-b"><p class="err">${esc(settings.load_error)}</p></div></div>`;
+    }
+    const toggle = settings.can_toggle
+      ? `<label><input id="st-po-sync-enabled" type="checkbox"${settings.enabled ? " checked" : ""}> Send purchase orders to ServiceTitan</label>`
+      : `<p><input id="st-po-sync-enabled" type="checkbox" disabled${settings.enabled ? " checked" : ""}> Sending is ${settings.enabled ? "on" : "off"}. Only an owner can change this.</p>`;
+    const lookup = options?.lookup_error ? `<p class="note">${esc(options.lookup_error)}</p>` : "";
+    return `<div class="card" id="st-po-settings"><div class="card-h"><h3>ServiceTitan purchase orders</h3></div><div class="card-b"><p class="note">Sending stays off until an owner turns it on here. The environment variable does not turn it on. Purchase order type, business unit, and inventory location are the company defaults. The preview uses the last saved location.</p>${toggle}${lookup}<div class="st-po-fields"><label>Purchase order type${stSelect("st-po-type", settings.purchase_order_type_id, options?.types)}</label><label>Business unit${stSelect("st-po-bu", settings.business_unit_id, options?.business_units)}</label><label>Inventory location${stSelect("st-po-location", settings.inventory_location_id, options?.locations)}</label></div><button class="btn primary" id="st-po-save-defaults" type="button">Save ServiceTitan defaults</button></div></div>`;
+  }
   function laborSettingsCard(labor) {
     const code = labor.st_labor_code;
     const codeLine = !code
@@ -573,7 +596,44 @@ export function createAccounting({
       api("/accounting/cost-type-accounts"),
       api("/settings/labor"),
     ]);
-    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor);
+    let stPo = null;
+    let stOptions = { types: [], business_units: [], locations: [], lookup_error: null };
+    try {
+      stPo = await api("/settings/service-titan-purchase-orders");
+      try {
+        stOptions = await api("/settings/service-titan-purchase-order-options");
+      } catch (e) {
+        stOptions = {
+          types: [],
+          business_units: [],
+          locations: [],
+          lookup_error: e.message || "ServiceTitan lists could not be loaded.",
+        };
+      }
+    } catch (e) {
+      stPo = { load_error: e.message || "ServiceTitan purchase order settings could not be loaded." };
+    }
+    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor) + stPoSettingsCard(stPo, stOptions);
+    const stSave = el("st-po-save-defaults");
+    if (stSave && stPo && !stPo.load_error) {
+      stSave.onclick = async () => {
+        const body = {
+          purchase_order_type_id: el("st-po-type")?.value || null,
+          business_unit_id: el("st-po-bu")?.value || null,
+          inventory_location_id: el("st-po-location")?.value || null,
+        };
+        if (stPo.can_toggle) body.enabled = Boolean(el("st-po-sync-enabled")?.checked);
+        try {
+          await api("/settings/service-titan-purchase-orders", {
+            method: "PATCH",
+            body: JSON.stringify(body),
+          });
+          await renderSettings();
+        } catch (e) {
+          error(e);
+        }
+      };
+    }
     if (!el("ap-save-accounts")) return;
     for (const type of ["L", "M", "S", "O"]) {
       const use = el(`ap-use-${type}`);
