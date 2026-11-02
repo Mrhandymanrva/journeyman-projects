@@ -156,15 +156,66 @@ export interface BudgetEntryWrite {
   other: number | null;
 }
 
-export async function saveBudgetEntry(db: SqlClient, input: BudgetEntryWrite): Promise<BudgetEntry> {
+async function activeBudgetCostCodeId(db: SqlClient): Promise<string | undefined> {
   const code = await db.query<{ id: string }>(
     `SELECT id FROM projects.cost_codes WHERE code = $1 AND active LIMIT 1`,
     [BUDGET_CODE],
   );
-  const costCodeId = code.rows[0]?.id;
-  if (!costCodeId) {
+  return code.rows[0]?.id;
+}
+
+/**
+ * 054 copied JP.BUDGET only for companies that were live on estimating and
+ * projects. A company that was not never received the row. Create it from
+ * the library in this same transaction. ON CONFLICT DO NOTHING is the race
+ * on (tenant_id, code): the loser sees the winner's row on the next read.
+ */
+async function ensureBudgetCostCode(db: SqlClient, tenantId: string): Promise<string> {
+  const existing = await activeBudgetCostCodeId(db);
+  if (existing) return existing;
+
+  const inserted = await db.query<{ id: string }>(
+    `INSERT INTO projects.cost_codes
+       (tenant_id, code, division_code, division_name, description,
+        default_cost_type, ledger_account, sort_order, active)
+     SELECT $1, l.code, l.division_code, l.division_name, l.description,
+            l.default_cost_type, l.ledger_account, l.sort_order, true
+       FROM projects.cost_code_library l
+      WHERE l.code = $2
+        AND NOT EXISTS (
+          SELECT 1 FROM projects.cost_codes c
+           WHERE c.tenant_id = $1 AND c.code = l.code
+        )
+     ON CONFLICT (tenant_id, code) DO NOTHING
+     RETURNING id`,
+    [tenantId, BUDGET_CODE],
+  );
+  const created = inserted.rows[0]?.id ?? (await activeBudgetCostCodeId(db));
+  if (created) return created;
+
+  const inactive = await db.query<{ id: string }>(
+    `SELECT id FROM projects.cost_codes WHERE code = $1 LIMIT 1`,
+    [BUDGET_CODE],
+  );
+  if (inactive.rows[0]?.id) {
+    await db.query(`UPDATE projects.cost_codes SET active = true WHERE id = $1`, [
+      inactive.rows[0].id,
+    ]);
+    return inactive.rows[0].id;
+  }
+
+  const library = await db.query(
+    `SELECT 1 FROM projects.cost_code_library WHERE code = $1`,
+    [BUDGET_CODE],
+  );
+  if (library.rows.length === 0) {
     throw new ApiError("conflict", "The project budget cost code is not on this company yet.");
   }
+  throw new ApiError("conflict", "The project budget cost code could not be added for this company.");
+}
+
+export async function saveBudgetEntry(db: SqlClient, input: BudgetEntryWrite): Promise<BudgetEntry> {
+  const costCodeId = await ensureBudgetCostCode(db, input.tenantId);
 
   const desired: Record<BudgetCategoryKey, number | null> = {
     labor: input.labor == null ? null : roundMoney(input.labor),

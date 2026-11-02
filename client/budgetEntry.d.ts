@@ -7,6 +7,33 @@ export function budgetEntryTotal(fields: {
   other?: number | string | null;
 } | null | undefined): number | null;
 
+export function budgetEntryMargin(fields: {
+  contract_value?: number | string | null;
+  labor?: number | string | null;
+  materials?: number | string | null;
+  subcontractor?: number | string | null;
+  other?: number | string | null;
+} | null | undefined): { amount: number | null; percent: number | null };
+
+export function formatBudgetMargin(
+  margin: { amount: number | null; percent: number | null } | null | undefined,
+): string;
+
+export function refreshBudgetEntryFigures(root?: {
+  getElementById(id: string): {
+    value?: string;
+    textContent?: string | null;
+    classList?: { toggle(token: string, force?: boolean): void };
+  } | null;
+} | null): void;
+
+export function bindBudgetEntryFigures(root?: {
+  getElementById(id: string): {
+    dataset?: { marginBound?: string };
+    addEventListener(type: string, listener: () => void): void;
+  } | null;
+} | null): void;
+
 export function budgetEntryPayload(fields: {
   contract_value?: number | string | null;
   labor?: number | string | null;

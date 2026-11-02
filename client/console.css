@@ -431,6 +431,19 @@ body{
   color:inherit;cursor:pointer;text-align:left;
 }
 .budget-total{font-family:var(--mono);font-size:16px;font-weight:650}
+.budget-group{border:0;margin:0 0 8px;padding:0;min-width:0}
+.budget-group legend{
+  font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:0;margin:4px 0 10px;
+}
+.budget-entry .budget-field-hint,.budget-entry #budget-contract-hint{margin:6px 0 0;font-size:12px}
+.budget-margin{
+  display:grid;grid-template-columns:minmax(168px,220px) minmax(0,1fr);
+  gap:6px 16px;align-items:baseline;margin:4px 0 16px;max-width:640px;
+}
+.budget-margin-label{font-size:13px;font-weight:650;color:var(--ink)}
+.budget-margin-value{font-family:var(--mono);font-size:16px;font-weight:650}
+.budget-margin-value.neg{color:var(--red)}
 .fin-tile{background:var(--card);border:1px solid var(--rule);border-radius:2px;padding:14px 16px;min-width:0}
 .fin-tile.wide{grid-column:span 2}
 .fin-tile h3{margin:0 0 6px;font-size:13px;font-weight:650;color:var(--ink)}
@@ -503,7 +516,7 @@ body{
 .fin-section-summary{margin:0;padding:8px 16px 10px;color:var(--muted);font-size:13px}
 .card-h:has(.fin-section-toggle){border-bottom:0}
 @media (max-width:640px){
-  .fin-summary,.fin-pair,.form-row,.fin-margin,.fin-bar-row,.fin-expense-head{grid-template-columns:1fr}
+  .fin-summary,.fin-pair,.form-row,.budget-margin,.fin-margin,.fin-bar-row,.fin-expense-head{grid-template-columns:1fr}
   .fin-tile.wide{grid-column:auto}
   .fin-bar-row strong{text-align:left}
 }
