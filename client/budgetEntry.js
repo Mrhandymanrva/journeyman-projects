@@ -32,6 +32,72 @@ export function budgetEntryTotal(fields) {
   return Math.round(present.reduce((sum, value) => sum + value, 0) * 100) / 100;
 }
 
+/** Contract value minus total budgeted cost. Blank on either side is null. A zero contract has no percent. */
+export function budgetEntryMargin(fields) {
+  const contract = readField(fields?.contract_value);
+  const total = budgetEntryTotal(fields);
+  if (contract.error || contract.value == null || total == null) {
+    return { amount: null, percent: null };
+  }
+  const amount = Math.round((contract.value - total) * 100) / 100;
+  if (contract.value === 0) return { amount, percent: null };
+  const percent = Math.round((amount / contract.value) * 1000) / 10;
+  return { amount, percent };
+}
+
+function formatSignedMoney(value) {
+  const text = formatBudgetMoney(Math.abs(value));
+  return value < 0 ? `\u2212${text}` : text;
+}
+
+function formatSignedPercent(percent) {
+  const body = Math.abs(percent).toLocaleString("en-US", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+  return percent < 0 ? `\u2212${body}%` : `${body}%`;
+}
+
+export function formatBudgetMargin(margin) {
+  if (!margin || margin.amount == null || !Number.isFinite(margin.amount)) return "\u2014";
+  const money = formatSignedMoney(margin.amount);
+  if (margin.percent == null || !Number.isFinite(margin.percent)) return money;
+  return `${money} (${formatSignedPercent(margin.percent)})`;
+}
+
+function budgetFieldsFrom(doc) {
+  return {
+    contract_value: doc.getElementById("budget-contract")?.value,
+    labor: doc.getElementById("budget-labor")?.value,
+    materials: doc.getElementById("budget-materials")?.value,
+    subcontractor: doc.getElementById("budget-sub")?.value,
+    other: doc.getElementById("budget-other")?.value,
+  };
+}
+
+export function refreshBudgetEntryFigures(root) {
+  const doc = root && typeof root.getElementById === "function" ? root : document;
+  const fields = budgetFieldsFrom(doc);
+  const totalNode = doc.getElementById("budget-total");
+  if (totalNode) totalNode.textContent = formatBudgetMoney(budgetEntryTotal(fields));
+  const margin = budgetEntryMargin(fields);
+  const marginNode = doc.getElementById("budget-margin");
+  if (!marginNode) return;
+  marginNode.textContent = formatBudgetMargin(margin);
+  marginNode.classList?.toggle("neg", margin.amount != null && margin.amount < 0);
+}
+
+export function bindBudgetEntryFigures(root) {
+  const doc = root && typeof root.getElementById === "function" ? root : document;
+  const refresh = () => refreshBudgetEntryFigures(doc);
+  for (const id of ["budget-contract", "budget-labor", "budget-materials", "budget-sub", "budget-other"]) {
+    const input = doc.getElementById(id);
+    if (!input || input.dataset?.marginBound === "true") continue;
+    input.dataset.marginBound = "true";
+    input.addEventListener("input", refresh);
+  }
+}
+
 export function budgetEntryPayload(fields) {
   const contract = readField(fields?.contract_value);
   if (contract.error) return { error: contract.error };
@@ -70,6 +136,19 @@ function moneyField(id, label, value, editable) {
     `<input id="${id}" name="${id}" inputmode="decimal" autocomplete="off"${disabled} value="${fieldValue(value)}">`,
     id,
   );
+}
+
+function contractField(value, editable) {
+  const disabled = editable ? "" : " disabled";
+  return formRow(
+    "Contract value",
+    `<input id="budget-contract" name="budget-contract" inputmode="decimal" autocomplete="off"${disabled} value="${fieldValue(value)}"><p class="hint" id="budget-contract-hint">What the customer pays</p>`,
+    "budget-contract",
+  );
+}
+
+function budgetGroup(title, body) {
+  return `<fieldset class="budget-group"><legend>${title}</legend>${body}</fieldset>`;
 }
 
 const SOLD_ESTIMATE_FIELDS = [
@@ -124,16 +203,25 @@ export function budgetEntryHtml(entry, options) {
     ? `<p class="hint" id="budget-st-note">Use ST estimate copies the ServiceTitan sold estimate into these fields. Nothing is saved until you click Save budget.</p>`
     : "";
   const total = budgetEntryTotal(row);
+  const margin = budgetEntryMargin(row);
+  const marginNeg = margin.amount != null && margin.amount < 0 ? " neg" : "";
   return `<form id="budget-entry-form" class="budget-entry">
     <p class="hint">${hint}</p>
     ${estimateNote}
-    ${moneyField("budget-contract", "Contract value", row.contract_value, editable)}
-    ${moneyField("budget-labor", "Labor", row.labor, editable)}
+    ${budgetGroup(
+      "Revenue",
+      contractField(row.contract_value, editable),
+    )}
+    ${budgetGroup(
+      "Budgeted cost",
+      `${moneyField("budget-labor", "Labor cost", row.labor, editable)}
     ${moneyField("budget-hours", "Labor hours", row.labor_hours, editable)}
     ${moneyField("budget-materials", "Materials", row.materials, editable)}
     ${moneyField("budget-sub", "Subcontractor", row.subcontractor, editable)}
     ${moneyField("budget-other", "Other", row.other, editable)}
-    ${formRow("Total budgeted expense", `<output id="budget-total" class="budget-total">${formatBudgetMoney(total)}</output>`)}
+    ${formRow("Total budgeted cost", `<output id="budget-total" class="budget-total">${formatBudgetMoney(total)}</output>`)}`,
+    )}
+    <div class="budget-margin"><div class="budget-margin-label">Expected margin</div><output id="budget-margin" class="budget-margin-value${marginNeg}">${formatBudgetMargin(margin)}</output></div>
     ${
       editable
         ? `<div class="form-actions">${showEstimate ? soldEstimateButton(options.soldEstimate) : ""}<button class="btn primary" id="budget-save" type="submit">Save budget</button></div>`
@@ -158,14 +246,7 @@ export function applySoldEstimateFromButton(button) {
       input.dispatchEvent(new EventCtor("input", { bubbles: true }));
     }
   }
-  const total = budgetEntryTotal({
-    labor: root.getElementById("budget-labor")?.value,
-    materials: root.getElementById("budget-materials")?.value,
-    subcontractor: root.getElementById("budget-sub")?.value,
-    other: root.getElementById("budget-other")?.value,
-  });
-  const output = root.getElementById("budget-total");
-  if (output) output.textContent = formatBudgetMoney(total);
+  refreshBudgetEntryFigures(root);
 }
 
 export function bindSoldEstimateButton(root) {

@@ -23,12 +23,11 @@ import {
 import { financialsDashboardHtml } from "./financialsDashboard.js";
 import { bindStPoSync, stPoSyncHtml } from "./stPoSync.js";
 import {
+  bindBudgetEntryFigures,
   bindSoldEstimateButton,
   budgetEntryHtml,
   budgetEntryPayload,
-  budgetEntryTotal,
   budgetFormEditable,
-  formatBudgetMoney,
 } from "./budgetEntry.js";
 import {
   bindEnterBudget,
@@ -717,21 +716,9 @@ function renderBudgetEntry(budget, soldEstimate) {
     soldEstimate,
   });
   bindSoldEstimateButton(document);
+  bindBudgetEntryFigures(document);
   const form = el("budget-entry-form");
   if (!form || !editable) return;
-  const refresh = () => {
-    const total = budgetEntryTotal({
-      labor: el("budget-labor")?.value,
-      materials: el("budget-materials")?.value,
-      subcontractor: el("budget-sub")?.value,
-      other: el("budget-other")?.value,
-    });
-    const node = el("budget-total");
-    if (node) node.textContent = formatBudgetMoney(total);
-  };
-  for (const id of ["budget-labor", "budget-materials", "budget-sub", "budget-other"]) {
-    el(id)?.addEventListener("input", refresh);
-  }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const msg = el("budget-entry-msg");
