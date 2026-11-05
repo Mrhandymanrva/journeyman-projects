@@ -1,6 +1,6 @@
 import type { Database } from "../db/database.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
-import { DEMO_TENANT_ID } from "./demoData.js";
+import { DEMO_ST_LABOR_SERVICE, DEMO_TENANT_ID } from "./demoData.js";
 
 /** Synthetic fixtures only. Never load production credentials into pnpm dev. */
 export async function seedDemoSources(
@@ -30,6 +30,20 @@ export async function seedDemoSources(
       externalSystemId,
       key: "demo:st",
       client: {
+        sourceTenantId: "demo-st",
+        async readLaborService() {
+          // Demo only. Production never loads this client. DEMO_ST_LABOR switches
+          // the fake read so a screenshot can show the error. It is not stored.
+          const mode = (process.env.DEMO_ST_LABOR ?? "found").trim();
+          if (mode === "missing" || mode === "none") return { services: [] };
+          if (mode === "inactive") {
+            return { services: [{ ...DEMO_ST_LABOR_SERVICE, active: false }] };
+          }
+          if (mode === "fail" || mode === "error" || mode === "forbidden") {
+            throw new Error("ServiceTitan labor code MHM.25PLFE could not be read");
+          }
+          return { services: [{ ...DEMO_ST_LABOR_SERVICE }] };
+        },
         async readJob(id) {
           return {
             job: {

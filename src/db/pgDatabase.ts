@@ -1,5 +1,5 @@
 import pg from 'pg';
-import type { Database, SqlClient } from './database.js';
+import type { AdvisoryLock, Database, SqlClient } from './database.js';
 
 const { Pool } = pg;
 
@@ -49,6 +49,35 @@ export class PgDatabase implements Database {
 
   async withoutTenant<T>(fn: (client: SqlClient) => Promise<T>): Promise<T> {
     return this.transaction(null, fn);
+  }
+
+  async tryAdvisoryLock(key: string): Promise<AdvisoryLock | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ locked: boolean }>(
+        `SELECT pg_try_advisory_lock(hashtext($1)::bigint) AS locked`,
+        [key],
+      );
+      if (result.rows[0]?.locked !== true) {
+        client.release();
+        return null;
+      }
+    } catch (err) {
+      client.release(err instanceof Error ? err : new Error(String(err)));
+      throw err;
+    }
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        try {
+          await client.query(`SELECT pg_advisory_unlock(hashtext($1)::bigint)`, [key]);
+        } finally {
+          client.release();
+        }
+      },
+    };
   }
 
   private async transaction<T>(

@@ -2,8 +2,24 @@ import { Router } from "express";
 import { z } from "zod";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database } from "../db/database.js";
+import { presentFieldRelease } from "../domain/fieldRelease.js";
+import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
+import { portfolioGateColumns, presentPortfolioGates } from "../domain/gateReadiness.js";
+import { PORTFOLIO_LABOR_KEYS, portfolioFeedLabor, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { PORTFOLIO_AR_KEYS, portfolioArColumns, presentPortfolioAr } from "../domain/arMatch.js";
+import {
+  PORTFOLIO_LOG_KEYS,
+  portfolioChangeOrderColumns,
+  portfolioCloseoutColumns,
+  presentPortfolioChangeOrders,
+  presentPortfolioCloseout,
+} from "../domain/closeout.js";
+import { feedHealth, loadProjectHealth } from "../domain/projectHealth.js";
+import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/projectSync.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { presentFeedStatus, readServiceTitanAccess } from "../domain/stStatusMap.js";
 
 /**
  * The project half of the portfolio feed, for keeping QuickBooks in step with the project list. The dashboard reads
@@ -12,16 +28,263 @@ import { ApiError } from "../http/errors.js";
  */
 const ACCOUNTING = z.object({ qbo_customer_id: z.string().max(40).nullable() });
 
-export function portfolioProjectRoutes(database: Database, config: PortfolioFeedConfig): Router {
+export function portfolioProjectRoutes(
+  database: Database,
+  config: PortfolioFeedConfig,
+  sources?: SourceConnections,
+): Router {
   const router = Router();
 
   router.get("/projects", (_req, res, next) => {
-    database
-      .withTenant(config.tenantId, async (db) => (await db.query<Record<string, unknown>>(
+    Promise.all([
+      database
+      .withTenant(config.tenantId, async (db) => {
+        const rows = (await db.query<Record<string, unknown>>(
         `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.source_customer_name, p.external_customer_id, p.qbo_customer_id,
-                p.city, p.region, p.contract_value, p.scheduled_start::text AS scheduled_start, p.actual_end::text AS actual_end, p.updated_at
-           FROM projects.projects p ORDER BY p.project_number`)).rows)
-      .then((rows) => sendData(res, { generated_at: new Date().toISOString(), projects: rows }))
+                p.city, p.region, p.contract_value, p.scheduled_start::text AS scheduled_start, p.actual_end::text AS actual_end, p.updated_at,
+                ${fieldStartColumns("p")},
+                ${portfolioGateColumns("p")},
+                ${portfolioChangeOrderColumns("p")},
+                ${portfolioCloseoutColumns("p")},
+                ${portfolioLaborColumns("p")},
+                ${portfolioArColumns("p")},
+                p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name,
+                p.st_status_name, p.st_substatus_name, p.st_status_synced_at, p.st_status_write_result
+           FROM projects.projects p
+           LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
+          ORDER BY p.project_number`)).rows;
+        const health = new Map(
+          (await loadProjectHealth(db, newYorkDate(new Date().toISOString()))).map((row) => [row.project_id, row]),
+        );
+        const financials = await readPortfolioFinancialFeed(db);
+        return { rows, health, financials };
+      }),
+      readServiceTitanAccess(sources?.serviceTitan?.client),
+    ])
+      .then(([{ rows, health, financials }, serviceTitan]) => sendData(res, {
+        generated_at: new Date().toISOString(),
+        projects: rows.map((row) => {
+          const releasedAt = row.field_released_at;
+          const note = row.field_release_note;
+          const releasedBy = typeof row.field_released_by_name === "string" ? row.field_released_by_name : null;
+          const fieldStart = presentFieldStart(row);
+          const precon = {
+            open: Number(row.precon_open ?? 0),
+            overdue: Number(row.precon_overdue ?? 0),
+          };
+          const rest = { ...row };
+          delete rest.field_released_at;
+          delete rest.field_release_note;
+          delete rest.field_released_by_name;
+          delete rest.field_start;
+          delete rest.field_start_source;
+          delete rest.field_start_observed_at;
+          delete rest.precon_open;
+          delete rest.precon_overdue;
+          const gates = presentPortfolioGates(rest);
+          delete rest.gate_1_status;
+          delete rest.gate_2_status;
+          const changeOrders = presentPortfolioChangeOrders(rest);
+          const closeout = presentPortfolioCloseout(rest);
+          const labor = portfolioFeedLabor(presentPortfolioLabor(rest));
+          const ar = presentPortfolioAr(rest);
+          for (const key of PORTFOLIO_LOG_KEYS) delete rest[key];
+          for (const key of PORTFOLIO_LABOR_KEYS) delete rest[key];
+          for (const key of PORTFOLIO_AR_KEYS) delete rest[key];
+          const assessed = feedHealth(health.get(String(row.id)));
+          const serviceTitanStatus = presentFeedStatus(rest);
+          delete rest.st_status_name;
+          delete rest.st_substatus_name;
+          delete rest.st_status_synced_at;
+          delete rest.st_status_write_result;
+          return {
+            ...rest,
+            service_titan_status: serviceTitanStatus,
+            field_release: presentFieldRelease({ released_at: releasedAt, released_by: releasedBy, note }),
+            field_start: fieldStart,
+            precon,
+            gates,
+            change_orders: changeOrders,
+            closeout,
+            labor,
+            labor_refresh: presentLaborRefresh(financials.run, String(row.id)),
+            reconciliation: financials.reconciliation.get(String(row.id)) ?? null,
+            ar,
+            projected_margin_pct: assessed.projected_margin_pct,
+            billing: assessed.billing,
+            health: assessed.health,
+          };
+        }),
+        service_titan: serviceTitan,
+      }))
+      .catch(next);
+  });
+
+  /**
+   * Read-only diagnostic for the plan's stored ServiceTitan appointments.
+   * Token feed only. No ServiceTitan call and no write. Shows what the Plan
+   * GET can see: stored rows, their date span, the last read stamp, the last
+   * refresh's failures/warnings, and the link rows the refresh uses.
+   */
+  router.get("/projects/:id/plan-appointments", (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) {
+      next(new ApiError("not_found", "Project not found."));
+      return;
+    }
+    database
+      .withTenant(config.tenantId, async (db) => {
+        const project = (await db.query<{ id: string; business_unit_id: string | null }>(
+          `SELECT id::text AS id, business_unit_id::text AS business_unit_id FROM projects.projects WHERE id = $1`,
+          [id.data],
+        )).rows[0];
+        if (!project) throw new ApiError("not_found", "Project not found.");
+        const stored = (await db.query<Record<string, unknown>>(
+          `SELECT count(*)::int AS total,
+                  count(*) FILTER (WHERE active AND status !~* 'cancel' AND job_status !~* 'cancel')::int AS plan_eligible,
+                  count(DISTINCT external_job_id)::int AS jobs,
+                  min(starts_at) AS first_start,
+                  max(starts_at) AS last_start,
+                  max(observed_at) AS last_observed_at
+             FROM projects.st_plan_appointments WHERE project_id = $1`,
+          [id.data],
+        )).rows[0];
+        const read = (await db.query<Record<string, unknown>>(
+          `SELECT read_at, skipped, failed_jobs, error
+             FROM projects.st_plan_appointment_reads WHERE project_id = $1`,
+          [id.data],
+        )).rows[0] ?? null;
+        const connection = (await db.query<Record<string, unknown>>(
+          `SELECT external_project_id, observed_at FROM projects.st_project_connections WHERE project_id = $1`,
+          [id.data],
+        )).rows;
+        const links = (await db.query<Record<string, unknown>>(
+          `SELECT count(*)::int AS total, count(*) FILTER (WHERE source_active)::int AS active
+             FROM projects.project_job_links WHERE project_id = $1`,
+          [id.data],
+        )).rows[0];
+        const reconciliation = (await db.query<Record<string, unknown>>(
+          `SELECT observed_at, error FROM projects.st_financial_reconciliation WHERE project_id = $1`,
+          [id.data],
+        )).rows[0] ?? null;
+        // Ids, dates, statuses, and job numbers only. Technician names live in
+        // technicians and are not selected. This table has no customer address.
+        const rows = (await db.query<{
+          external_job_id: string;
+          external_appointment_id: string;
+          job_number: string;
+          appointment_number: string;
+          starts_at: Date;
+          ends_at: Date;
+          status: string;
+          job_status: string;
+          active: boolean;
+          observed_at: Date;
+        }>(
+          `SELECT external_job_id, external_appointment_id, job_number, appointment_number,
+                  starts_at, ends_at, status, job_status, active, observed_at
+             FROM projects.st_plan_appointments WHERE project_id = $1 ORDER BY starts_at`,
+          [id.data],
+        )).rows.map((row) => ({
+          external_job_id: row.external_job_id,
+          external_appointment_id: row.external_appointment_id,
+          job_number: row.job_number,
+          appointment_number: row.appointment_number,
+          starts_at: row.starts_at,
+          ends_at: row.ends_at,
+          status: row.status,
+          job_status: row.job_status,
+          active: row.active,
+          observed_at: row.observed_at,
+        }));
+        return { project, stored, read, connection, links, reconciliation, rows };
+      })
+      .then((r) => sendData(res, {
+        project_id: r.project.id,
+        business_unit_id: r.project.business_unit_id,
+        st_project_connections: r.connection.map((row) => ({
+          external_project_id: row.external_project_id,
+          observed_at: row.observed_at,
+        })),
+        job_links: r.links,
+        stored: r.stored,
+        last_read: r.read
+          ? {
+              read_at: r.read.read_at,
+              skipped: r.read.skipped,
+              failed_jobs: r.read.failed_jobs,
+              error: r.read.error,
+            }
+          : null,
+        last_source_warnings: r.reconciliation
+          ? { observed_at: r.reconciliation.observed_at, error: r.reconciliation.error }
+          : null,
+        rows: r.rows,
+      }))
+      .catch(next);
+  });
+
+  router.get("/projects/:id/snapshots", (req, res, next) => {
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) {
+      next(new ApiError("not_found", "Project not found."));
+      return;
+    }
+    const days = z.coerce.number().int().min(1).max(366).safeParse(req.query.days ?? 90);
+    if (!days.success) {
+      next(new ApiError("validation_failed", "days must be a whole number from 1 to 366."));
+      return;
+    }
+    const today = newYorkDate(new Date().toISOString());
+    database
+      .withTenant(config.tenantId, async (db) => {
+        const project = (await db.query<{ id: string }>(
+          `SELECT id FROM projects.projects WHERE id = $1`,
+          [id.data],
+        )).rows[0];
+        if (!project) throw new ApiError("not_found", "Project not found.");
+        const rows = (await db.query<{
+          snapshot_on: string;
+          score: number;
+          band: string;
+          reasons: unknown;
+          projected_margin_pct: string | null;
+          billing_position: "over" | "under" | "even";
+          billing_amount: string;
+          revised_contract: string | null;
+          committed_cost: string | null;
+          projected_cost: string | null;
+        }>(
+          `SELECT snapshot_on::text AS snapshot_on, score, band, reasons,
+                  projected_margin_pct::text AS projected_margin_pct,
+                  billing_position, billing_amount::text AS billing_amount,
+                  revised_contract::text AS revised_contract,
+                  committed_cost::text AS committed_cost,
+                  projected_cost::text AS projected_cost
+             FROM projects.project_health_snapshots
+            WHERE project_id = $1
+              AND snapshot_on >= $2::date - $3::int
+              AND snapshot_on <= $2::date
+            ORDER BY snapshot_on`,
+          [id.data, today, days.data],
+        )).rows;
+        return {
+          project_id: id.data,
+          days: days.data,
+          snapshots: rows.map((row) => ({
+            snapshot_on: row.snapshot_on,
+            score: Number(row.score),
+            band: row.band,
+            reasons: row.reasons,
+            projected_margin_pct: row.projected_margin_pct === null ? null : Number(row.projected_margin_pct),
+            billing: { position: row.billing_position, amount: Number(row.billing_amount) },
+            revised_contract: row.revised_contract === null ? null : Number(row.revised_contract),
+            committed_cost: row.committed_cost === null ? null : Number(row.committed_cost),
+            projected_cost: row.projected_cost === null ? null : Number(row.projected_cost),
+          })),
+        };
+      })
+      .then((body) => sendData(res, body))
       .catch(next);
   });
 

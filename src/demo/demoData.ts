@@ -1,10 +1,12 @@
 /**
  * The demo account, as data.
  *
- * The three projects are the ones from the reference mock, rebuilt as actual
+ * Whitfield, Okonkwo, and Delaney are the reference projects, rebuilt as actual
  * rows in actual state: gates approved, budgets frozen by the freeze trigger,
  * POs issued, bills approved, a vendor whose general liability lapsed, a draw
  * approved but not invoiced, a permit milestone overdue.
+ * Nguyen, Brooks, and Hale are CSR hand-off projects. Segreto's financials
+ * come from one fixture object.
  *
  * Every exception the console shows is produced by the data rather than
  * asserted by a fixture. If the eligibility trigger stops working, this seed
@@ -16,12 +18,64 @@
  * are not writable by the application role, and how you get privilege differs
  * between the two.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Database, SqlClient } from '../db/database.js';
 import { activateModule, writePlatformRows } from '../db/activation.js';
+import { storeProjectAr } from '../domain/arMatch.js';
+import { GATE_CHECKLISTS } from '../domain/gateReadiness.js';
 import { seedDrawSchedule } from './../domain/drawSchedule.js';
+import { seedPreconTasks } from '../domain/preconTasks.js';
+import { today } from '../domain/projectControls.js';
+import { blantonCommittedAppointments } from './blantonCommittedFixture.js';
+import {
+  SEGRETO_DASHBOARD_FIXTURE,
+  segretoDashboardInput,
+  segretoInvoiceLines,
+  segretoReadNotes,
+} from './segretoDashboardFixture.js';
+import {
+  normalizeServiceTitanContact,
+  pickServiceTitanContact,
+  type ServiceTitanContactSource,
+} from '../domain/stCustomerContacts.js';
+
+/** The recorded CRM contacts response, mapped the same way a project read stores it. */
+function nguyenServiceTitanContacts() {
+  const file = path.join(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../test/fixtures/st-crm/customer-location-contacts.json',
+  );
+  const fixture = JSON.parse(readFileSync(file, 'utf8')) as {
+    customer: { data: ServiceTitanContactSource[] };
+    location: { data: ServiceTitanContactSource[] };
+  };
+  const customerContacts = fixture.customer.data.flatMap((row) => {
+    const contact = normalizeServiceTitanContact(row);
+    return contact ? [contact] : [];
+  });
+  const locationContacts = fixture.location.data.flatMap((row) => {
+    const contact = normalizeServiceTitanContact(row);
+    return contact ? [contact] : [];
+  });
+  return {
+    customerContacts,
+    locationContacts,
+    picked: pickServiceTitanContact([...customerContacts, ...locationContacts]),
+  };
+}
 
 export const DEMO_SLUG = 'demo';
 export const DEMO_TENANT_ID = '5b1f0c9e-0000-4000-8000-000000000001';
+
+/** The one pricebook service the fake ServiceTitan client returns. Not a setting. */
+export const DEMO_ST_LABOR_SERVICE = {
+  id: '91025',
+  code: 'MHM.25PLFE',
+  name: 'Project Labor From Estimate',
+  active: true,
+};
 
 export interface SeedOptions {
   db: Database;
@@ -65,25 +119,13 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       { key: 'deposit', label: 'Deposit received' },
       { key: 'scope', label: 'Scope of work agreed with the customer' },
     ],
-    1: [
-      { key: 'budget', label: 'Budget built from the sold estimate' },
-      { key: 'selections', label: 'Customer selections locked' },
-      { key: 'permit', label: 'Permit requirement determined' },
-    ],
-    2: [
-      { key: 'subs', label: 'Trade partners booked and compliant' },
-      { key: 'materials', label: 'Long-lead materials ordered' },
-      { key: 'site', label: 'Site protection and access arranged' },
-    ],
+    1: [...GATE_CHECKLISTS[1]!],
+    2: [...GATE_CHECKLISTS[2]!],
     3: [
       { key: 'punch', label: 'Punch list walked with the customer' },
       { key: 'inspections', label: 'All inspections passed' },
     ],
-    4: [
-      { key: 'warranty', label: 'Warranty documents issued' },
-      { key: 'final_clean', label: 'Final clean complete' },
-      { key: 'retention', label: 'Retention released to trade partners' },
-    ],
+    4: [...GATE_CHECKLISTS[4]!],
   };
   await db.withTenant(TENANT_ID, async (c) => {
     for (const [gate, items] of Object.entries(CHECKLISTS)) {
@@ -130,14 +172,23 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
       ['Henrico County', 9],
     ] as const) {
       const { rows } = await c.query<{ id: string }>(
-        `INSERT INTO projects.jurisdictions (tenant_id, name, typical_review_days)
-         VALUES ($1,$2,$3) RETURNING id`,
+        `INSERT INTO projects.jurisdictions (tenant_id, name, state, typical_review_days)
+         VALUES ($1,$2,'VA',$3) RETURNING id`,
         [TENANT_ID, name, days],
       );
       jurisdictions[name] = rows[0]!.id;
     }
 
     const costCodes = new Map<string, string>();
+    await c.query(
+      `INSERT INTO projects.cost_codes
+         (tenant_id, code, division_code, division_name, description,
+          default_cost_type, sort_order, active, external_source, external_id)
+       VALUES ($1, 'MHM.25PLFE', 'ST', 'ServiceTitan', 'Project Labor From Estimate',
+               'L'::projects.cost_type, 0, true, 'servicetitan_pricebook_service', '91025')
+       ON CONFLICT (tenant_id, code) DO NOTHING`,
+      [TENANT_ID],
+    );
     const codeRows = await c.query<{ id: string; code: string }>(
       `SELECT id, code FROM projects.cost_codes WHERE tenant_id = $1`,
       [TENANT_ID],
@@ -268,22 +319,25 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     unit: string;
     jurisdiction: string;
     pm: string;
-    contract: number;
+    contract: number | null;
     target: number;
     stage: string;
     approvedGates: number;
     startedDaysAgo: number;
     lengthDays: number;
     budget: BudgetSpec[];
+    customer?: string;
   }) {
     return db.withTenant(TENANT_ID, async (c) => {
       const { rows } = await c.query<{ id: string }>(
         `INSERT INTO projects.projects
            (tenant_id, project_number, business_unit_id, jurisdiction_id, name,
             address_line1, city, region, pm_id, contract_value, target_margin, stage,
-            actual_start, scheduled_end, external_job_id)
+            actual_start, scheduled_start, scheduled_end, external_job_id)
          VALUES ($1,$2,$3,$4,$5,$6,$7,'VA',$8,$9,$10,$11::projects.project_stage,
-                 CURRENT_DATE - $12::int, CURRENT_DATE - $12::int + $13::int, $14)
+                 CURRENT_DATE - $12::int,
+                 (now() AT TIME ZONE 'America/New_York')::date,
+                 CURRENT_DATE - $12::int + $13::int, $14)
          RETURNING id`,
         [
           TENANT_ID,
@@ -303,6 +357,12 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
         ],
       );
       const projectId = rows[0]!.id;
+      if (spec.customer) {
+        await c.query(
+          `UPDATE projects.projects SET source_customer_name = $2 WHERE id = $1`,
+          [projectId, spec.customer],
+        );
+      }
 
       await c.query(
         `INSERT INTO projects.stage_gates (tenant_id, project_id, gate_number, title, checklist)
@@ -395,11 +455,12 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     { code: '1030', budget: 1850, billed: 0, committed: 1850 },
     { code: '1210', budget: 1400, billed: 0, committed: 1400 },
     { code: '1410', budget: 800, billed: 0, committed: 0 },
+    { code: 'MHM.25PLFE', budget: 4800, billed: 0, committed: 0 },
   ];
 
   const whitfield = await buildProject({
     number: 'DMO-2026-0184',
-    name: 'Whitfield — Primary Bath',
+    name: "Blanton's Plan",
     address: '4412 Grove Avenue',
     city: 'Richmond',
     unit: ids.richmond,
@@ -412,6 +473,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 19,
     lengthDays: 24,
     budget: whitfieldBudget,
+    customer: 'Ada Whitfield',
   });
   await spendAgainst(whitfield, 'PO-W', [
     ...whitfieldBudget.map((b) => ({
@@ -446,22 +508,466 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     // Cardinal Painting is scheduled but its GL lapsed — proposed rather than
     // confirmed, because the trigger will not allow confirmed and that is the
     // behaviour being demonstrated.
-    const schedule: Array<[string, string, number, number, string]> = [
-      ['Set tile', 'tile', 0, 3, 'confirmed'],
-      ['Plumbing finish set', 'plumb', 4, 5, 'proposed'],
-      ['Interior painting', 'paint', 8, 11, 'proposed'],
-      ['Countertop template', 'counter', 6, 6, 'proposed'],
+    const schedule: Array<[string, string, number, number, string, string | null]> = [
+      ['Set tile', 'tile', 0, 3, 'confirmed', 'Waterproofing and finishes'],
+      ['Plumbing finish set', 'plumb', 4, 5, 'proposed', 'Installation and trim'],
+      ['Interior painting', 'paint', 8, 11, 'proposed', 'Installation and trim'],
+      ['Countertop template', 'counter', 6, 6, 'proposed', null],
     ];
-    for (const [title, vendorKey, startOffset, endOffset, status] of schedule) {
-      await c.query(
+    const scheduleIds = new Map<string, string>();
+    for (const [title, vendorKey, startOffset, endOffset, status, phase] of schedule) {
+      const inserted = await c.query<{ id: string }>(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4, CURRENT_DATE + $5::int, CURRENT_DATE + $6::int, $7::projects.sched_status)`,
-        [TENANT_ID, whitfield, title, vendors[vendorKey], startOffset, endOffset, status],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4, CURRENT_DATE + $5::int, CURRENT_DATE + $6::int, $7::projects.sched_status, $8)
+         RETURNING id`,
+        [TENANT_ID, whitfield, title, vendors[vendorKey], startOffset, endOffset, status, phase],
       );
+      scheduleIds.set(title, inserted.rows[0]!.id);
     }
+    await c.query(
+      `INSERT INTO projects.schedule_dependencies
+         (tenant_id, project_id, schedule_item_id, predecessor_id, lag_days)
+       VALUES ($1,$2,$3,$4,0)`,
+      [TENANT_ID, whitfield, scheduleIds.get('Plumbing finish set'), scheduleIds.get('Set tile')],
+    );
   });
   log('project: Whitfield — Primary Bath (1 code over, 1 draw uninvoiced, 1 vendor blocked)');
+  await db.withTenant(TENANT_ID, (c) =>
+    c.query(
+      `UPDATE projects.projects
+          SET st_status_id = '221978475',
+              st_status_name = 'Hold',
+              st_substatus_id = NULL,
+              st_substatus_name = NULL,
+              st_status_synced_at = now(),
+              st_status_modified_on = now(),
+              st_status_write_result = 'ok',
+              st_status_gate_warning = $2
+        WHERE id = $1`,
+      [
+        whitfield,
+        'ServiceTitan moved this project from precon to execution, outside the one-step stage sequence. Stage gates were not approved.',
+      ],
+    ),
+  );
+
+  // Goals and milestones whose stored status is deliberately stale. The plan
+  // screen calculates over those values: milestone status from linked tasks,
+  // goal percent from milestones that are done.
+  await db.withTenant(TENANT_ID, async (c) => {
+    const asOf = today();
+    const on = (days: number) => {
+      const date = new Date(asOf + 'T12:00:00Z');
+      date.setUTCDate(date.getUTCDate() + days);
+      return date.toISOString().slice(0, 10);
+    };
+    const insert = async (kind: string, data: Record<string, unknown>) => {
+      const { rows } = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+         VALUES ($1,$2,$3,$4::jsonb) RETURNING id`,
+        [TENANT_ID, whitfield, kind, JSON.stringify(data)],
+      );
+      return rows[0]!.id;
+    };
+    const bath = await insert('goal', {
+      title: 'Finish the primary bath',
+      description: 'The room is ready for the customer to use.',
+      owner_id: ids.staff.pm,
+      due_on: on(21),
+      state: 'complete',
+      key_results: [
+        { name: 'Open punch items', start: 12, target: 0, current: 4, unit: 'items' },
+      ],
+    });
+    const signoff = await insert('goal', {
+      title: 'Homeowner sign-off',
+      description: 'The customer has walked the finished room.',
+      owner_id: ids.staff.pm,
+      due_on: on(24),
+      state: 'in_progress',
+      key_results: [],
+    });
+    const milestone = async (
+      title: string,
+      goalId: string,
+      due: string,
+      criteria: string,
+      stored: string,
+    ) =>
+      insert('milestone', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        due_on: due,
+        state: stored,
+        completed_on: null,
+        goal_id: goalId,
+        success_criteria: criteria,
+      });
+    const work = async (
+      title: string,
+      milestoneId: string,
+      start: string,
+      due: string,
+      state: string,
+      order: number,
+    ) =>
+      insert('task', {
+        title,
+        description: '',
+        owner_id: ids.staff.pm,
+        start_on: start,
+        due_on: due,
+        completed_on: state === 'complete' ? on(-1) : null,
+        state,
+        parent_id: null,
+        dependency_ids: [],
+        milestone_id: milestoneId,
+        resource_id: null,
+        job_link_id: null,
+        sort_order: order,
+      });
+    const demo = await milestone(
+      'Demo and protection',
+      bath,
+      on(-2),
+      'Room is protected and the old fixtures are out.',
+      'not_started',
+    );
+    await work('Protect floors and remove the vanity', demo, on(-12), on(-6), 'complete', 1);
+    await work('Haul debris', demo, on(-8), on(-4), 'complete', 2);
+    const tile = await milestone(
+      'Tile and fixtures',
+      bath,
+      on(5),
+      'Walls are tiled and the new fixtures are set.',
+      'complete',
+    );
+    await work('Set wall tile', tile, on(-2), on(4), 'complete', 1);
+    await work('Set the vanity and toilet', tile, on(1), on(6), 'in_progress', 2);
+    const inspection = await milestone(
+      'Final inspection',
+      bath,
+      on(3),
+      'The inspector has signed the bath.',
+      'in_progress',
+    );
+    await work('Schedule the inspection', inspection, on(-10), on(-4), 'in_progress', 1);
+    await work('Close the punch list', inspection, on(-1), on(4), 'not_started', 2);
+    const selections = await milestone(
+      'Material selections',
+      signoff,
+      on(8),
+      'The customer has approved the remaining finishes.',
+      'not_started',
+    );
+    await work('Confirm the faucet finish', selections, on(-1), on(6), 'blocked', 1);
+    await milestone(
+      'Weekly check-in',
+      signoff,
+      on(10),
+      'A walkthrough is on the calendar. No tasks are linked yet.',
+      'complete',
+    );
+  });
+  log('project controls: Whitfield goals and milestones roll up from tasks');
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    const start = (
+      await c.query<{ scheduled_start: string | null }>(
+        `SELECT scheduled_start::text AS scheduled_start FROM projects.projects WHERE id = $1`,
+        [whitfield],
+      )
+    ).rows[0]?.scheduled_start ?? null;
+    await seedPreconTasks(c, TENANT_ID, whitfield, start);
+    const asOf = today();
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date - 1
+        WHERE project_id = $1 AND title = 'Materials ordered'`,
+      [whitfield, asOf],
+    );
+    await c.query(
+      `UPDATE projects.precon_tasks
+          SET due_on = $2::date
+        WHERE project_id = $1 AND title = 'Subs booked'`,
+      [whitfield, asOf],
+    );
+  });
+  log('precon: Whitfield checklist, with materials overdue and subs due today');
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    const laborCode = ids.costCodes.get('MHM.25PLFE');
+    if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
+    await c.query(
+      `INSERT INTO projects.technician_labor_rates
+         (tenant_id, external_technician_id, technician_name, active,
+          hourly_rate, burden_rate, pay_basis, burden_unset, is_field_tech)
+       VALUES
+         ($1, 'tech-casey', 'Casey Nguyen', true, NULL, 12.00, 'commission', false, true),
+         ($1, 'tech-justin', 'Justin M.', true, NULL, NULL, 'hourly', true, true),
+         ($1, 'tech-mason', 'Mason', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-riley', 'Riley Cho', true, NULL, NULL, 'missing', true, true),
+         ($1, 'tech-office', 'Office Notes', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-req', 'Project Requirements', true, NULL, NULL, 'missing', true, false),
+         ($1, 'tech-sub', 'Subcontractor', true, NULL, NULL, 'missing', true, false),
+         ($1, '11000041', 'Wesley M', true, NULL, NULL, NULL, false, true)`,
+      [TENANT_ID],
+    );
+    // 4 h × $188 × 25% = $188 labor, 4 h × $12 burden = $48.
+    // Justin is hourly: 2 h × $36 = $72, burden not set.
+    // Wesley M (technician 11000041) is an active ServiceTitan technician.
+    // The rates themselves are not stored.
+    await c.query(
+      `INSERT INTO projects.labor_actuals
+         (tenant_id, project_id, external_job_id, external_timesheet_id,
+          external_technician_id, technician_name, work_date, hours, source,
+          cost_code_id, observed_at, labor_amount, burden_amount, pay_basis,
+          burden_unset, priced_billable_rate)
+       VALUES
+         ($1,$2,'demo-job','demo-ts-casey','tech-casey','Casey Nguyen',
+          CURRENT_DATE - 2, 4.00, 'timesheet', $3, now(), 188.00, 48.00,
+          'commission', false, 188),
+         ($1,$2,'demo-job','demo-ts-justin','tech-justin','Justin M.',
+          CURRENT_DATE - 1, 2.00, 'timesheet', $3, now(), 72.00, NULL,
+          'hourly', true, NULL),
+         ($1,$2,'demo-job','demo-ts-wesley','11000041', NULL,
+          CURRENT_DATE - 1, 2.07, 'timesheet', $3, now(), NULL, NULL,
+          NULL, false, NULL)`,
+      [TENANT_ID, whitfield, laborCode],
+    );
+    await c.query(
+      `UPDATE projects.projects
+          SET labor_refreshed_at = now() - interval '25 minutes',
+              labor_refresh_source = 'scheduled'
+        WHERE id = $1`,
+      [whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key,
+          sku, kind, quantity, total)
+       VALUES
+         ($1, $2, 'demo-inv-labor', '900184', 'labor', 'MHM.25PLFE', 'labor', 4, 752.00),
+         ($1, $2, 'demo-inv-labor', '900184', 'materials', 'TILE', 'material', 1, 1200.00)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_material_expenses
+         (tenant_id, project_id, external_job_id, external_po_id, total)
+       VALUES ($1, $2, '900184', 'demo-po-1', 400.00)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_financial_reconciliation
+         (tenant_id, project_id, observed_at, lines, technicians, error)
+       VALUES ($1, $2, now(), '[]'::jsonb, '[]'::jsonb, NULL)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_project_summary
+         (tenant_id, project_id, contract_value, total_budgeted_expense, change_orders,
+          cost_adjustments, budgeted_labor_expense, budgeted_labor_hours, budgeted_materials,
+          invoice_billed, open_invoices, retainage, estimates_read, invoices_read, observed_at)
+       VALUES ($1, $2, 41800, 25920, 2400, 0, 4800, 32, 8000, 27480, 14940, 4180, true, true, now())`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.project_closeout
+         (project_id, tenant_id, punch_done_at, punch_note, photos_done_at, photos_note)
+       VALUES ($2, $1, now(), 'Tile edge and caulk', now(), 'Filed in the photos folder')`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id,
+          job_number, appointment_number, job_status, starts_at, ends_at,
+          status, active, technicians)
+       VALUES (
+         $1, $2, '900184', 'appt-184', '900184', '1', 'Scheduled',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '1 day' + interval '9 hours') AT TIME ZONE 'America/New_York',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '1 day' + interval '12 hours') AT TIME ZONE 'America/New_York',
+         'Scheduled', true, $3::jsonb
+       )`,
+      [
+        TENANT_ID,
+        whitfield,
+        JSON.stringify([{ id: 'tech-casey', name: 'Casey Nguyen' }]),
+      ],
+    );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
+    );
+    const systemId = system.rows[0]?.id;
+    if (systemId) {
+      const linked = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title, source_active)
+         VALUES ($1,$2,$3,'900184','Whitfield field job', true)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [TENANT_ID, whitfield, systemId],
+      );
+      const linkId =
+        linked.rows[0]?.id ??
+        (
+          await c.query<{ id: string }>(
+            `SELECT id FROM projects.project_job_links
+              WHERE project_id = $1 AND external_job_id = '900184'`,
+            [whitfield],
+          )
+        ).rows[0]?.id;
+      if (linkId) {
+        await c.query(
+          `UPDATE projects.schedule_items
+              SET job_link_id = $1
+            WHERE project_id = $2 AND title = 'Set tile'`,
+          [linkId, whitfield],
+        );
+      }
+      // A second visit is linked only through a WBS task that states no phase.
+      // The Gantt leaves it Unphased until a PM picks a phase on that task.
+      const wbsLinked = await c.query<{ id: string }>(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title, source_active, source_job_number)
+         VALUES ($1,$2,$3,'900185','Whitfield trim visit', true, 'WBS-185')
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+        [TENANT_ID, whitfield, systemId],
+      );
+      const wbsLinkId =
+        wbsLinked.rows[0]?.id ??
+        (
+          await c.query<{ id: string }>(
+            `SELECT id FROM projects.project_job_links
+              WHERE project_id = $1 AND external_job_id = '900185'`,
+            [whitfield],
+          )
+        ).rows[0]?.id;
+      if (wbsLinkId) {
+        const asOf = today();
+        await c.query(
+          `INSERT INTO projects.st_plan_appointments
+             (tenant_id, project_id, external_job_id, external_appointment_id,
+              job_number, appointment_number, job_status, starts_at, ends_at,
+              status, active, technicians)
+           VALUES (
+             $1, $2, '900185', 'appt-wbs-185', 'WBS-185', '1', 'Scheduled',
+             (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                + interval '1 day' + interval '13 hours') AT TIME ZONE 'America/New_York',
+             (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+                + interval '1 day' + interval '16 hours') AT TIME ZONE 'America/New_York',
+             'Scheduled', true, $3::jsonb
+           )`,
+          [
+            TENANT_ID,
+            whitfield,
+        JSON.stringify([{ id: 'tech-riley', name: 'Riley Cho' }]),
+      ],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointments
+         (tenant_id, project_id, external_job_id, external_appointment_id,
+          job_number, appointment_number, job_status, starts_at, ends_at,
+          status, active, technicians, observed_at)
+       VALUES (
+         $1, $2, '900184', 'appt-184-later', '900184', '2', 'Scheduled',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '120 days' + interval '9 hours') AT TIME ZONE 'America/New_York',
+         (date_trunc('day', now() AT TIME ZONE 'America/New_York')
+            + interval '120 days' + interval '12 hours') AT TIME ZONE 'America/New_York',
+         'Scheduled', true, $3::jsonb, now() - interval '2 hours'
+       )`,
+      [
+        TENANT_ID,
+        whitfield,
+        JSON.stringify([{ id: 'tech-casey', name: 'Casey Nguyen' }]),
+      ],
+    );
+    await c.query(
+      `INSERT INTO projects.st_plan_appointment_reads
+         (tenant_id, project_id, read_at, skipped, failed_jobs, error)
+       VALUES ($1, $2, now() - interval '2 hours', 2, '[]'::jsonb, NULL)`,
+      [TENANT_ID, whitfield],
+    );
+    await c.query(
+          `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+           VALUES ($1,$2,'task',$3::jsonb)`,
+          [
+            TENANT_ID,
+            whitfield,
+            JSON.stringify({
+              title: 'Trim crew visit',
+              description: 'Linked to the ServiceTitan trim visit. No phase until one is chosen.',
+              owner_id: null,
+              start_on: asOf,
+              due_on: asOf,
+              completed_on: null,
+              state: 'not_started',
+              parent_id: null,
+              dependency_ids: [],
+              milestone_id: null,
+              resource_id: null,
+              job_link_id: wbsLinkId,
+              sort_order: 0,
+            }),
+          ],
+        );
+      }
+      await storeProjectAr(c, {
+        tenantId: TENANT_ID,
+        projectId: whitfield,
+        externalSystemId: systemId,
+        jobIds: ['900184'],
+        read: {
+          forbidden: false,
+          invoices: [
+            {
+              externalInvoiceId: 'demo-inv-1',
+              invoiceNumber: '118432-1',
+              externalJobId: '900184',
+              total: 12540,
+              balance: 0,
+              invoicedOn: '2026-10-01',
+              paidOn: '2026-10-12',
+            },
+            {
+              externalInvoiceId: 'demo-inv-2',
+              invoiceNumber: '118432-2',
+              externalJobId: '900184',
+              total: 12540,
+              balance: 12540,
+              invoicedOn: '2026-10-15',
+              paidOn: null,
+            },
+            {
+              externalInvoiceId: 'demo-inv-3',
+              invoiceNumber: 'ST-4401',
+              externalJobId: '900184',
+              total: 2400,
+              balance: 2400,
+              invoicedOn: '2026-10-20',
+              paidOn: null,
+            },
+          ],
+          payments: [],
+          estimates: [
+            {
+              externalEstimateId: 'demo-est-9',
+              name: 'Customer upgraded the tile',
+              externalJobId: '900184',
+              status: 'Sold',
+              soldOn: '2026-10-18',
+              customerAmount: 2400,
+            },
+          ],
+        },
+      });
+    }
+  });
 
   // --- Okonkwo: preconstruction, permit review overdue
   const okonkwoBudget: BudgetSpec[] = [
@@ -493,6 +999,7 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
     startedDaysAgo: 15,
     lengthDays: 60,
     budget: okonkwoBudget,
+    customer: 'Chidi Okonkwo',
   });
   await spendAgainst(
     okonkwo,
@@ -519,15 +1026,15 @@ export async function seedDemoTenant(opts: SeedOptions): Promise<void> {
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    for (const [title, vendorKey, s, e] of [
-      ['Electrical rough', 'elec', 20, 22],
-      ['Plumbing rough', 'plumb', 21, 23],
+    for (const [title, vendorKey, s, e, phase] of [
+      ['Electrical rough', 'elec', 20, 22, 'Rough-in'],
+      ['Plumbing rough', 'plumb', 21, 23, 'Rough-in'],
     ] as const) {
       await c.query(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'confirmed')`,
-        [TENANT_ID, okonkwo, title, vendors[vendorKey], s, e],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'confirmed',$7)`,
+        [TENANT_ID, okonkwo, title, vendors[vendorKey], s, e, phase],
       );
     }
   });
@@ -565,6 +1072,7 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
     startedDaysAgo: 31,
     lengthDays: 38,
     budget: delaneyBudget,
+    customer: 'Pat Delaney',
   });
   await spendAgainst(
     delaney,
@@ -597,19 +1105,399 @@ log('project: Okonkwo — Kitchen Remodel (permit review overdue)');
          FROM projects.permit_milestone_templates t WHERE t.tenant_id = $2`,
       [permit.rows[0]!.id, TENANT_ID],
     );
-    for (const [title, vendorKey, s, e] of [
-      ['Interior painting', 'paint', 6, 9],
-      ['Flooring install', 'floor', 9, 11],
+    for (const [title, vendorKey, s, e, phase] of [
+      ['Interior painting', 'paint', 6, 9, 'Waterproofing and finishes'],
+      ['Flooring install', 'floor', 9, 11, 'Installation and trim'],
     ] as const) {
       await c.query(
         `INSERT INTO projects.schedule_items
-           (tenant_id, project_id, title, vendor_id, window_start, window_end, status)
-         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'proposed')`,
-        [TENANT_ID, delaney, title, vendors[vendorKey], s, e],
+           (tenant_id, project_id, title, vendor_id, window_start, window_end, status, phase)
+         VALUES ($1,$2,$3,$4,CURRENT_DATE + $5::int, CURRENT_DATE + $6::int,'proposed',$7)`,
+        [TENANT_ID, delaney, title, vendors[vendorKey], s, e, phase],
       );
     }
   });
   await seedDraws(delaney, 3, 0, 57200, '117980');
 log('project: Delaney — Basement Finish (healthy)');
+
+  // Blanton: an approved cabinet bill on a cost code with no budget line.
+  // Financials used to show only the small ServiceTitan purchase order plus labor.
+  const blantonBudget: BudgetSpec[] = [
+    { code: 'MHM.25PLFE', budget: 2400, billed: 0, committed: 0 },
+  ];
+  const blanton = await buildProject({
+    number: 'DMO-2026-0260',
+    name: 'Blanton — Cabinets',
+    address: '1904 Maplewood Lane',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 62000,
+    target: 0.32,
+    stage: 'execution',
+    approvedGates: 3,
+    startedDaysAgo: 12,
+    lengthDays: 30,
+    budget: blantonBudget,
+    customer: 'Helen Blanton',
+  });
+  await db.withTenant(TENANT_ID, async (c) => {
+    await c.query(
+      `UPDATE projects.projects
+          SET postal_code = '23221',
+              business_unit_id = NULL,
+              budgeted_labor_hours = 16
+        WHERE id = $1`,
+      [blanton],
+    );
+    const cabinetCode = ids.costCodes.get('1110');
+    if (!cabinetCode) throw new Error('demo seed missing cost code 1110');
+    const laborCode = ids.costCodes.get('MHM.25PLFE');
+    if (!laborCode) throw new Error('demo seed missing MHM.25PLFE');
+    const po = await c.query<{ id: string }>(
+      `INSERT INTO projects.purchase_orders
+         (tenant_id, project_id, po_number, vendor_id, cost_code_id, cost_type,
+          amount, scope_text, status, issued_by, issued_at, kind)
+       VALUES ($1,$2,'PO-BLANTON-CAB',$3,$4,'M',26080.88,
+               'Kitchen cabinet package','issued',$5, now() - interval '6 days', 'material')
+       RETURNING id`,
+      [TENANT_ID, blanton, vendors.counter, cabinetCode, ids.staff.manager],
+    );
+    await c.query(
+      `INSERT INTO projects.po_lines
+         (tenant_id, po_id, line_no, cost_code_id, cost_type, description, original_amount)
+       VALUES ($1,$2,1,$3,'M','Kitchen cabinet package',26080.88)`,
+      [TENANT_ID, po.rows[0]!.id, cabinetCode],
+    );
+    await c.query(
+      `INSERT INTO projects.vendor_bills
+         (tenant_id, po_id, vendor_invoice_number, amount, status, approved_by, approved_at, description)
+       VALUES ($1,$2,'CAB-26080',26080.88,'approved',$3, now() - interval '4 days',
+               'Approved cabinet package')`,
+      [TENANT_ID, po.rows[0]!.id, ids.staff.bookkeeper],
+    );
+    await c.query(
+      `INSERT INTO projects.labor_actuals
+         (tenant_id, project_id, external_job_id, external_timesheet_id,
+          external_technician_id, technician_name, work_date, hours, source,
+          cost_code_id, observed_at, labor_amount, burden_amount, pay_basis, burden_unset)
+       VALUES ($1,$2,'260260','blanton-ts','tech-casey','Casey Nguyen',
+               CURRENT_DATE - 2, 6.00, 'timesheet', $3, now(), 900.00, 180.00,
+               'hourly', false)`,
+      [TENANT_ID, blanton, laborCode],
+    );
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key, sku, kind, quantity, total)
+       VALUES ($1,$2,'blanton-inv','260260','labor','MHM.25PLFE','labor',6,4200.00)`,
+      [TENANT_ID, blanton],
+    );
+    await c.query(
+      `INSERT INTO projects.st_material_expenses
+         (tenant_id, project_id, external_job_id, external_po_id, total)
+       VALUES ($1,$2,'260260','blanton-st-small',640.00)`,
+      [TENANT_ID, blanton],
+    );
+    await c.query(
+      `INSERT INTO projects.st_project_summary
+         (tenant_id, project_id, contract_value, total_budgeted_expense, change_orders,
+          cost_adjustments, budgeted_labor_expense, budgeted_labor_hours, budgeted_materials,
+          invoice_billed, open_invoices, retainage, estimates_read, invoices_read,
+          materials_expense_read, labor_burden, observed_at)
+       VALUES ($1,$2,62000,2400,0,0,2400,16,NULL,4200,0,0,true,true,true,180, now())`,
+      [TENANT_ID, blanton],
+    );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems ORDER BY display_name LIMIT 1`,
+    );
+    if (system.rows[0]?.id) {
+      const systemId = system.rows[0].id;
+      await c.query(
+        `INSERT INTO projects.project_job_links
+           (tenant_id, project_id, external_system_id, external_job_id, title,
+            source_active, source_job_number, source_job_status)
+         VALUES
+           ($1,$2,$3,'260260','Blanton cabinets', true, '260260', 'Completed'),
+           ($1,$2,$3,'261001','Blanton scheduled labor', true, '261001', 'Scheduled'),
+           ($1,$2,$3,'261002','Blanton in-progress labor', true, '261002', 'InProgress')
+         ON CONFLICT DO NOTHING`,
+        [TENANT_ID, blanton, systemId],
+      );
+      await c.query(
+        `UPDATE projects.project_job_links
+            SET source_job_number = '260260', source_job_status = 'Completed', source_active = true
+          WHERE project_id = $1 AND external_job_id = '260260'`,
+        [blanton],
+      );
+    }
+    for (const visit of blantonCommittedAppointments()) {
+      await c.query(
+        `INSERT INTO projects.st_plan_appointments
+           (tenant_id, project_id, external_job_id, external_appointment_id,
+            job_number, appointment_number, job_status, starts_at, ends_at,
+            status, active, technicians)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11::jsonb)
+         ON CONFLICT (tenant_id, project_id, external_appointment_id) DO NOTHING`,
+        [
+          TENANT_ID,
+          blanton,
+          visit.externalJobId,
+          visit.externalAppointmentId,
+          visit.jobNumber,
+          visit.appointmentNumber,
+          visit.jobStatus,
+          visit.startsAt,
+          visit.endsAt,
+          visit.status,
+          JSON.stringify(visit.technicians),
+        ],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects.st_invoice_lines
+         (tenant_id, project_id, external_invoice_id, external_job_id, line_key, sku, kind, quantity, total)
+       VALUES
+         ($1,$2,'blanton-open-inv','261002','labor','MHM.25PLFE','labor',8,800.00),
+         ($1,$2,'blanton-open-inv','261002','materials','TILE','material',1,50.00)
+       ON CONFLICT DO NOTHING`,
+      [TENANT_ID, blanton],
+    );
+  });
+  log('project: Blanton — Cabinets (approved cabinet bill, small ServiceTitan purchase order, labor)');
+
+  // CSR hand-offs. Nguyen is still a draft on the form, prefilled from the
+  // linked project. Brooks and Hale are submitted and waiting on Home.
+  // Gate 0 is already complete on the two that were submitted.
+  const nguyen = await buildProject({
+    number: 'DMO-2026-0201',
+    name: 'Nguyen — Hall Bath',
+    address: '3102 Parkwood Avenue',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 18640,
+    target: 0.35,
+    stage: 'handoff',
+    approvedGates: 0,
+    startedDaysAgo: 0,
+    lengthDays: 14,
+    budget: [],
+    customer: 'Linh Nguyen',
+  });
+  const brooks = await buildProject({
+    number: 'DMO-2026-0202',
+    name: 'Brooks — Powder Room',
+    address: '18 Westover Avenue',
+    city: 'Richmond',
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: 7100,
+    target: 0.34,
+    stage: 'handoff',
+    approvedGates: 1,
+    startedDaysAgo: 0,
+    lengthDays: 10,
+    budget: [],
+    customer: 'Mara Brooks',
+  });
+  const hale = await buildProject({
+    number: 'DMO-2026-0203',
+    name: 'Hale — Sunroom',
+    address: '902 Mariners Boulevard',
+    city: 'Newport News',
+    unit: ids.hampton,
+    jurisdiction: ids.jurisdictions['City of Newport News']!,
+    pm: ids.staff.pm2!,
+    contract: 24800,
+    target: 0.33,
+    stage: 'handoff',
+    approvedGates: 1,
+    startedDaysAgo: 0,
+    lengthDays: 21,
+    budget: [],
+    customer: 'Ellis Hale',
+  });
+
+  await db.withTenant(TENANT_ID, async (c) => {
+    await c.query(
+      `UPDATE projects.projects
+          SET actual_start = NULL,
+              scheduled_start = (now() AT TIME ZONE 'America/New_York')::date + 21,
+              scheduled_end = (now() AT TIME ZONE 'America/New_York')::date + 35,
+              source_project_summary = $2
+        WHERE id = $1`,
+      [
+        nguyen,
+        'Replace the hall bath tub with a tiled shower. Keep the existing vanity.',
+      ],
+    );
+    await c.query(
+      `UPDATE projects.projects SET actual_start = NULL WHERE id = ANY($1::uuid[])`,
+      [[brooks, hale]],
+    );
+    const system = await c.query<{ id: string }>(
+      `SELECT id FROM projects.external_systems WHERE tenant_id = $1 ORDER BY display_name LIMIT 1`,
+      [TENANT_ID],
+    );
+    const systemId = system.rows[0]?.id;
+    const nguyenContacts = nguyenServiceTitanContacts();
+    if (systemId) {
+      await c.query(
+        `INSERT INTO projects.st_project_connections
+           (project_id, tenant_id, external_system_id, external_project_id, connection_key,
+            snapshot, observed_at, linked_by)
+         VALUES ($1,$2,$3,'44821','demo:handoff',$4::jsonb, now(), $5)`,
+        [
+          nguyen,
+          TENANT_ID,
+          systemId,
+          JSON.stringify({
+            id: '44821',
+            number: '44821',
+            summary: 'Replace the hall bath tub with a tiled shower. Keep the existing vanity.',
+            leadSource: 'Referral',
+            customer: {
+              id: '300',
+              name: 'Linh Nguyen',
+              phone: nguyenContacts.picked.phone,
+              email: nguyenContacts.picked.email,
+              contacts: nguyenContacts.customerContacts,
+            },
+            location: {
+              id: '400',
+              name: 'Home',
+              address: {
+                street: '3102 Parkwood Avenue',
+                city: 'Richmond',
+                state: 'VA',
+                zip: '23221',
+              },
+              contacts: nguyenContacts.locationContacts,
+            },
+          }),
+          ids.staff.office!,
+        ],
+      );
+      await c.query(
+        `INSERT INTO projects.st_estimate_observations
+           (tenant_id, project_id, external_system_id, external_estimate_id, name,
+            status, customer_amount, classification)
+         VALUES ($1,$2,$3,'est-nguyen-hall','Hall bath remodel','Open',17250,'original')`,
+        [TENANT_ID, nguyen, systemId],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects.csr_handoffs (
+         project_id, tenant_id, customer_name, phone, email, service_address, office,
+         lead_source, scope_summary, handoff_project_ref, handoff_estimate_amount,
+         sold_amount, target_start_window, access_notes, decision_maker_notes,
+         permits_likely, status, submitted_at, submitted_by
+       ) VALUES
+         ($1,$2,'Mara Brooks','757-555-0190','mara.brooks@example.test',
+          '18 Westover Avenue, Richmond, VA 23225','richmond','Repeat customer',
+          'Powder room. New vanity, toilet, and floor tile.','45002',6400,7100,
+          'Next two weeks','Lockbox 1928. Park in the drive.','Mara Brooks is the owner.',
+          'unknown','submitted', now() - interval '1 hour', $3),
+         ($4,$2,'Ellis Hale','757-555-0166','ellis.hale@example.test',
+          '902 Mariners Boulevard, Newport News, VA 23601','hampton_newport_news','Website',
+          'Sunroom off the kitchen. Screens and a knee wall.','45110',22100,24800,
+          'After Thanksgiving','Dog in the yard until noon.','Ellis and Jan Hale decide together.',
+          'yes','submitted', now() - interval '5 hours', $3)`,
+      [brooks, TENANT_ID, ids.staff.office!, hale],
+    );
+  });
+  log('handoff: Nguyen hall bath (form, not submitted)');
+  log('handoff: Brooks powder room and Hale sunroom (waiting on Home, Gate 0 complete)');
+
+  // Segreto reads SEGRETO_DASHBOARD_FIXTURE only. Contract and budget stay
+  // blank until someone enters them on Financials. The example budget is not seeded.
+  const segretoFixture = SEGRETO_DASHBOARD_FIXTURE;
+  const segretoTiles = segretoDashboardInput(segretoFixture);
+  const segreto = await buildProject({
+    number: segretoFixture.identity.number,
+    name: segretoFixture.identity.name,
+    address: segretoFixture.identity.address,
+    city: segretoFixture.identity.city,
+    unit: ids.richmond,
+    jurisdiction: ids.jurisdictions['City of Richmond']!,
+    pm: ids.staff.pm!,
+    contract: segretoFixture.journeymanContract,
+    target: segretoFixture.targetMargin,
+    stage: 'execution',
+    // Gate 1 freezes the baseline. No budget lines are seeded, which is the
+    // in-progress job whose Financials still say "No budget entered".
+    approvedGates: 2,
+    startedDaysAgo: 8,
+    lengthDays: 18,
+    budget: [],
+    customer: segretoFixture.identity.customer,
+  });
+  await db.withTenant(TENANT_ID, async (c) => {
+    const jobId = segretoFixture.identity.linkedJobId;
+    await c.query(
+      `UPDATE projects.projects
+          SET external_job_id = $2,
+              actual_start = $3::date,
+              scheduled_start = $3::date,
+              scheduled_end = $4::date
+        WHERE id = $1`,
+      [segreto, jobId, segretoFixture.identity.startedOn, segretoFixture.identity.targetFinishOn],
+    );
+    for (const line of segretoInvoiceLines(segretoFixture)) {
+      await c.query(
+        `INSERT INTO projects.st_invoice_lines
+           (tenant_id, project_id, external_invoice_id, external_job_id, line_key,
+            sku, kind, quantity, total)
+         VALUES ($1, $2, 'segreto-inv', $3, $4, $5, $6, 1, $7)`,
+        [TENANT_ID, segreto, jobId, line.lineKey, line.sku, line.kind, line.total],
+      );
+    }
+    if (segretoFixture.actuals.materialsExpense != null) {
+      await c.query(
+        `INSERT INTO projects.st_material_expenses
+           (tenant_id, project_id, external_job_id, external_po_id, total)
+         VALUES ($1, $2, $3, 'segreto-po-1', $4)`,
+        [TENANT_ID, segreto, jobId, segretoFixture.actuals.materialsExpense],
+      );
+    }
+    await c.query(
+      `INSERT INTO projects.st_financial_reconciliation
+         (tenant_id, project_id, observed_at, lines, technicians, error)
+       VALUES ($1, $2, now(), '[]'::jsonb, '[]'::jsonb, $3)`,
+      [TENANT_ID, segreto, segretoReadNotes(segretoFixture)],
+    );
+    const st = segretoTiles.serviceTitan;
+    await c.query(
+      `INSERT INTO projects.st_project_summary
+         (tenant_id, project_id, contract_value, total_budgeted_expense, change_orders,
+          cost_adjustments, budgeted_labor_expense, budgeted_labor_hours, budgeted_materials,
+          invoice_billed, open_invoices, retainage, estimates_read, invoices_read,
+          materials_expense_read, labor_burden, observed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now())`,
+      [
+        TENANT_ID,
+        segreto,
+        // Sold estimate shown on Financials. Not the Journeyman contract, which stays blank.
+        83432.65,
+        29096.57,
+        0,
+        0,
+        0,
+        0,
+        29096.57,
+        st.billed,
+        st.openInvoices,
+        st.retainage,
+        true,
+        st.invoicesRead,
+        segretoFixture.actuals.materialsExpense != null,
+        segretoFixture.actuals.laborBurden,
+      ],
+    );
+  });
+  log('project: Segreto (invoice actuals; contract, budget, and materials expense not returned)');
 
 }

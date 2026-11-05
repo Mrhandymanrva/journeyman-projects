@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { splitSqlStatements } from '../src/db/splitSql.js';
+import { stPoEnvSeedSql } from '../src/domain/stPurchaseOrderSync.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const FILES = [
@@ -36,6 +37,42 @@ const FILES = [
   path.join(repoRoot, "db/021_coi_coverage.sql"),
   path.join(repoRoot, "db/022_vendor_sync.sql"),
   path.join(repoRoot, "db/023_agreement_advisory.sql"),
+  path.join(repoRoot, "db/024_po_lines.sql"),
+  path.join(repoRoot, "db/025_bid_request_lines.sql"),
+  path.join(repoRoot, "db/026_bill_lines.sql"),
+  path.join(repoRoot, "db/029_tenant_accounting_settings.sql"),
+  path.join(repoRoot, "db/030_draw_external_invoice_number.sql"),
+  path.join(repoRoot, "db/031_material_bill_cost.sql"),
+  path.join(repoRoot, "db/032_vendor_document_notes.sql"),
+  path.join(repoRoot, "db/033_field_release.sql"),
+  path.join(repoRoot, "db/034_preconstruction_tasks.sql"),
+  path.join(repoRoot, "db/035_field_start.sql"),
+  path.join(repoRoot, "db/036_permit_offices.sql"),
+  path.join(repoRoot, "db/037_permit_office_seed.sql"),
+  path.join(repoRoot, "db/038_gate_checklist_defaults.sql"),
+  path.join(repoRoot, "db/039_change_order_log_and_closeout.sql"),
+  path.join(repoRoot, "db/040_labor_actuals.sql"),
+  path.join(repoRoot, "db/041_st_ar_observations.sql"),
+  path.join(repoRoot, "db/042_project_health_snapshots.sql"),
+  path.join(repoRoot, "db/043_technician_labor_rates.sql"),
+  path.join(repoRoot, "db/044_labor_refresh.sql"),
+  path.join(repoRoot, "db/045_labor_refresh_scheduled.sql"),
+  path.join(repoRoot, "db/046_st_labor_code.sql"),
+  path.join(repoRoot, "db/047_unbudgeted_labor.sql"),
+  path.join(repoRoot, "db/048_pricebook_labor_code.sql"),
+  path.join(repoRoot, "db/049_commission_labor.sql"),
+  path.join(repoRoot, "db/050_st_project_financials.sql"),
+  path.join(repoRoot, "db/051_labor_refresh_status.sql"),
+  path.join(repoRoot, "db/052_st_status_sync.sql"),
+  path.join(repoRoot, "db/053_st_financial_summary.sql"),
+  path.join(repoRoot, "db/054_project_budget_entry.sql"),
+  path.join(repoRoot, "db/055_st_labor_gap.sql"),
+  path.join(repoRoot, "db/056_posted_commission.sql"),
+  path.join(repoRoot, "db/057_csr_handoff.sql"),
+  path.join(repoRoot, "db/058_vendor_bill_po_sync.sql"),
+  path.join(repoRoot, "db/059_st_plan_appointment_reads.sql"),
+  path.join(repoRoot, "db/060_st_po_preview_defaults.sql"),
+  path.join(repoRoot, "db/061_project_budget_cost_code.sql"),
 ];
 
 const dryRun = process.argv.includes('--dry-run');
@@ -87,6 +124,9 @@ const runner = await makeRunner();
 let applied = 0;
 
 for (const file of FILES) {
+  if (file.endsWith('060_st_po_preview_defaults.sql')) {
+    await runner.exec(stPoEnvSeedSql());
+  }
   const statements = splitSqlStatements(readFileSync(file, 'utf8'));
   for (const stmt of statements) {
     try {

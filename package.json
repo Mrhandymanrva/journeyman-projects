@@ -19,6 +19,7 @@
     "db:provision": "tsx src/provision.ts",
     "db:provision:built": "node dist/provision.js",
     "seed:demo": "tsx scripts/seedDemo.ts",
+    "st:commission-probe": "tsx scripts/probeCommission.ts",
     "format": "prettier --write \"{src,test,scripts}/**/*.ts\""
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
+    "jsdom": "^30.1.3",
     "prettier": "^3.4.2",
     "supertest": "^7.0.0",
     "tsx": "^4.19.2",

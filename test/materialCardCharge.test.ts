@@ -153,6 +153,24 @@ describe('material card charge without a QuickBooks connector', () => {
     expect(still.body.data.bills[0].card_charge_state).toBe('awaiting_card_charge');
     expect(still.body.data.bills[0].status).toBe('received');
 
+    const flagged = await owner().post(`/api/v1/projects/projects/${project.body.data.id}/field-release`).send({
+      note: 'Crew is free next week',
+    });
+    expect(flagged.status, JSON.stringify(flagged.body)).toBe(200);
+    const afterFlag = await pm().get(`/api/v1/projects/projects/${project.body.data.id}/vendor-bills`);
+    expect(afterFlag.body.data.bills[0].card_charge_state).toBe('awaiting_card_charge');
+    expect(afterFlag.body.data.bills[0].status).toBe('received');
+    const summaryAfter = await portfolio().get('/api/v1/portfolio/summary').set('Authorization', `Bearer ${token}`);
+    expect(summaryAfter.body.data.purchasing.bills_awaiting_approval).toEqual({ count: 0, amount: 0 });
+    expect(summaryAfter.body.data.purchasing.material_bills_unmatched).toEqual({ count: 1, amount: ORDER });
+    const queuedAfter = await h.db.withTenant(t.id, (c) =>
+      c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM projects.accounting_queue WHERE record_id = $1`,
+        [created.body.data.id],
+      ),
+    );
+    expect(queuedAfter.rows[0]?.n).toBe('0');
+
     const other = await owner().post('/api/v1/projects/projects').send(
       projectBody({ name: 'Other kitchen', project_number: 'CARD-2' }),
     );
@@ -296,5 +314,15 @@ describe('material card charge link', () => {
 
     const again = await pm().get(`/api/v1/projects/projects/${project.body.data.id}/vendor-bills`);
     expect(again.body.data.bills[0].card_charge_state).toBe('matched');
+
+    const flagged = await owner().post(`/api/v1/projects/projects/${project.body.data.id}/field-release`).send({});
+    expect(flagged.status, JSON.stringify(flagged.body)).toBe(200);
+    const afterFlag = await pm().get(`/api/v1/projects/projects/${project.body.data.id}/vendor-bills`);
+    expect(afterFlag.body.data.bills[0]).toMatchObject({
+      status: 'paid',
+      card_charge_state: 'matched',
+      qbo_id: 'card',
+    });
+    expect(calls.some((call) => call.action === 'createBill' || call.action === 'createVendor')).toBe(false);
   });
 });

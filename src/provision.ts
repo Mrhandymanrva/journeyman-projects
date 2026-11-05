@@ -26,12 +26,14 @@ import {
   splitSqlStatements,
   strippedSql,
 } from "./db/splitSql.js";
+import { stPoEnvSeedSql } from "./domain/stPurchaseOrderSync.js";
 import {
   NON_TENANT_SCOPED_TABLES,
   TENANT_SCOPED_TABLES,
 } from "./db/assertions.js";
 import { PgDatabase } from "./db/pgDatabase.js";
 import type { SqlClient } from "./db/database.js";
+import { seedPermitOffices } from "./domain/permitOfficeSeed.js";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -174,8 +176,41 @@ for (const file of [
   "db/029_tenant_accounting_settings.sql",
   "db/030_draw_external_invoice_number.sql",
   "db/031_material_bill_cost.sql",
+  "db/032_vendor_document_notes.sql",
+  "db/033_field_release.sql",
+  "db/034_preconstruction_tasks.sql",
+  "db/035_field_start.sql",
+  "db/036_permit_offices.sql",
+  "db/037_permit_office_seed.sql",
+  "db/038_gate_checklist_defaults.sql",
+  "db/039_change_order_log_and_closeout.sql",
+  "db/040_labor_actuals.sql",
+  "db/041_st_ar_observations.sql",
+  "db/042_project_health_snapshots.sql",
+  "db/043_technician_labor_rates.sql",
+  "db/044_labor_refresh.sql",
+  "db/045_labor_refresh_scheduled.sql",
+  "db/046_st_labor_code.sql",
+  "db/047_unbudgeted_labor.sql",
+  "db/048_pricebook_labor_code.sql",
+  "db/049_commission_labor.sql",
+  "db/050_st_project_financials.sql",
+  "db/051_labor_refresh_status.sql",
+  "db/052_st_status_sync.sql",
+  "db/053_st_financial_summary.sql",
+  "db/054_project_budget_entry.sql",
+  "db/055_st_labor_gap.sql",
+  "db/056_posted_commission.sql",
+  "db/057_csr_handoff.sql",
+  "db/058_vendor_bill_po_sync.sql",
+  "db/059_st_plan_appointment_reads.sql",
+  "db/060_st_po_preview_defaults.sql",
+  "db/061_project_budget_cost_code.sql",
 ]) {
   const full = path.join(repoRoot, file);
+  if (file.endsWith("060_st_po_preview_defaults.sql")) {
+    await owner.query(stPoEnvSeedSql());
+  }
   const statements = splitSqlStatements(readFileSync(full, "utf8"));
   let applied = 0;
   for (const stmt of statements) {
@@ -352,6 +387,29 @@ if (process.env.PM_ST_TENANT_ID && process.env.PM_ST_EXTERNAL_SYSTEM_ID) {
     await connectorDb.close();
   }
 }
+// Same load the application runs at boot. Doing it here means a deploy that
+// finishes provisioning already has the offices, and the following boot sees
+// the marker and does not write again. DATABASE_URL is jp_app, so the insert
+// goes through the same RLS path as POST /jurisdictions/import.
+if (process.env.DATABASE_URL) {
+  const seedDb = new PgDatabase({ connectionString: process.env.DATABASE_URL });
+  try {
+    await seedPermitOffices(seedDb);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`\npermit offices seed failed\n  ${message}`);
+    await seedDb.close().catch(() => {});
+    await owner.end();
+    await admin.end();
+    process.exit(1);
+  }
+  await seedDb.close();
+} else {
+  console.log(
+    "permit offices seed: DATABASE_URL is not set, so application boot will load the offices.",
+  );
+}
+
 await owner.end();
 await admin.end();
 

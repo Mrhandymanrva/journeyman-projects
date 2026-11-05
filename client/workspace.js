@@ -1,9 +1,25 @@
+import { bindFinancialSections } from "./financialsSections.js";
+import { revealLinkedItem } from "./home.js";
+import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
+import { createPermitOffices } from "./permitOffices.js";
 import {openProjectDeletion} from "./projectDeletion.js";
 import {createAccounting} from "./accounting.js";
 import { createProjectControls } from "./projectControls.js";
+import { scheduleProgress, appointmentReadWindow } from "./scheduleProgress.js";
 import { createUsers } from "./users.js";
 import { createSubcontractors } from "./subcontractors.js";
-import { issues, addDays } from "./scheduleBoard.js";
+import { issues } from "./scheduleBoard.js";
+import { roleTitle } from "./roleTitles.js";
+import {
+  LABOR_PAGE_ID,
+  PRECON_ROLE_NOTE,
+  PROJECT_PAGE_ALIASES,
+  PROJECT_PAGE_ID,
+  PROJECT_PAGE_ORDER,
+  SHOW_COMMUNICATIONS_TAB,
+  navEntries,
+  workspacePages,
+} from "./workspaceNav.js";
 export function createWorkspace({
   api,
   el,
@@ -15,7 +31,17 @@ export function createWorkspace({
   closeDrawer,
   field,
   onProjectDeleted,
+  reload,
+  renderHome,
+  onNeedProject,
 }) {
+  const offices = createPermitOffices({
+    api,
+    esc,
+    can,
+    openDrawer,
+    closeDrawer,
+  });
   const accounting=createAccounting({api,el,esc,can,current,openDrawer,closeDrawer});
   const users = createUsers({ api, el, esc, openDrawer, closeDrawer, can });
   const controls = createProjectControls({
@@ -27,41 +53,7 @@ export function createWorkspace({
     openDrawer,
     closeDrawer,
   });
-  const pages = {
-    dashboard: ["Dashboard", "Your project, at a glance."],
-    plan: [
-      "Plan",
-      "Scheduled work, crews, tasks, milestones and project reporting.",
-    ],
-    documents: ["Documents", "Project files, templates and working forms."],
-    risks: ["Risks", "Identify, assess and manage project risks."],
-    communications: [
-      "Communications",
-      "Updates, delivery logs and scheduled check-ins.",
-    ],
-    bids: [
-      "Bids",
-      "Request quotes and track subcontractor responses for this project.",
-    ],
-    resources: [
-      "Resources",
-      "Your company-wide subcontractors, technicians and trade crews.",
-    ],
-    financials: [
-      "Financials",
-      "Review budgets, purchase orders, change orders and draws.",
-    ],
-    logs: ["Daily logs", "Keep a clear record of work completed on site."],
-    users: ["Users", "Manage staff access and login credentials."],
-    settings: [
-      "Setup",
-      "Company settings for QuickBooks cost-type accounts and the subcontract agreement window.",
-    ],
-    project: [
-      "Project details & permits",
-      "ServiceTitan information, project stages and permit milestones.",
-    ],
-  };
+  const pages = workspacePages;
   const icons = {
     plan: "▥",
     documents: "▧",
@@ -74,7 +66,8 @@ export function createWorkspace({
     resources: "♧",
     financials: "＄",
     logs: "▧",
-    project: "⌂",
+    [PROJECT_PAGE_ID]: "⌂",
+    offices: "▣",
   };
   let active = "dashboard",
     data = null,
@@ -82,8 +75,8 @@ export function createWorkspace({
   const shell = el("shell");
   const sidebar = document.createElement("aside");
   sidebar.className = "workspace-sidebar";
-  sidebar.innerHTML = `<a class="workspace-brand" href="#dashboard"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace">${Object.entries(
-    pages,
+  sidebar.innerHTML = `<a class="workspace-brand" href="#home"><span class="brand-mark">J</span><span>Journeyman<small>PROJECTS</small></span></a><div id="project-context"></div><p class="nav-label">WORKSPACE</p><nav aria-label="Project workspace"><a href="#home" data-page="home"><span aria-hidden="true">⌂</span>Home</a>${navEntries(
+    SHOW_COMMUNICATIONS_TAB,
   )
     .map(
       ([id, [name]]) =>
@@ -117,11 +110,13 @@ export function createWorkspace({
     "afterbegin",
     '<div id="dashboard-controls"></div>',
   );
+  const handoffCard = el("csr-handoff");
+  if (handoffCard) el("page-dashboard").prepend(handoffCard);
   el("page-financials").insertAdjacentHTML(
     "beforeend",
     '<div id="project-payables"></div><div id="project-reserves"></div>',
   );
-  el("page-project").append(el("blockers").closest(".card"));
+  el("page-" + PROJECT_PAGE_ID).append(el("blockers").closest(".card"));
   el("blockers").closest(".card").querySelector(".lbl").textContent =
     "Needs attention";
   const planViews = {
@@ -129,7 +124,6 @@ export function createWorkspace({
     tasks: "Tasks & WBS",
     roadmap: "Roadmap & milestones",
     goals: "Goals & key results",
-    status: "RAG status",
     burndown: "Burndown",
   };
   let planView = "gantt";
@@ -168,19 +162,69 @@ export function createWorkspace({
   document.querySelectorAll("[data-plan-view]").forEach((button) => {
     button.onclick = () => {
       planView = button.dataset.planView;
+      const url = new URL(location.href);
+      url.searchParams.delete("plan");
+      url.searchParams.delete("item");
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
       void enter("plan");
     };
   });
-  for (const id of ["budget", "pos", "cos", "draws"])
+  function planFromQuery() {
+    const url = new URL(location.href);
+    const requested = url.searchParams.get("plan");
+    if (requested === "status") {
+      url.searchParams.delete("plan");
+      url.hash = "risks";
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+      return "risks";
+    }
+    if (requested && Object.prototype.hasOwnProperty.call(planViews, requested))
+      planView = requested;
+    return null;
+  }
+  for (const id of ["budget", "pos", "cos", "closeout", "draws"])
     move(id, "financials", true);
   move("notice", "financials");
   move("logs", "logs", true);
-  for (const id of ["stagebar", "gates"]) move(id, "project");
-  move("permits", "project", true);
-  el("page-project").insertAdjacentHTML(
+  for (const id of ["stagebar", "gates"]) move(id, PROJECT_PAGE_ID);
+  move("labor", LABOR_PAGE_ID, true);
+  move("st-financials", "financials", true);
+  const laborCard = el("labor")?.closest(".card");
+  const budgetCard = el("budget")?.closest(".card");
+  const financialsCard = el("st-financials")?.closest(".card");
+  if (financialsCard && budgetCard)
+    budgetCard.insertAdjacentElement("beforebegin", financialsCard);
+  if (laborCard && budgetCard)
+    budgetCard.insertAdjacentElement("afterend", laborCard);
+  if (!el("fin-summary")) {
+    el("page-financials").insertAdjacentHTML(
+      "afterbegin",
+      '<div id="fin-summary" class="fin-summary" aria-label="Project financials"></div><div id="st-po-sync"></div>',
+    );
+  }
+  bindFinancialSections(el("page-financials"));
+  move("permits", PROJECT_PAGE_ID, true);
+  el("page-" + PROJECT_PAGE_ID).insertAdjacentHTML(
     "afterbegin",
-    '<div class="card" id="project-facts"></div>',
+    `<p class="hint precon-role-note" id="precon-role-note">${PRECON_ROLE_NOTE}</p><div class="card" id="project-facts"></div>`,
   );
+  el("project-facts").insertAdjacentHTML(
+    "afterend",
+    '<div class="card" id="precon"></div>',
+  );
+  orderProjectPage();
+  function orderProjectPage() {
+    const page = el("page-" + PROJECT_PAGE_ID);
+    for (const id of PROJECT_PAGE_ORDER) {
+      const node = el(id);
+      if (!node) continue;
+      const card = node.closest(".card");
+      const target = card && page.contains(card) ? card : node;
+      if (target.parentElement === page) page.append(target);
+    }
+    const note = el("precon-role-note");
+    if (note) page.prepend(note);
+  }
   const toolbar = document.createElement("div");
   toolbar.className = "workspace-resource-tabs";
   toolbar.innerHTML =
@@ -252,29 +296,74 @@ export function createWorkspace({
       },
     });
   }
-  async function enter(id) {
+  function canonicalPage(id) {
+    if (id === "schedule") {
+      planView = "gantt";
+      return "plan";
+    }
+    if (PROJECT_PAGE_ALIASES.includes(id)) return PROJECT_PAGE_ID;
+    return id;
+  }
+  async function openHome() {
+    active = "home";
     epoch++;
     controls.cancel();
     closeDrawer();
-    if (id === "schedule") {
-      id = "plan";
-      planView = "gantt";
-      history.replaceState(null, "", "#plan");
+    const url = new URL(location.href);
+    url.searchParams.delete("project");
+    url.searchParams.delete("plan");
+    url.searchParams.delete("item");
+    url.hash = "home";
+    const next = url.pathname + url.search + url.hash;
+    if (location.pathname + location.search + location.hash !== next)
+      history.replaceState(null, "", next);
+    el("shell").hidden = true;
+    const home = el("home");
+    if (home) home.hidden = false;
+    document.querySelectorAll("[data-page]").forEach((a) => {
+      if (a.dataset.page === "home") a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    if (renderHome) await renderHome();
+  }
+  async function enter(id) {
+    if (id === "home") {
+      await openHome();
+      return;
     }
+    epoch++;
+    controls.cancel();
+    closeDrawer();
+    const redirected = planFromQuery();
+    if (redirected) id = redirected;
+    const next = canonicalPage(id);
+    if (next !== id) {
+      const url = new URL(location.href);
+      url.hash = next;
+      history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+    id = next;
     show(id);
     el("resources-content").replaceChildren();
     el("bids-content").replaceChildren();
+    if (!data && active !== "users" && active !== "settings") {
+      const opened = onNeedProject ? await onNeedProject() : false;
+      if (!opened) await openHome();
+      return;
+    }
+    const home = el("home");
+    if (home) home.hidden = true;
+    el("shell").hidden = false;
     if (active === "users") {
-      el("shell").hidden = false;
       await users.render();
       return;
     }
     if (active === "settings") {
       if (!can("manage_company_settings")) {
-        show("dashboard");
+        if (!data) await openHome();
+        else show("dashboard");
         return;
       }
-      el("shell").hidden = false;
       await accounting.renderSettings();
       return;
     }
@@ -291,6 +380,10 @@ export function createWorkspace({
         void controls.dashboard("dashboard-controls");
       else if (active === "resources") await mountedSubs().directory();
       else if (active === "bids") await mountedSubs().bidList();
+      else if (active === "offices") {
+        const ticket = epoch;
+        await offices.render(el("page-offices"), () => ticket === epoch);
+      }
     } catch (error) {
       el(
         active === "plan"
@@ -302,11 +395,16 @@ export function createWorkspace({
             : "resources-content",
       ).textContent = error.message;
     }
+    revealLinkedItem();
   }
-  window.addEventListener(
-    "hashchange",
-    () => void enter(location.hash.slice(1)),
-  );
+  window.addEventListener("hashchange", () => {
+    const id = location.hash.slice(1);
+    if (!id || id === "home") {
+      void openHome();
+      return;
+    }
+    void enter(id);
+  });
   document.querySelectorAll("[data-page]").forEach((a) =>
     a.addEventListener("click", (e) => {
       if (location.hash === "#" + a.dataset.page) {
@@ -417,49 +515,96 @@ export function createWorkspace({
       );
     }
   }
-  function render(d) {
-    data = d;
+  let scheduleTicket = 0;
+  function paintSchedule(d, appointments, controlRecords, ready) {
     const p = d.detail,
       day = today(),
-      rows = d.schedule.filter((s) => s.status !== "cancelled"),
-      unfinished = rows.filter((s) => s.status !== "complete"),
+      progress = scheduleProgress({
+        activities: d.schedule || [],
+        appointments,
+        preconTasks: p.precon?.tasks || [],
+        controlRecords,
+        permitMilestones: (d.permits || []).flatMap(
+          (permit) => permit.milestones || [],
+        ),
+        today: day,
+      }),
+      unfinished = (d.schedule || []).filter(
+        (s) => s.status !== "cancelled" && s.status !== "complete",
+      ),
       attention = unfinished.filter((s) => issues(s, day).length),
-      week = unfinished
-        .filter((s) => s.window_end >= day && s.window_start <= addDays(day, 6))
-        .sort((a, b) => a.window_start.localeCompare(b.window_start));
+      pct = progress.percent === null ? "—" : progress.percent + "%";
+    el("dashboard-overview").dataset.scheduleReady = ready ? "true" : "false";
     el("dashboard-overview").innerHTML =
-      `<div class="dashboard-metrics"><a href="#plan"><span>Next 7 days</span><strong>${week.length}</strong><small>scheduled activities</small></a><a href="#plan"><span>Needs coordination</span><strong>${attention.length}</strong><small>activities with a flag</small></a><a href="#project"><span>Project progress</span><strong>${rows.length ? Math.round((100 * (rows.length - unfinished.length)) / rows.length) + "%" : "—"}</strong><small>${rows.length - unfinished.length} of ${rows.length} activities complete</small></a><a href="#project"><span>Target completion</span><strong class="metric-date">${nice(p.scheduled_end)}</strong><small>${p.source_project_status ? "From ServiceTitan" : "Project target date"}</small></a></div>`;
+      `<div class="dashboard-metrics"><a href="#plan"><span>Next 7 days</span><strong>${progress.week.length}</strong><small>on the schedule</small></a><a href="#plan"><span>Needs coordination</span><strong>${attention.length}</strong><small>activities with a flag</small></a><a href="#plan"><span>Project progress</span><strong>${pct}</strong><small>${progress.complete} of ${progress.total} schedule items complete</small><small class="metric-source">${esc(progress.caption)}</small></a><a href="#${PROJECT_PAGE_ID}"><span>Target completion</span><strong class="metric-date">${nice(p.scheduled_end)}</strong><small>${p.source_project_status ? "From ServiceTitan" : "Project target date"}</small></a></div>`;
     el("dashboard-agenda").innerHTML =
       `<div class="card-h"><h2>Coming up this week</h2><a href="#plan">View project plan →</a></div><div class="card-b">${
-        week
+        progress.week
           .slice(0, 5)
           .map(
             (s) =>
-              `<button class="agenda-row" data-agenda="${esc(s.id)}"><span class="agenda-date">${nice(s.window_start)}</span><span><strong>${esc(s.title)}</strong><small>${esc([s.phase, s.vendor_name, ...(s.resources || []).map((r) => r.name)].filter(Boolean).join(" · ") || "No crew assigned")}</small></span><span class="status-pill">${esc(s.status)}</span></button>`,
+              `<button class="agenda-row" data-week-kind="${esc(s.kind)}" data-agenda="${esc(s.id)}"><span class="agenda-date">${nice(s.start)}</span><span><strong>${esc(s.title)}</strong><small>${esc(s.detail || "No crew assigned")}</small></span><span class="status-pill">${esc(s.status)}</span></button>`,
           )
           .join("") ||
-        '<div class="workspace-empty"><strong>No activities scheduled this week</strong><p>Open the project plan to schedule the next phase of work.</p><a href="#plan">Go to project plan →</a></div>'
+        '<div class="workspace-empty"><strong>Nothing on the schedule in the next 7 days</strong><p>Open the project plan to schedule the next phase of work.</p><a href="#plan">Go to project plan →</a></div>'
       }</div>`;
     el("dashboard-agenda")
       .querySelectorAll("[data-agenda]")
       .forEach(
         (b) =>
-          (b.onclick = () =>
-            can("advance_stage")
-              ? planning.activity(
-                  d.schedule.find((s) => s.id === b.dataset.agenda),
-                )
-              : location.assign("#plan")),
+          (b.onclick = () => {
+            const kind = b.dataset.weekKind;
+            if (kind === "precon" || kind === "permit_milestone") {
+              location.assign("#" + PROJECT_PAGE_ID);
+              return;
+            }
+            if (kind === "wbs_task" || kind === "milestone") {
+              const url = new URL(location.href);
+              url.searchParams.set("plan", kind === "wbs_task" ? "tasks" : "roadmap");
+              url.searchParams.set("item", b.dataset.agenda || "");
+              url.hash = "plan";
+              location.assign(url.pathname + url.search + url.hash);
+              return;
+            }
+            const row =
+              b.dataset.weekKind === "activity"
+                ? d.schedule.find((s) => s.id === b.dataset.agenda)
+                : null;
+            if (row && can("advance_stage")) planning.activity(row);
+            else location.assign("#plan");
+          }),
       );
+  }
+  function render(d) {
+    data = d;
+    const requested = location.hash.slice(1);
+    if (pages[requested]) active = requested;
+    else if (active === "home" || !pages[active]) active = "dashboard";
+    const home = el("home");
+    if (home) home.hidden = true;
+    const p = d.detail,
+      day = today();
+    paintSchedule(d, [], [], false);
+    const ticket = ++scheduleTicket;
+    const window = appointmentReadWindow(day, p);
+    Promise.all([
+      api(
+        `/projects/${p.id}/plan-appointments?from=${window.from}&to=${window.to}`,
+      ).catch(() => null),
+      api(`/projects/${p.id}/controls`).catch(() => null),
+    ]).then(([source, controls]) => {
+      if (ticket !== scheduleTicket || data !== d) return;
+      paintSchedule(d, source?.rows || [], controls?.records || [], true);
+    });
     el("dashboard-attention").innerHTML =
-      '<div class="card"><div class="card-h"><h2>Needs attention</h2><a href="#project">View all →</a></div><div class="card-b" id="dashboard-issues"></div></div>';
+      `<div class="card"><div class="card-h"><h2>Needs attention</h2><a href="#${PROJECT_PAGE_ID}">View all →</a></div><div class="card-b" id="dashboard-issues"></div></div>`;
     const issueRows = [...el("blockers").children];
     for (const row of issueRows.slice(0, 3))
       el("dashboard-issues").append(row.cloneNode(true));
     if (issueRows.length > 3)
       el("dashboard-issues").insertAdjacentHTML(
         "beforeend",
-        '<a class="more-issues" href="#project">' +
+        `<a class="more-issues" href="#${PROJECT_PAGE_ID}">` +
           (issueRows.length - 3) +
           " more items to review →</a>",
       );
@@ -485,8 +630,8 @@ export function createWorkspace({
             .join(", "),
         ],
         ["ST status", p.source_project_status],
-        ["Project manager", p.pm_name],
-        ["Start", nice(p.scheduled_start)],
+        [roleTitle("project_manager"), p.pm_name],
+        ["Logged start", nice(p.scheduled_start)],
         ["Target completion", nice(p.scheduled_end)],
       ]
         .map(
@@ -494,12 +639,40 @@ export function createWorkspace({
         )
         .join(
           "",
-        )}</dl>${p.source_project_summary ? `<p class="project-summary">${esc(p.source_project_summary.replace(/<[^>]*>/g, " "))}</p>` : ""}`;
+        )}</dl>${fieldStartHtml({
+        fieldStart: p.field_start,
+        canRefresh: can("refresh_field_start"),
+        canOverride: can("set_field_start"),
+        esc,
+      })}${p.source_project_summary ? `<p class="project-summary">${esc(p.source_project_summary.replace(/<[^>]*>/g, " "))}</p>` : ""}`;
+    bindFieldStart(el("project-facts"), {
+      onRefresh: async () => {
+        await api(`/projects/${p.id}/field-start/refresh`, { method: "POST" });
+        if (reload) await reload();
+      },
+      onOverride: async (date) => {
+        await api(`/projects/${p.id}/field-start`, {
+          method: "PUT",
+          body: JSON.stringify({ date }),
+        });
+        if (reload) await reload();
+      },
+    });
     el("project-source").onclick = () => el("st-project-open").click();
     if (el("project-delete")) el("project-delete").onclick = () => openProjectDeletion(p,{api,el,esc,openDrawer,closeDrawer,onProjectDeleted});
     void enter(active);
   }
-  if (location.hash === "#schedule") history.replaceState(null, "", "#plan");
-  show(pages[location.hash.slice(1)] ? location.hash.slice(1) : "dashboard");
-  return { render, openUsers: () => enter("users") };
+  if (location.hash === "#schedule" || PROJECT_PAGE_ALIASES.includes(location.hash.slice(1))) {
+    const url = new URL(location.href);
+    url.hash =
+      location.hash === "#schedule" ? "plan" : PROJECT_PAGE_ID;
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+  if (pages[location.hash.slice(1)]) show(location.hash.slice(1));
+  return {
+    render,
+    openHome,
+    openUsers: () => enter("users"),
+    hasPage: (id) => Boolean(pages[id]),
+  };
 }

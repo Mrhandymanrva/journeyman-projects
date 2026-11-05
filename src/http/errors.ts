@@ -4,6 +4,8 @@
  */
 export const ERROR_CODES = {
   validation_failed: 400,
+  /** Decoded upload is over the size cap. Distinct from a malformed file. */
+  payload_too_large: 413,
   unauthenticated: 401,
   forbidden: 403,
   module_not_entitled: 403,

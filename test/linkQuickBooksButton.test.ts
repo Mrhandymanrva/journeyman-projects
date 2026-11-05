@@ -239,4 +239,27 @@ describe('Link QuickBooks transaction', () => {
     expect(options).toContain('id="ap-link-truncated"');
     expect(options).toMatch(/truncated/i);
   });
+
+  it('still opens Enter material order as awaiting card charge and does not call QuickBooks', async () => {
+    const calls: string[] = [];
+    const { accounting, payables, nodes } = screen(async (path) => {
+      calls.push(path);
+      if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
+      if (path.includes('/vendor-bills')) return { bills: [material], qbo_customer_id: null };
+      if (path.includes('/purchase-orders') && !path.includes('qbo-candidates')) return [];
+      if (path === '/cost-codes') return [{ id: 'code-1', code: '1110', description: 'Tile' }];
+      if (path.startsWith('/vendors')) return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    await accounting.render();
+    expect(payables.innerHTML).toContain('Enter material order');
+    expect(payables.innerHTML).toContain('Awaiting card charge');
+    await nodes.get('ap-material')!.onclick?.();
+    expect(nodes.get('drawer-title')!.textContent).toBe('Enter material order');
+    const body = nodes.get('drawer-body')!.innerHTML;
+    expect(body).toContain('Awaiting card charge');
+    expect(body).toContain('Nothing is sent to QuickBooks');
+    expect(body).toContain('does not create a QuickBooks bill');
+    expect(calls.some((path) => /qbo|approve|link-qbo|material-bills/i.test(path))).toBe(false);
+  });
 });

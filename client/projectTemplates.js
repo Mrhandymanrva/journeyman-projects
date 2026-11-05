@@ -117,5 +117,73 @@ export const projectTemplates = {
     ],
   },
 };
-export const templateContent = (key, project) =>
-  `# ${projectTemplates[key].name}\n\nProject: ${project.project_number ?? ""} — ${project.name ?? ""}\n\n${projectTemplates[key].sections.map((s) => "## " + s + "\n\n").join("\n")}\nDraft working document. Record required approvals through the project approval workflow.\n`;
+function text(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+function dayText(value) {
+  const match = String(value ?? "").match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : "";
+}
+
+function money(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "";
+  return amount.toLocaleString("en-US", { style: "currency", currency: "USD" });
+}
+
+function estimateText(project) {
+  if (Array.isArray(project.sold_estimates) && project.sold_estimates.length) {
+    return project.sold_estimates
+      .map((row) =>
+        [text(row.name), money(row.customer_amount)].filter(Boolean).join(" · "),
+      )
+      .filter(Boolean)
+      .join("; ");
+  }
+  return money(project.estimate_amount);
+}
+
+function permitText(project) {
+  const rows = Array.isArray(project.permit_summary) ? project.permit_summary : [];
+  return rows
+    .map((permit) => {
+      const status = permit.not_required
+        ? "not required"
+        : permit.issued_on
+          ? "issued " + dayText(permit.issued_on)
+          : "not issued";
+      return [text(permit.permit_type), text(permit.permit_number), status]
+        .filter(Boolean)
+        .join(" · ");
+    })
+    .join("; ");
+}
+
+/** Facts the project already has. Unknown values stay blank. Sections are not removed. */
+export function knownProjectFacts(project) {
+  const p = project ?? {};
+  const address = [p.address_line1, p.city, p.region, p.postal_code]
+    .map(text)
+    .filter(Boolean)
+    .join(", ");
+  return [
+    ["Customer", text(p.source_customer_name)],
+    ["Service address", address],
+    ["Contract amount", money(p.contract_value)],
+    ["Estimate amount", estimateText(p)],
+    ["Logged start", dayText(p.scheduled_start)],
+    ["Field start", dayText(p.field_start?.date)],
+    ["Target completion", dayText(p.scheduled_end)],
+    ["Actual start", dayText(p.actual_start)],
+    ["Permits", permitText(p)],
+  ]
+    .map(([label, value]) => `- ${label}: ${value}`)
+    .join("\n");
+}
+
+export const templateContent = (key, project) => {
+  const template = projectTemplates[key];
+  return `# ${template.name}\n\nProject: ${project?.project_number ?? ""} — ${project?.name ?? ""}\n\n## Known from this project\n\n${knownProjectFacts(project)}\n\n${template.sections.map((s) => "## " + s + "\n\n").join("\n")}\nDraft working document. Record required approvals through the project approval workflow.\n`;
+};

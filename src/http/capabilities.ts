@@ -32,14 +32,49 @@ export const CAPABILITIES = {
   link_material_purchase: ['owner', 'manager', 'bookkeeper', 'project_manager'],
   manage_company_settings: ['owner', 'manager'],
   approve_draw: ['owner', 'manager'],
-  record_external_invoice: ['owner', 'manager', 'office'],
+  record_external_invoice: ['owner', 'manager', 'office', 'project_manager'],
   send_change_order: ['owner', 'manager', 'project_manager'],
   approve_change_order_over_threshold: ['owner', 'manager'],
+  // Customer amount and cost lines. The coordinator can still describe the
+  // change, record that it was entered in ServiceTitan, and record the signature.
+  price_change_order: ['owner', 'manager'],
+  record_change_order_entered: ['owner', 'manager', 'project_manager'],
+  record_change_order_signed: ['owner', 'manager', 'project_manager'],
   manage_vendors: ['owner', 'manager', 'office'],
   write_daily_log: ['owner', 'manager', 'project_manager'],
   view_margin: ['owner', 'manager', 'project_manager', 'estimator', 'bookkeeper'],
   export_cost_data: ['owner', 'manager', 'estimator', 'bookkeeper'],
   advance_stage: ['owner', 'manager', 'project_manager'],
+  // A flag that field capacity was confirmed. It does not block scheduling,
+  // gates, or any other write. Owner and manager may set or clear it.
+  // There is no Office GM or Project Coordinator role: manager is the
+  // leadership seat next to owner, and office is the view-only office seat.
+  record_field_release: ['owner', 'manager'],
+  // Preconstruction checklist. Project Coordinator is project_manager.
+  // Estimator, office, and bookkeeper can read tasks and cannot edit them.
+  manage_precon_tasks: ['owner', 'manager', 'project_manager'],
+  // Recompute field start from ServiceTitan appointments. The call is a read.
+  // A manual field start is left as it is.
+  refresh_field_start: ['owner', 'manager', 'project_manager'],
+  // Read ServiceTitan timesheets or appointment windows. The call does not write to ServiceTitan.
+  refresh_labor: ['owner', 'manager', 'project_manager'],
+  // Read ServiceTitan invoices, payments, and estimates for one project.
+  refresh_ar: ['owner', 'manager', 'project_manager'],
+  // The flag list for technicians missing both a commission percent and an
+  // hourly rate, and the informational burden-not-set list. Pay rates are not included.
+  view_labor_rates: ['owner', 'manager'],
+  // Write today's portfolio health rows. The portfolio token cannot call it.
+  run_health_snapshots: ['owner'],
+  // Set or clear a manual field start. Clearing does not recompute it.
+  set_field_start: ['owner', 'manager'],
+  // Permit office directory. Project Coordinator is project_manager.
+  // Office can read the directory and cannot create or import offices.
+  manage_permit_offices: ['owner', 'manager', 'project_manager'],
+  // CSR hand-off on a Handoff-stage project. Office can fill and save it.
+  // No other office permission is added.
+  save_csr_handoff: ['owner', 'manager', 'project_manager', 'office'],
+  // Project Coordinator acknowledges a submitted hand-off. In the app only.
+  acknowledge_csr_handoff: ['project_manager'],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Capability = keyof typeof CAPABILITIES;

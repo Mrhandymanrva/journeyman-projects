@@ -30,6 +30,54 @@ describe("portfolio project feed", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.data.projects.map((p: { project_number: string }) => p.project_number)).toEqual(["P-300"]);
     expect(res.body.data.projects[0].qbo_customer_id).toBeNull();
+    expect(res.body.data.projects[0].gates).toEqual({ gate_1: "open", gate_2: "open" });
+    expect(res.body.data.projects[0].change_orders).toEqual({
+      open: 0,
+      unpriced: 0,
+      not_in_servicetitan: 0,
+      unsigned: 0,
+    });
+    expect(res.body.data.projects[0].closeout).toBeNull();
+    expect(res.body.data.projects[0].labor).toEqual({
+      labor_hours: 0,
+      labor_wage: 0,
+      labor_burden: 0,
+      total: 0,
+      missing: [],
+      notices: [],
+      uncoded_hours: 0,
+      source: null,
+      hours_source: null,
+      observed_at: null,
+      labor_source: null,
+      labor_label: null,
+      labor_warning: null,
+      commission_source: null,
+      commission_label: null,
+      burden_label: null,
+      billed_labor: null,
+      burden_hours: null,
+      total_label: null,
+    });
+    expect(res.body.data.projects[0].labor_refresh).toEqual({
+      status: null,
+      started_at: null,
+      finished_at: null,
+      ok: 0,
+      failed: 0,
+      error: null,
+    });
+    expect(res.body.data.projects[0].reconciliation).toBeNull();
+    expect(res.body.data.projects[0].ar).toEqual({
+      draws_matched: 0,
+      draws_suggested: 0,
+      unmatched_invoices: 0,
+      unpaid_amount: 0,
+      pending_estimate_revisions: 0,
+    });
+    expect(res.body.data.projects[0].projected_margin_pct).toBeNull();
+    expect(res.body.data.projects[0].billing).toEqual({ position: "even", amount: 0 });
+    expect(res.body.data.projects[0].health).toEqual({ score: 100, band: "green", reasons: [] });
     expect((await feed().get("/api/v1/portfolio/projects")).status).toBe(401);
   });
 

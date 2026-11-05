@@ -42,6 +42,36 @@ export const SCHEMA_FILES = [
   path.join(repoRoot, "db/029_tenant_accounting_settings.sql"),
   path.join(repoRoot, "db/030_draw_external_invoice_number.sql"),
   path.join(repoRoot, "db/031_material_bill_cost.sql"),
+  path.join(repoRoot, "db/032_vendor_document_notes.sql"),
+  path.join(repoRoot, "db/033_field_release.sql"),
+  path.join(repoRoot, "db/034_preconstruction_tasks.sql"),
+  path.join(repoRoot, "db/035_field_start.sql"),
+  path.join(repoRoot, "db/036_permit_offices.sql"),
+  path.join(repoRoot, "db/037_permit_office_seed.sql"),
+  path.join(repoRoot, "db/038_gate_checklist_defaults.sql"),
+  path.join(repoRoot, "db/039_change_order_log_and_closeout.sql"),
+  path.join(repoRoot, "db/040_labor_actuals.sql"),
+  path.join(repoRoot, "db/041_st_ar_observations.sql"),
+  path.join(repoRoot, "db/042_project_health_snapshots.sql"),
+  path.join(repoRoot, "db/043_technician_labor_rates.sql"),
+  path.join(repoRoot, "db/044_labor_refresh.sql"),
+  path.join(repoRoot, "db/045_labor_refresh_scheduled.sql"),
+  path.join(repoRoot, "db/046_st_labor_code.sql"),
+  path.join(repoRoot, "db/047_unbudgeted_labor.sql"),
+  path.join(repoRoot, "db/048_pricebook_labor_code.sql"),
+  path.join(repoRoot, "db/049_commission_labor.sql"),
+  path.join(repoRoot, "db/050_st_project_financials.sql"),
+  path.join(repoRoot, "db/051_labor_refresh_status.sql"),
+  path.join(repoRoot, "db/052_st_status_sync.sql"),
+  path.join(repoRoot, "db/053_st_financial_summary.sql"),
+  path.join(repoRoot, "db/054_project_budget_entry.sql"),
+  path.join(repoRoot, "db/055_st_labor_gap.sql"),
+  path.join(repoRoot, "db/056_posted_commission.sql"),
+  path.join(repoRoot, "db/057_csr_handoff.sql"),
+  path.join(repoRoot, "db/058_vendor_bill_po_sync.sql"),
+  path.join(repoRoot, "db/059_st_plan_appointment_reads.sql"),
+  path.join(repoRoot, "db/060_st_po_preview_defaults.sql"),
+  path.join(repoRoot, "db/061_project_budget_cost_code.sql"),
 ];
 
 export interface TenantFixture {
@@ -87,7 +117,19 @@ export async function startHarness(
     bidMail,
     accounting,
   });
-  const request = supertest(app);
+  // supertest(app) binds every method to one http.Server and closes it when
+  // the last request settles. The next call can run while that close is still
+  // finishing, and formatServerUrl then reads a null address. A new server
+  // per call keeps the requests independent.
+  const http = () => supertest(app);
+  const request = {
+    get: (url: string) => http().get(url),
+    post: (url: string) => http().post(url),
+    put: (url: string) => http().put(url),
+    patch: (url: string) => http().patch(url),
+    delete: (url: string) => http().delete(url),
+    del: (url: string) => http().delete(url),
+  } as unknown as supertest.Agent;
 
   return {
     app,
@@ -255,7 +297,7 @@ export function estimatePayload(
         },
         {
           code: "1110",
-          description: "Tile â€” material",
+          description: "Tile — material",
           quantity: 220,
           unit: "sf",
           cost_type: "M",
@@ -278,7 +320,7 @@ export function estimatePayload(
 export function projectBody(overrides: Record<string, unknown> = {}) {
   return {
     project_number: `MHR-2026-${Math.floor(Math.random() * 9000 + 1000)}`,
-    name: "Whitfield â€” Primary Bath",
+    name: "Whitfield — Primary Bath",
     address_line1: "4412 Grove Avenue",
     city: "Richmond",
     region: "VA",

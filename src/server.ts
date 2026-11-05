@@ -1,4 +1,6 @@
 import {accountingGateway,startAccountingWorker} from "./adapters/quickbooks.js";
+import { startHealthSnapshotScheduler } from "./workers/healthSnapshot.js";
+import { startLaborRefreshScheduler } from "./workers/laborRefresh.js";
 import { readSourceConnections } from "./adapters/sourceConnections.js";
 import { portfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import { createApp } from "./app.js";
@@ -8,6 +10,7 @@ import {
   assertDatabaseContract,
   StartupAssertionError,
 } from "./db/assertions.js";
+import { seedPermitOffices } from "./domain/permitOfficeSeed.js";
 import { MemoryStaffSessions } from "./http/memoryStaffSessions.js";
 
 /**
@@ -62,6 +65,24 @@ try {
   );
 }
 
+try {
+  await seedPermitOffices(database);
+} catch (err) {
+  await database.close().catch(() => {});
+  const message = err instanceof Error ? err.message : String(err);
+  die(
+    "The permit office seed did not finish.",
+    [
+      `  ${message}`,
+      "",
+      "Deploy applies db/037_permit_office_seed.sql, then loads",
+      "db/seeds/permit_offices_import.csv through the same importer as",
+      "POST /jurisdictions/import. The load runs once for the deployment",
+      "tenant. A later boot sees that it already ran and leaves the rows alone.",
+    ].join("\n"),
+  );
+}
+
 // The platform owns the real staff session; this is the seam it plugs into.
 const staffSessions = new MemoryStaffSessions();
 
@@ -72,13 +93,23 @@ if (!accounting) {
   );
 }
 startAccountingWorker(database,accounting);
+const portfolio = portfolioFeedConfig();
+const sources = readSourceConnections();
+startHealthSnapshotScheduler(database, portfolio?.tenantId);
+try {
+  startLaborRefreshScheduler(database, sources);
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`Labor refresh did not start. ${message}`);
+}
 const app = createApp({
   accounting,
   database,
   staffSessions,
-  sources: readSourceConnections(),
-  portfolio: portfolioFeedConfig(),
+  sources,
+  portfolio,
   sso: env.sso,
+  ssoConfigIssue: env.ssoConfigIssue,
   devLogin: {
     enabled: env.devLogin,
     sessions: staffSessions,

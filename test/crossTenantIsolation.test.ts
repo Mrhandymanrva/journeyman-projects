@@ -44,12 +44,15 @@ interface ForeignIds {
   billId: string;
   drawId: string;
   jurisdictionId: string;
+  contactId: string;
   permitId: string;
   milestoneId: string;
   scheduleItemId: string;
   changeOrderId: string;
   externalInvoiceId: string;
   projectInvoiceId: string;
+  preconTaskId: string;
+  inspectionId: string;
 }
 let foreign: ForeignIds;
 
@@ -80,6 +83,17 @@ beforeAll(async () => {
 
   const projectId = projectRes.body.data.id as string;
   const b = h.as(B.staff.owner!.token);
+
+  const precon = await b.get(`/api/v1/projects/projects/${projectId}/precon-tasks`);
+  expect(precon.status, JSON.stringify(precon.body)).toBe(200);
+  const permitTask = (precon.body.data as Array<{ id: string; type: string }>).find(
+    (task) => task.type === "permit",
+  );
+  expect(permitTask).toBeTruthy();
+  const inspection = await b
+    .post(`/api/v1/projects/precon-tasks/${permitTask!.id}/inspections`)
+    .send({ notes: "Rough-in" });
+  expect(inspection.status, JSON.stringify(inspection.body)).toBe(201);
 
   // A vendor with every required document, so it can hold a purchase order.
   const vendorRes = await b.post("/api/v1/projects/vendors").send({
@@ -159,8 +173,16 @@ beforeAll(async () => {
 
   const jurisdictionRes = await b
     .post("/api/v1/projects/jurisdictions")
-    .send({ name: "Tenant B County", typical_review_days: 10 });
+    .send({ name: "Tenant B County", state: "VA", typical_review_days: 10 });
   expect(jurisdictionRes.status).toBe(201);
+  const contactRes = await b
+    .post(`/api/v1/projects/jurisdictions/${jurisdictionRes.body.data.id}/contacts`)
+    .send({
+      name: "Tenant B reviewer",
+      title: "Plan reviewer",
+      notes: "call before 10am",
+    });
+  expect(contactRes.status, JSON.stringify(contactRes.body)).toBe(201);
 
   const permitRes = await b
     .post(`/api/v1/projects/projects/${projectId}/permits`)
@@ -227,9 +249,12 @@ beforeAll(async () => {
     changeOrderId: coRes.body.data.id,
     externalInvoiceId: invRes.body.data.id,
     projectInvoiceId: piRes.body.data.id,
+    preconTaskId: permitTask!.id,
+    inspectionId: inspection.body.data.id,
     estimateImportId: importRes.body.data.id,
     drawId: drawRes.body.data[0].id,
     jurisdictionId: jurisdictionRes.body.data.id,
+    contactId: contactRes.body.data.id,
     permitId: permitRes.body.data.id,
     milestoneId,
     scheduleItemId: scheduleRes.body.data.id,
@@ -528,6 +553,51 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/projects/${f.projectId}/gates/0/reject`,
     body: () => ({ note: "no" }),
   },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/gates/apply-template`,
+    path: (f) => `${BASE}/projects/${f.projectId}/gates/apply-template`,
+    body: () => ({}),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-release`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-release`,
+    body: () => ({ note: "not this tenant" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-release/undo`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-release/undo`,
+    body: () => ({ note: "not this tenant" }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/handoff`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/handoff`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff`,
+    body: () => ({
+      office: "richmond",
+      lead_source: "",
+      scope_summary: "Not this tenant.",
+      handoff_project_ref: "",
+      target_start_window: "",
+      access_notes: "",
+      decision_maker_notes: "",
+      permits_likely: "",
+      submit: true,
+    }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/handoff/acknowledge`,
+    path: (f) => `${BASE}/projects/${f.projectId}/handoff/acknowledge`,
+    body: () => ({}),
+  },
 
   // --- phase 2: budget ----------------------------------------------------
   {
@@ -550,6 +620,19 @@ const ROUTES: RouteCase[] = [
     template: `${BASE}/projects/:id/budget/:lineId`,
     path: (f) => `${BASE}/projects/${f.projectId}/budget/${f.budgetLineId}`,
     body: () => ({ budget_amount: 1 }),
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/budget/entry`,
+    path: (f) => `${BASE}/projects/${f.projectId}/budget/entry`,
+    body: () => ({
+      contract_value: null,
+      labor: 10,
+      labor_hours: 1,
+      materials: null,
+      subcontractor: null,
+      other: null,
+    }),
   },
   {
     method: "get",
@@ -651,6 +734,33 @@ const ROUTES: RouteCase[] = [
     method: "get",
     template: `${BASE}/purchase-orders/:id/qbo-candidates`,
     path: (f) => `${BASE}/purchase-orders/${f.poId}/qbo-candidates`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/service-titan-purchase-orders`,
+    path: (f) => `${BASE}/projects/${f.projectId}/service-titan-purchase-orders`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/purchase-orders/:id/service-titan-sync`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-sync`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/purchase-orders/:id/service-titan-sync`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-sync`,
+    body: () => ({ confirm: true }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/purchase-orders/:id/service-titan-skus`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-skus`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/purchase-orders/:id/service-titan-choices`,
+    path: (f) => `${BASE}/purchase-orders/${f.poId}/service-titan-choices`,
+    body: () => ({ vendor_id: "77" }),
   },
   {
     method: "post",
@@ -812,6 +922,72 @@ const ROUTES: RouteCase[] = [
     path: (f) => `${BASE}/change-orders/${f.changeOrderId}/reject`,
     body: () => ({}),
   },
+  {
+    method: "post",
+    template: `${BASE}/change-orders/:id/entered`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/entered`,
+    body: () => ({ st_estimate_number: "E-1044" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/change-orders/:id/signed`,
+    path: (f) => `${BASE}/change-orders/${f.changeOrderId}/signed`,
+    body: () => ({ note: "Signed on site" }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/closeout`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/closeout`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout`,
+    body: () => ({ punch_done: true }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/labor`,
+    path: (f) => `${BASE}/projects/${f.projectId}/labor`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/labor/refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/labor/refresh`,
+    body: () => ({}),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/service-titan-financials`,
+    path: (f) => `${BASE}/projects/${f.projectId}/service-titan-financials`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/financials/reconciliation`,
+    path: (f) => `${BASE}/projects/${f.projectId}/financials/reconciliation`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/financials/summary`,
+    path: (f) => `${BASE}/projects/${f.projectId}/financials/summary`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/plan-appointments`,
+    path: (f) => `${BASE}/projects/${f.projectId}/plan-appointments`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/plan-appointments/refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/plan-appointments/refresh`,
+    body: () => ({}),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/servicetitan/ar-refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/servicetitan/ar-refresh`,
+    body: () => ({}),
+  },
 
   // --- phase 4: draws -----------------------------------------------------
   {
@@ -876,6 +1052,34 @@ const ROUTES: RouteCase[] = [
     }),
   },
   {
+    method: "get",
+    template: `${BASE}/jurisdictions/:id`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}`,
+  },
+  {
+    method: "patch",
+    template: `${BASE}/jurisdictions/:id`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}`,
+    body: () => ({ notes: "stolen" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/jurisdictions/:id/contacts`,
+    path: (f) => `${BASE}/jurisdictions/${f.jurisdictionId}/contacts`,
+    body: () => ({ name: "Stolen contact" }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/jurisdiction-contacts/:id`,
+    path: (f) => `${BASE}/jurisdiction-contacts/${f.contactId}`,
+    body: () => ({ title: "Stolen" }),
+  },
+  {
+    method: "delete",
+    template: `${BASE}/jurisdiction-contacts/:id`,
+    path: (f) => `${BASE}/jurisdiction-contacts/${f.contactId}`,
+  },
+  {
     method: "patch",
     template: `${BASE}/permits/:id`,
     path: (f) => `${BASE}/permits/${f.permitId}`,
@@ -921,6 +1125,57 @@ const ROUTES: RouteCase[] = [
       log_date: "2026-09-01",
       work_completed: "Written into another tenant",
     }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/precon-tasks`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/precon-tasks`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks`,
+    body: () => ({ type: "other", title: "Foreign task", owner_role: "owner" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/precon-tasks/apply-template`,
+    path: (f) => `${BASE}/projects/${f.projectId}/precon-tasks/apply-template`,
+    body: () => ({}),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/precon-tasks/:id`,
+    path: (f) => `${BASE}/precon-tasks/${f.preconTaskId}`,
+    body: () => ({ status: "done" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/precon-tasks/:id/inspections`,
+    path: (f) => `${BASE}/precon-tasks/${f.preconTaskId}/inspections`,
+    body: () => ({ result: "passed" }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/precon-inspections/:id`,
+    path: (f) => `${BASE}/precon-inspections/${f.inspectionId}`,
+    body: () => ({ result: "cancelled" }),
+  },
+  {
+    method: "delete",
+    template: `${BASE}/precon-inspections/:id`,
+    path: (f) => `${BASE}/precon-inspections/${f.inspectionId}`,
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/field-start/refresh`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-start/refresh`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/field-start`,
+    path: (f) => `${BASE}/projects/${f.projectId}/field-start`,
+    body: () => ({ date: "2026-11-03" }),
   },
 ];
 

@@ -1,4 +1,12 @@
-import { deleteLocalProject } from "../domain/deleteProject.js";
+import { deleteLocalProject } from '../domain/deleteProject.js';
+import { laborCostSplits, laborLines } from '../domain/laborActuals.js';
+import { presentFieldRelease, readFieldRelease } from '../domain/fieldRelease.js';
+import {
+  fieldStartColumns,
+  preconCountsFromRow,
+  presentFieldStart,
+} from '../domain/fieldStart.js';
+import type { SqlClient } from '../db/database.js';
 import { Router } from "express";
 import { z } from "zod";
 import { sendData } from "../http/envelope.js";
@@ -6,9 +14,13 @@ import { ApiError, notFound } from "../http/errors.js";
 import { requireCapability, unitFilter } from "../http/capabilities.js";
 import {
   staffRoute,
+  withStaff,
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { isoTimestamp, presentStoredStatus } from "../domain/stStatusMap.js";
+import { pullProjectStatus, pushStageStatus, statusClientOf } from "../domain/stStatusSync.js";
 import {
   assertUnitWritable,
   loadVisibleProject,
@@ -24,6 +36,9 @@ import {
   parseEstimatePayload,
 } from "../domain/estimateContract.js";
 import { seedDrawSchedule } from "../domain/drawSchedule.js";
+import { gateReadiness } from "../domain/gateReadiness.js";
+import { listPreconTasks, preconCounts, seedPreconTasks } from "../domain/preconTasks.js";
+import { annotateChecklist } from "./gates.js";
 import {
   assertStageAdvanceAllowed,
   nextStage,
@@ -98,7 +113,7 @@ const advanceStageSchema = z.object({
   ]),
 });
 
-export function projectRoutes(deps: StaffRouterDeps): Router {
+export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections = {}): Router {
   const router = Router();
 
   // ---------------------------------------------------------------- list ---
@@ -139,7 +154,10 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
                 p.contract_value, p.currency, p.target_margin,
                 p.scheduled_start, p.scheduled_end, p.updated_at,
                 COALESCE(cost.budget_amount, 0)::text AS budget_total,
-                COALESCE(cost.actual_cost, 0)::text AS actual_total
+                COALESCE(cost.actual_cost, 0)::text AS actual_total,
+                ${fieldStartColumns("p")},
+                p.field_released_at, p.field_release_note,
+                rel.full_name AS field_released_by_name
            FROM projects.projects p
            LEFT JOIN LATERAL (
              SELECT SUM(v.budget_amount) AS budget_amount,
@@ -147,6 +165,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
                FROM projects.v_cost_position v
               WHERE v.project_id = p.id
            ) cost ON true
+           LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
            ${where}
           ORDER BY p.created_at DESC
           LIMIT $6 OFFSET $7`,
@@ -215,10 +234,51 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
   );
 
   // -------------------------------------------------------------- detail ---
-  router.get(
-    "/projects/:id",
-    staffRoute(deps, async (ctx) => {
-      const id = parseUuidParam(ctx.req.params.id, "Project");
+  router.get("/projects/:id", (req, res, next) => {
+    void (async () => {
+      const opened = await withStaff(deps, req, res, async (ctx) => {
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        await loadVisibleProject(ctx, id, "id");
+        const link = await ctx.db.query<{
+          external_project_id: string;
+          external_system_id: string;
+          connection_key: string;
+        }>(
+          `SELECT external_project_id, external_system_id, connection_key
+             FROM projects.st_project_connections WHERE project_id = $1`,
+          [id],
+        );
+        return { id, staff: ctx.staff, link: link.rows[0] ?? null };
+      });
+      const st = sources.serviceTitan;
+      const link = opened.link;
+      const readClient = st ? statusClientOf(st.client) : null;
+      if (
+        link &&
+        readClient &&
+        link.external_system_id === st?.externalSystemId &&
+        link.connection_key === st?.key
+      ) {
+        try {
+          await pullProjectStatus(deps.database, {
+            tenantId: opened.staff.tenantId,
+            projectId: opened.id,
+            externalProjectId: link.external_project_id,
+            actor: { type: "staff", id: opened.staff.staffId, name: opened.staff.fullName },
+            client: readClient,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "ServiceTitan status sync failed.";
+          console.error(
+            `ServiceTitan status was not read for project ${opened.id}. ${message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 300)}`,
+          );
+        }
+      }
+      await withStaff(deps, req, res, (ctx) => sendProjectDetail(ctx, opened.id));
+    })().catch(next);
+  });
+
+  async function sendProjectDetail(ctx: StaffContext, id: string) {
       const project = await loadVisibleProject<Record<string, unknown>>(
         ctx,
         id,
@@ -248,6 +308,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           WHERE g.project_id = $1 ORDER BY g.gate_number`,
         [id],
       );
+      const ready = await gateReadiness(ctx.db, id);
       const draws = await ctx.db.query<{
         status: string;
         n: string;
@@ -283,12 +344,18 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
 
       const totals = await readBudgetTotals(ctx, id);
       sendData(ctx.res, {
-        ...serialiseProject(project),
+        ...(await projectPayload(ctx.db, id, project, true)),
         ...presentBudgetAlert(totals.actual, totals.budget),
 
         pm_name: nameOf(project.pm_id),
         estimator_name: nameOf(project.estimator_id),
-        gates: gates.rows,
+        gates: gates.rows.map((row) => ({
+          ...row,
+          checklist: annotateChecklist(
+            (row as { checklist: unknown }).checklist,
+            ready,
+          ),
+        })),
         draw_summary: draws.rows.map((d) => ({
           status: d.status,
           count: Number(d.n),
@@ -304,8 +371,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           overdue_milestones: Number(p.overdue_milestones),
         })),
       });
-    }),
-  );
+  }
 
   // --------------------------------------------------------------- patch ---
   router.patch(
@@ -324,6 +390,8 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         "SELECT project_id FROM projects.st_project_connections WHERE project_id=$1",
         [id],
       );
+      // scheduled_start is the logged start and stays editable here.
+      // scheduled_end still follows ServiceTitan.
       if (
         connected.rows.length &&
         [
@@ -333,7 +401,6 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           "city",
           "region",
           "postal_code",
-          "scheduled_start",
           "scheduled_end",
           "actual_end",
           "external_system_id",
@@ -412,7 +479,7 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
           ctx,
           id,
         );
-        sendData(ctx.res, serialiseProject(unchanged));
+        sendData(ctx.res, await projectPayload(ctx.db, id, unchanged));
         return;
       }
 
@@ -422,7 +489,46 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
         [id, ...entries.map(([, v]) => v)],
       );
       if (!rows[0]) throw notFound("Project not found");
-      sendData(ctx.res, serialiseProject(rows[0]));
+      sendData(ctx.res, await projectPayload(ctx.db, id, rows[0]));
+    }),
+  );
+
+  // --------------------------------------------------------- field start ---
+  router.put(
+    "/projects/:id/field-start",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "set_field_start");
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
+      const body = parseBody(
+        z.object({ date: z.string().date().nullable() }).strict(),
+        ctx.req.body,
+      );
+      if (body.date === null) {
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET field_start = NULL,
+                  field_start_source = NULL,
+                  field_start_appointment_id = NULL,
+                  field_start_observed_at = NULL,
+                  field_start_set_by = NULL
+            WHERE id = $1`,
+          [id],
+        );
+      } else {
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET field_start = $2,
+                  field_start_source = 'manual',
+                  field_start_appointment_id = NULL,
+                  field_start_observed_at = now(),
+                  field_start_set_by = $3
+            WHERE id = $1`,
+          [id, body.date, ctx.staff.staffId],
+        );
+      }
+      const row = await loadVisibleProject<Record<string, unknown>>(ctx, id);
+      sendData(ctx.res, { field_start: presentFieldStart(row) });
     }),
   );
 
@@ -437,22 +543,34 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
       // of 110 and 210 — the divisions interleave and the sheet stops reading
       // like a estimate. v_cost_position does not carry sort_order, hence the
       // join back to cost_codes, which RLS has already scoped to this tenant.
+      // Unbudgeted labor carries its cost code. The join stays a left join
+      // and that row sorts last. Its description is exactly "Unbudgeted labor".
       const { rows } = await ctx.db.query(
         `SELECT v.cost_code, v.description, v.cost_type::text AS cost_type,
                 v.baseline, v.budget_amount, v.actual_cost, v.committed_open,
-                v.total_committed, v.variance
+                v.total_committed, v.variance, v.labor_wage, v.labor_burden
            FROM projects.v_cost_position v
-           JOIN projects.cost_codes cc ON cc.code = v.cost_code
+           LEFT JOIN projects.cost_codes cc ON cc.code = v.cost_code
           WHERE v.project_id = $1
-          ORDER BY cc.sort_order, v.cost_code`,
+          ORDER BY cc.sort_order NULLS LAST, v.cost_code NULLS LAST`,
         [id],
+      );
+      const splits = await laborCostSplits(ctx.db, id);
+      const openLabor = splits
+        .filter((split) => !split.budgeted)
+        .reduce((sum, split) => sum + split.labor, 0);
+      const openBurden = splits
+        .filter((split) => !split.budgeted)
+        .reduce((sum, split) => sum + split.burden, 0);
+      const budgeted = new Map(
+        splits.filter((split) => split.budgeted).map((split) => [split.costCode, split]),
       );
       sendData(
         ctx.res,
         rows.map((r) => {
           const budgetAmount = num(r.budget_amount) ?? 0;
           const actualCost = num(r.actual_cost) ?? 0;
-          return {
+          const priced = {
             ...r,
             baseline: num(r.baseline),
             budget_amount: budgetAmount,
@@ -460,8 +578,24 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
             committed_open: num(r.committed_open),
             total_committed: num(r.total_committed),
             variance: num(r.variance),
+            labor_wage: num(r.labor_wage),
+            labor_burden: num(r.labor_burden),
             ...budgetAlert(actualCost, budgetAmount),
           };
+          if (r.description === "Unbudgeted labor") {
+            const split = r.cost_code
+              ? splits.find((row) => !row.budgeted && row.costCode === String(r.cost_code))
+              : undefined;
+            return {
+              ...priced,
+              lines: laborLines(split?.labor ?? openLabor, split?.burden ?? openBurden),
+            };
+          }
+          const split = r.cost_type === "L" && r.cost_code ? budgeted.get(String(r.cost_code)) : undefined;
+          if (split && split.labor + split.burden > 0) {
+            return { ...priced, lines: laborLines(split.labor, split.burden) };
+          }
+          return priced;
         }),
       );
     }),
@@ -512,34 +646,71 @@ export function projectRoutes(deps: StaffRouterDeps): Router {
   );
 
   // --------------------------------------------------------------- stage ---
-  router.post(
-    "/projects/:id/stage",
-    staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, "advance_stage");
-      const id = parseUuidParam(ctx.req.params.id, "Project");
-      const { stage } = parseBody(advanceStageSchema, ctx.req.body);
-      const project = await loadVisibleProject<{
-        id: string;
-        stage: ProjectStage;
-      }>(ctx, id, "id, stage");
-
-      const gates = await ctx.db.query<GateState>(
-        `SELECT gate_number, title, status::text AS status
-           FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
-        [id],
-      );
-      assertStageAdvanceAllowed(project.stage, stage, gates.rows);
-
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `UPDATE projects.projects SET stage = $2 WHERE id = $1 RETURNING *`,
-        [id, stage],
-      );
-      sendData(ctx.res, {
-        ...serialiseProject(rows[0]!),
-        next_stage: nextStage(stage),
+  router.post("/projects/:id/stage", (req, res, next) => {
+    void (async () => {
+      const advanced = await withStaff(deps, req, res, async (ctx) => {
+        requireCapability(ctx.staff.role, "advance_stage");
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        const { stage } = parseBody(advanceStageSchema, ctx.req.body);
+        const project = await loadVisibleProject<{
+          id: string;
+          stage: ProjectStage;
+        }>(ctx, id, "id, stage");
+        const gates = await ctx.db.query<GateState>(
+          `SELECT gate_number, title, status::text AS status
+             FROM projects.stage_gates WHERE project_id = $1 ORDER BY gate_number`,
+          [id],
+        );
+        assertStageAdvanceAllowed(project.stage, stage, gates.rows);
+        await ctx.db.query(
+          `UPDATE projects.projects
+              SET stage = $2::projects.project_stage,
+                  stage_changed_at = now(),
+                  st_status_gate_warning = NULL
+            WHERE id = $1`,
+          [id, stage],
+        );
+        const link = await ctx.db.query<{
+          external_project_id: string;
+          external_system_id: string;
+          connection_key: string;
+        }>(
+          `SELECT external_project_id, external_system_id, connection_key
+             FROM projects.st_project_connections WHERE project_id = $1`,
+          [id],
+        );
+        return { id, stage, from: project.stage, staff: ctx.staff, link: link.rows[0] ?? null };
       });
-    }),
-  );
+      const st = sources.serviceTitan;
+      const link = advanced.link;
+      const writeClient = st ? statusClientOf(st.client) : null;
+      let stStatusSync = null;
+      if (
+        link &&
+        writeClient?.updateProjectStatus &&
+        link.external_system_id === st?.externalSystemId &&
+        link.connection_key === st?.key
+      ) {
+        stStatusSync = await pushStageStatus(deps.database, {
+          tenantId: advanced.staff.tenantId,
+          projectId: advanced.id,
+          externalProjectId: link.external_project_id,
+          stage: advanced.stage,
+          fromStage: advanced.from,
+          actor: { type: "staff", id: advanced.staff.staffId, name: advanced.staff.fullName },
+          client: writeClient,
+        });
+      }
+      await withStaff(deps, req, res, async (ctx) => {
+        const project = await loadVisibleProject<Record<string, unknown>>(ctx, advanced.id);
+        sendData(ctx.res, {
+          ...(await projectPayload(ctx.db, advanced.id, project)),
+          next_stage: nextStage(advanced.stage),
+          ...(stStatusSync ? { st_status_sync: stStatusSync } : {}),
+        });
+      });
+    })().catch(next);
+  });
 
   return router;
 }
@@ -608,7 +779,9 @@ export async function createProject(
         external_customer_id, estimate_import_id, name, address_line1, city, region,
         postal_code, jurisdiction_id, pm_id, estimator_id, contract_value, currency,
         target_margin, license_scope_note, scheduled_start, scheduled_end)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,
+             CASE WHEN $22::boolean THEN (now() AT TIME ZONE 'America/New_York')::date ELSE $20::date END,
+             $21)
      RETURNING *`,
     [
       ctx.staff.tenantId,
@@ -632,6 +805,7 @@ export async function createProject(
       body.license_scope_note ?? null,
       body.scheduled_start ?? null,
       body.scheduled_end ?? null,
+      body.scheduled_start === undefined,
     ],
   );
   const project = rows[0]!;
@@ -697,12 +871,20 @@ export async function createProject(
           body.contract_value,
         );
 
+  const tasksCreated = await seedPreconTasks(
+    ctx.db,
+    ctx.staff.tenantId,
+    projectId,
+    (project.scheduled_start as string | null) ?? null,
+  );
+
   return {
-    ...serialiseProject(project),
+    ...(await projectPayload(ctx.db, projectId, project)),
     id: projectId,
     gates_created: gates.rowCount || gates.rows.length,
     budget_lines_created: budgetLineCount,
     draws_created: drawsCreated,
+    tasks_created: tasksCreated,
   };
 }
 
@@ -723,9 +905,7 @@ function serialiseProjectSummary(row: Record<string, unknown>) {
     ...rest
   } = row;
   return {
-    ...rest,
-    contract_value: num(row.contract_value),
-    target_margin: num(row.target_margin),
+    ...serialiseProject(rest),
     ...presentBudgetAlert(actual, budget),
   };
 }
@@ -759,9 +939,68 @@ async function readBudgetTotals(
 }
 
 function serialiseProject(row: Record<string, unknown>) {
+  const rest = { ...row };
+  const releasedAt = rest.field_released_at;
+  const note = rest.field_release_note;
+  const releasedByName = rest.field_released_by_name;
+  delete rest.field_released_by;
+  delete rest.field_released_at;
+  delete rest.field_release_note;
+  delete rest.field_released_by_name;
+  const fieldStart = presentFieldStart(rest);
+  delete rest.field_start;
+  delete rest.field_start_source;
+  delete rest.field_start_appointment_id;
+  delete rest.field_start_observed_at;
+  delete rest.field_start_set_by;
+  const precon = preconCountsFromRow(rest);
+  delete rest.precon_open;
+  delete rest.precon_overdue;
+  const stStatus = presentStoredStatus(rest);
+  delete rest.st_status_id;
+  delete rest.st_substatus_id;
+  delete rest.st_status_name;
+  delete rest.st_substatus_name;
+  delete rest.st_status_synced_at;
+  delete rest.st_status_modified_on;
+  delete rest.st_status_write_result;
+  delete rest.st_status_write_detail;
+  delete rest.st_status_gate_warning;
+  if (rest.stage_changed_at != null) {
+    const changedAt = isoTimestamp(rest.stage_changed_at);
+    if (changedAt) rest.stage_changed_at = changedAt;
+  }
   return {
-    ...row,
+    ...rest,
+    ...(stStatus ? { st_status: stStatus } : {}),
     contract_value: num(row.contract_value),
     target_margin: num(row.target_margin),
+    field_release: presentFieldRelease({
+      released_at: releasedAt,
+      released_by: typeof releasedByName === 'string' ? releasedByName : null,
+      note,
+    }),
+    field_start: fieldStart,
+    ...(precon ? { precon } : {}),
+  };
+}
+
+async function projectPayload(
+  db: SqlClient,
+  projectId: string,
+  row: Record<string, unknown>,
+  withHistory = false,
+) {
+  const base = serialiseProject(row);
+  const counts =
+    base.precon ?? (await preconCounts(db, projectId));
+  return {
+    ...base,
+    field_release: await readFieldRelease(db, projectId, withHistory),
+    precon: {
+      open: counts.open,
+      overdue: counts.overdue,
+      tasks: await listPreconTasks(db, projectId),
+    },
   };
 }

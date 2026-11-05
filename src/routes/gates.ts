@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { gateReadiness } from '../domain/gateReadiness.js';
 import { sendData } from '../http/envelope.js';
 import { ApiError, notFound } from '../http/errors.js';
 import { staffRoute, type StaffContext, type StaffRouterDeps } from '../http/staffSession.js';
@@ -39,25 +40,40 @@ export function gateRoutes(deps: StaffRouterDeps): Router {
     staffRoute(deps, async (ctx) => {
       const projectId = parseUuidParam(ctx.req.params.id, 'Project');
       await loadVisibleProject(ctx, projectId, 'id');
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `SELECT g.id, g.gate_number, g.title, g.status::text AS status, g.checklist,
-                g.approved_by, g.approved_at, g.rejected_note,
-                gt.approver_role::text AS approver_role,
-                gt.freezes_baseline
-           FROM projects.stage_gates g
-           LEFT JOIN projects.gate_templates gt
-                  ON gt.tenant_id = g.tenant_id AND gt.gate_number = g.gate_number
-          WHERE g.project_id = $1
-          ORDER BY g.gate_number`,
+      sendData(ctx.res, await presentGates(ctx, projectId));
+    }),
+  );
+
+  router.post(
+    '/projects/:id/gates/apply-template',
+    staffRoute(deps, async (ctx) => {
+      const projectId = parseUuidParam(ctx.req.params.id, 'Project');
+      await loadVisibleProject(ctx, projectId, 'id');
+      const filled = await ctx.db.query<{ filled: boolean }>(
+        `SELECT COALESCE(bool_or(
+                  jsonb_typeof(checklist) = 'array' AND jsonb_array_length(checklist) > 0
+                ), false) AS filled
+           FROM projects.stage_gates
+          WHERE project_id = $1`,
         [projectId],
       );
-      sendData(
-        ctx.res,
-        rows.map((row) => ({
-          ...row,
-          checklist: normaliseChecklist(row.checklist),
-        })),
+      if (filled.rows[0]?.filled) {
+        throw new ApiError(
+          'conflict',
+          'This project already has a checklist. Applying the template would replace answers that were already recorded.',
+          { project_id: projectId },
+        );
+      }
+      await ctx.db.query(
+        `UPDATE projects.stage_gates g
+            SET checklist = gt.checklist
+           FROM projects.gate_templates gt
+          WHERE g.project_id = $1
+            AND gt.tenant_id = g.tenant_id
+            AND gt.gate_number = g.gate_number`,
+        [projectId],
       );
+      sendData(ctx.res, await presentGates(ctx, projectId));
     }),
   );
 
@@ -218,6 +234,35 @@ function assertApprover(role: StaffRole, approverRole: StaffRole | null, gateNum
       : `Gate ${gateNumber} has no approver role configured; only an owner can act on it.`,
     { gate_number: gateNumber, approver_role: approverRole, role },
   );
+}
+
+export function annotateChecklist(
+  value: unknown,
+  ready: Readonly<Record<string, boolean>>,
+): Array<ChecklistItem & { ready?: boolean }> {
+  return normaliseChecklist(value).map((item) =>
+    Object.hasOwn(ready, item.key) ? { ...item, ready: ready[item.key] } : item,
+  );
+}
+
+async function presentGates(ctx: StaffContext, projectId: string) {
+  const ready = await gateReadiness(ctx.db, projectId);
+  const { rows } = await ctx.db.query<Record<string, unknown>>(
+    `SELECT g.id, g.gate_number, g.title, g.status::text AS status, g.checklist,
+            g.approved_by, g.approved_at, g.rejected_note,
+            gt.approver_role::text AS approver_role,
+            gt.freezes_baseline
+       FROM projects.stage_gates g
+       LEFT JOIN projects.gate_templates gt
+              ON gt.tenant_id = g.tenant_id AND gt.gate_number = g.gate_number
+      WHERE g.project_id = $1
+      ORDER BY g.gate_number`,
+    [projectId],
+  );
+  return rows.map((row) => ({
+    ...row,
+    checklist: annotateChecklist(row.checklist, ready),
+  }));
 }
 
 export function normaliseChecklist(value: unknown): ChecklistItem[] {

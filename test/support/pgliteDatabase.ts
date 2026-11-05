@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { citext } from '@electric-sql/pglite/contrib/citext';
-import type { Database, SqlClient } from '../../src/db/database.js';
+import type { AdvisoryLock, Database, SqlClient } from '../../src/db/database.js';
 import { splitSqlStatements } from '../../src/db/splitSql.js';
+import { stPoEnvSeedSql } from '../../src/domain/stPurchaseOrderSync.js';
 
 /**
  * A real PostgreSQL, in process.
@@ -35,6 +36,9 @@ export class PgliteDatabase implements Database {
     });
 
     for (const file of sqlFiles) {
+      if (file.endsWith('060_st_po_preview_defaults.sql')) {
+        await pg.exec(stPoEnvSeedSql());
+      }
       for (const stmt of splitSqlStatements(readFileSync(file, 'utf8'))) {
         await pg.exec(stmt.text);
       }
@@ -59,6 +63,41 @@ export class PgliteDatabase implements Database {
 
   withoutTenant<T>(fn: (client: SqlClient) => Promise<T>): Promise<T> {
     return this.transaction(null, fn, APP_ROLE);
+  }
+
+  /**
+   * Session lock. The acquire transaction commits before this returns, and the
+   * lock stays on this one connection until release. PGlite has one session,
+   * so a second acquire of the same key on this object reenters instead of
+   * failing. A second replica is what returns null.
+   */
+  async tryAdvisoryLock(key: string): Promise<AdvisoryLock | null> {
+    const locked = await this.transaction(
+      null,
+      async (client) => {
+        const result = await client.query<{ locked: boolean }>(
+          `SELECT pg_try_advisory_lock(hashtext($1)::bigint) AS locked`,
+          [key],
+        );
+        return result.rows[0]?.locked === true;
+      },
+      APP_ROLE,
+    );
+    if (!locked) return null;
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        await this.transaction(
+          null,
+          async (client) => {
+            await client.query(`SELECT pg_advisory_unlock(hashtext($1)::bigint)`, [key]);
+          },
+          APP_ROLE,
+        );
+      },
+    };
   }
 
   /**
