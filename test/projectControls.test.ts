@@ -7,6 +7,8 @@ import {
   type TenantFixture,
 } from "./support/harness.js";
 import { today, nextCommunicationDate } from "../src/domain/projectControls.js";
+import { ragScheduleAndCost } from "../src/domain/ragHealth.js";
+import { loadProjectHealth } from "../src/domain/projectHealth.js";
 let h: Harness, t: TenantFixture, other: TenantFixture, p: string, q: string;
 const prefix = "/api/v1/projects/projects/";
 const owner = () => h.as(t.staff.owner!.token);
@@ -83,6 +85,53 @@ it("maintains task completion dates, WBS leaves, dependency checks and immutable
         .send({ version: 1, active: false, data: parent.data })
     ).status,
   ).toBe(409);
+});
+it("saves a WBS task phase and treats a blank phase as none", async () => {
+  const created = await create("task", {
+    ...task("Phased task"),
+    phase: "  Rough-in ",
+  });
+  expect(created.data.phase).toBe("Rough-in");
+  const listed = (await owner().get(url())).body.data.records.find(
+    (row: { id: string }) => row.id === created.id,
+  );
+  expect(listed.data.phase).toBe("Rough-in");
+  const cleared = await owner()
+    .patch(url() + "/" + created.id)
+    .send({ version: 1, data: { ...created.data, phase: "" } });
+  expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+  expect(cleared.body.data.data.phase).toBeNull();
+  expect(cleared.body.data.data.title).toBe("Phased task");
+  const blank = await create("task", { ...task("Unphased task"), phase: null });
+  expect(blank.data.phase).toBeNull();
+  const omitted = await create("task", task("Omitted phase"));
+  expect(omitted.data.phase).toBeNull();
+  expect(
+    (
+      await owner()
+        .post(url())
+        .send({
+          kind: "task",
+          data: { ...task("Too long"), phase: "x".repeat(121) },
+        })
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await owner()
+        .post(url())
+        .send({ kind: "task", data: { ...task("Not text"), phase: 4 } })
+    ).status,
+  ).toBe(400);
+  const again = await owner()
+    .patch(url() + "/" + created.id)
+    .send({
+      version: cleared.body.data.version,
+      data: { ...cleared.body.data.data, phase: "Closeout" },
+    });
+  expect(again.status, JSON.stringify(again.body)).toBe(200);
+  expect(again.body.data.data.phase).toBe("Closeout");
+  expect(again.body.data.data.title).toBe("Phased task");
 });
 it("rejects hierarchy cycles, foreign task references and invalid completion dates", async () => {
   const a = await create("task", task("Parent A")),
@@ -222,6 +271,151 @@ it("tracks reserves without changing budget and hides allocations from roles wit
   ).toBe(403);
   expect((await owner().get(prefix + p + "/budget")).body).toEqual(before.body);
 });
+it("rolls milestone status up from tasks and goal percent up from milestones", async () => {
+  const goal = await create("goal", {
+    title: "Roll-up goal",
+    due_on: "2099-01-01",
+    key_results: [],
+    state: "complete",
+  });
+  expect(goal.data.key_results).toEqual([]);
+  expect(goal.data.state).toBe("not_started");
+  const none = await create("milestone", {
+    title: "Roll-up with no tasks",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  expect(none.data.state).toBe("not_started");
+  const partial = await create("milestone", {
+    title: "Roll-up partial",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    ...task("Roll-up finished piece"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: partial.id,
+  });
+  await create("task", {
+    ...task("Roll-up open piece"),
+    due_on: "2099-01-01",
+    state: "in_progress",
+    milestone_id: partial.id,
+  });
+  const finished = await create("milestone", {
+    title: "Roll-up all done",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    ...task("Roll-up done A"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: finished.id,
+  });
+  await create("task", {
+    ...task("Roll-up done B"),
+    due_on: "2099-01-01",
+    state: "complete",
+    milestone_id: finished.id,
+  });
+  const late = await create("milestone", {
+    title: "Roll-up late",
+    due_on: "2099-01-01",
+    goal_id: goal.id,
+  });
+  await create("task", {
+    title: "Roll-up overdue piece",
+    start_on: "2020-01-01",
+    due_on: "2020-01-02",
+    milestone_id: late.id,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const byTitle = (title: string) =>
+    rows.find((row: { data: { title: string } }) => row.data.title === title);
+  expect(byTitle("Roll-up with no tasks").rollup).toMatchObject({
+    status: "not_started",
+    flag: null,
+    total: 0,
+    done: 0,
+  });
+  expect(byTitle("Roll-up with no tasks").data.state).toBe("not_started");
+  expect(byTitle("Roll-up partial").rollup).toMatchObject({
+    status: "in_progress",
+    flag: null,
+    done: 1,
+    total: 2,
+  });
+  expect(byTitle("Roll-up all done").data.state).toBe("not_started");
+  expect(byTitle("Roll-up all done").rollup.status).toBe("complete");
+  expect(byTitle("Roll-up late").rollup).toMatchObject({
+    status: "not_started",
+    flag: "late",
+  });
+  expect(byTitle("Roll-up goal").data.key_results).toEqual([]);
+  expect(byTitle("Roll-up goal").data.state).toBe("not_started");
+  expect(byTitle("Roll-up goal").rollup).toEqual({
+    status: "in_progress",
+    flag: "late",
+    percent: 38,
+    done: 1,
+    total: 4,
+  });
+  const kept = await owner()
+    .patch(url() + "/" + none.id)
+    .send({
+      version: none.version,
+      data: { ...none.data, state: "complete", completed_on: today() },
+    });
+  expect(kept.status, JSON.stringify(kept.body)).toBe(200);
+  expect(kept.body.data.data.state).toBe("complete");
+  expect(kept.body.data.data.completed_on).toBe(today());
+  const blocked = await owner()
+    .patch(url() + "/" + partial.id)
+    .send({
+      version: partial.version,
+      data: { ...partial.data, state: "complete", completed_on: today() },
+    });
+  expect(blocked.status, JSON.stringify(blocked.body)).toBe(200);
+  expect(blocked.body.data.data.state).toBe("not_started");
+  expect(blocked.body.data.data.completed_on).toBeNull();
+});
+
+it("saves a goal with no key results", async () => {
+  const goal = await create("goal", {
+    title: "Room is ready to use",
+    description: "The customer can use the room",
+    due_on: today(),
+    key_results: [],
+  });
+  expect(goal.data.key_results).toEqual([]);
+  const omitted = await owner()
+    .post(url())
+    .send({ kind: "goal", data: { title: "No measure yet", due_on: today() } });
+  expect(omitted.status, JSON.stringify(omitted.body)).toBe(201);
+  expect(omitted.body.data.data.key_results).toEqual([]);
+  const same = await owner()
+    .post(url())
+    .send({
+      kind: "goal",
+      data: {
+        title: "Bad measure",
+        due_on: today(),
+        key_results: [
+          {
+            name: "Inspections",
+            start: 1,
+            target: 1,
+            current: 1,
+            unit: "inspections",
+          },
+        ],
+      },
+    });
+  expect(same.status).toBe(400);
+});
+
 it("records goals, linked milestones, RAG reports, ROAM risks and delivery history", async () => {
   const goal = await create("goal", {
     title: "Ready for handover",
@@ -295,18 +489,169 @@ it("records goals, linked milestones, RAG reports, ROAM risks and delivery histo
   expect(nextCommunicationDate("monthly", "2026-01-31")).toBe("2026-02-28");
 });
 
-it("deletes a milestone without deleting its tasks, checks versions and allows restoration", async()=>{
- const milestone=await create("milestone",{title:"Temporary milestone",due_on:today()});
- const linked=await create("task",{...task("Keep this work"),milestone_id:milestone.id});
- expect((await h.as(t.staff.office!.token).del(url()+"/"+milestone.id).send({version:1})).status).toBe(403);
- expect((await owner().del(url()+"/"+milestone.id).send({version:99})).status).toBe(409);
- const deleted=await owner().del(url()+"/"+milestone.id).send({version:1});
- expect(deleted.status,JSON.stringify(deleted.body)).toBe(200);
- expect(deleted.body.data).toMatchObject({active:false,version:2,unlinked_tasks:1});
- const rows=(await owner().get(url())).body.data.records;
- const kept=rows.find((x:any)=>x.id===linked.id);
- expect(kept.active).toBe(true);expect(kept.data).toEqual({...linked.data,milestone_id:null});expect(kept.version).toBe(2);
- expect((await owner().patch(url()+"/"+linked.id).send({version:1,data:linked.data})).status).toBe(409);
- expect((await owner().patch(url()+"/"+milestone.id).send({version:2,data:milestone.data,active:true})).status).toBe(200);
- expect((await owner().del(url()+"/"+linked.id).send({version:2})).status).toBe(400);
+it("deletes a milestone without deleting its tasks, checks versions and allows restoration", async () => {
+  const milestone = await create("milestone", {
+    title: "Temporary milestone",
+    due_on: today(),
+  });
+  const linked = await create("task", {
+    ...task("Keep this work"),
+    milestone_id: milestone.id,
+  });
+  expect(
+    (
+      await h
+        .as(t.staff.office!.token)
+        .del(url() + "/" + milestone.id)
+        .send({ version: 1 })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + milestone.id)
+        .send({ version: 99 })
+    ).status,
+  ).toBe(409);
+  const deleted = await owner()
+    .del(url() + "/" + milestone.id)
+    .send({ version: 1 });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body.data).toMatchObject({
+    active: false,
+    version: 2,
+    unlinked_tasks: 1,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const kept = rows.find((x: any) => x.id === linked.id);
+  expect(kept.active).toBe(true);
+  expect(kept.data).toEqual({ ...linked.data, milestone_id: null });
+  expect(kept.version).toBe(2);
+  expect(
+    (
+      await owner()
+        .patch(url() + "/" + linked.id)
+        .send({ version: 1, data: linked.data })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await owner()
+        .patch(url() + "/" + milestone.id)
+        .send({ version: 2, data: milestone.data, active: true })
+    ).status,
+  ).toBe(200);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + linked.id)
+        .send({ version: 2 })
+    ).status,
+  ).toBe(400);
+});
+
+it("deletes a goal, unlinks its milestones, and restores the goal", async () => {
+  const goal = await create("goal", {
+    title: "Temporary goal",
+    due_on: today(),
+  });
+  const milestone = await create("milestone", {
+    title: "Kept milestone",
+    due_on: today(),
+    goal_id: goal.id,
+  });
+  expect(
+    (
+      await h
+        .as(t.staff.office!.token)
+        .del(url() + "/" + goal.id)
+        .send({ version: 1 })
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await owner()
+        .del(url() + "/" + goal.id)
+        .send({ version: 99 })
+    ).status,
+  ).toBe(409);
+  const deleted = await owner()
+    .del(url() + "/" + goal.id)
+    .send({ version: 1 });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body.data).toMatchObject({
+    active: false,
+    version: 2,
+    unlinked_milestones: 1,
+  });
+  const rows = (await owner().get(url())).body.data.records;
+  const kept = rows.find((row: { id: string }) => row.id === milestone.id);
+  expect(kept.active).toBe(true);
+  expect(kept.data.goal_id).toBeNull();
+  const restored = await owner()
+    .patch(url() + "/" + goal.id)
+    .send({ version: 2, data: goal.data, active: true });
+  expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+  expect(restored.body.data.active).toBe(true);
+  const again = (await owner().get(url())).body.data.records.find(
+    (row: { id: string }) => row.id === milestone.id,
+  );
+  expect(again.data.goal_id).toBeNull();
+});
+
+it("keeps an old RAG report readable and writes schedule and cost from project health", async () => {
+  await h.db.withTenant(t.id, (db) =>
+    db.query(
+      `INSERT INTO projects.project_controls (tenant_id, project_id, kind, data)
+       VALUES ($1, $2, 'report', $3::jsonb)`,
+      [
+        t.id,
+        p,
+        JSON.stringify({
+          title: "Stored weekly review",
+          description: "",
+          owner_id: null,
+          overall: "amber",
+          scope: "green",
+          schedule: "amber",
+          cost: "red",
+          quality: "not_assessed",
+          achievements: "",
+          next_steps: "",
+          decisions: "",
+          as_of: today(),
+        }),
+      ],
+    ),
+  );
+  const listed = (await owner().get(url())).body.data;
+  const stored = listed.records.find(
+    (row: { data: { title: string } }) =>
+      row.data.title === "Stored weekly review",
+  );
+  expect(stored.data.schedule).toBe("amber");
+  expect(stored.data.cost).toBe("red");
+  const health = await h.db.withTenant(t.id, (db) =>
+    loadProjectHealth(db, today()),
+  );
+  const expected = ragScheduleAndCost(
+    health.find((row) => row.project_id === p)?.health,
+  );
+  expect(listed.rag).toEqual(expected);
+  const created = await create("report", {
+    title: "Health-backed review",
+    overall: "green",
+    scope: "green",
+    schedule: "red",
+    cost: "red",
+    quality: "green",
+  });
+  expect(created.data.schedule).toBe(expected.schedule);
+  expect(created.data.cost).toBe(expected.cost);
+  const still = (await owner().get(url())).body.data.records.find(
+    (row: { data: { title: string } }) =>
+      row.data.title === "Stored weekly review",
+  );
+  expect(still.data.schedule).toBe("amber");
+  expect(still.data.cost).toBe("red");
 });

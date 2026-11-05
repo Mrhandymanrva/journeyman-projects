@@ -1,4 +1,5 @@
 import { rankCardCharges } from "./cardChargeMatch.js";
+import { billsSummary, collapsedCard } from "./financialsSections.js";
 
 export function createAccounting({
   api,
@@ -41,9 +42,14 @@ export function createAccounting({
       received = live.filter((b) => b.status === "received" && b.po_kind !== "material"),
       materialOpen = live.filter((b) => b.status === "received" && b.po_kind === "material"),
       confirmed = live.filter((b) => b.qbo_id);
-    el("project-payables").innerHTML =
-      `<div class="card"><div class="card-h"><div><h2>Vendor bills & payments</h2><p>Enter invoices, compare them with contracted work, approve them here, and pay in QuickBooks.</p></div><button class="btn" id="ap-reload">Refresh</button></div><div class="card-b"><div class="two"><p><strong>${money(live.reduce((s, b) => s + Number(b.amount), 0))}</strong> billed · <strong>${money(received.reduce((s, b) => s + Number(b.amount), 0))}</strong> awaiting approval</p><p><strong>${confirmed.length ? money(confirmed.reduce((s, b) => s + Number(b.qbo_balance ?? b.amount), 0)) : "Not yet synced"}</strong> remaining in QBO <small>(last recorded balances; payments and credits are managed there)</small></p></div><p class="note">${catalog.connected ? "Connected to the existing QuickBooks service. Approved subcontract bills are queued for their full amount." : "QuickBooks connector is not configured, so card charges cannot be looked up yet. Material orders still show as awaiting card charge and stay on the project cost."} ${materialOpen.length ? money(materialOpen.reduce((s, b) => s + Number(b.amount), 0)) + " awaiting card charge. That cost is on the project and is not in the approval queue." : ""}</p>${can("approve_vendor_bill") ? `<div class="actions"><button class="btn" id="ap-catalog">Refresh QuickBooks lists</button><button class="btn" id="ap-vendors">Vendor setup & W-9 review</button></div><label>QuickBooks customer / job for this project<select id="ap-customer"><option value="">No QBO customer mapping — project recorded in bill description</option>${options(catalog.customers || [], data.qbo_customer_id)}</select></label><button class="btn sm" id="ap-map">Save customer mapping</button>` : ""}<div class="actions">${can("issue_purchase_order") ? '<button class="btn primary" id="ap-material">Enter material order</button><button class="btn" id="ap-add">Enter vendor invoice</button>' : ""}</div>${canReclassify ? `<p class="note">A material bill that is already in QuickBooks is linked, not approved. Linking records the existing Bill or Purchase and does not queue a new one.</p>` : ""}<div class="sub-table"><table><thead><tr><th>Invoice / vendor</th><th>Contract & billed</th><th>Amount / due</th><th>Approval & QBO</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${bills.map((b) => `<tr><td><strong>${esc(b.vendor_invoice_number)}</strong><small>${esc(b.vendor)}</small><small>${esc(b.po_number)} · ${esc(b.po_kind || "subcontract")}</small></td><td>${money(b.contracted)} contracted<small>${money(b.billed_to_date)} billed${b.po_kind === "material" ? "" : Number(b.billed_to_date) > Number(b.contracted) ? " · OVER CONTRACT" : ""}</small></td><td>${money(b.amount)}<small>Due ${date(b.due_date)}</small>${Number(b.retention_held) ? `<small>${money(b.retention_held)} held, not approved for payment</small>` : ""}</td><td>${awaitingCard(b) ? "Awaiting card charge" : b.status === "paid" ? "Settled in QBO" : esc(b.status)}<small>${awaitingCard(b) ? "Recorded on the project. Nothing is sent to QuickBooks." : (esc(b.sync_state || "Not sent") + (b.qbo_id ? " · QBO #" + esc(b.qbo_id) : ""))}</small>${awaitingCard(b) ? `<small class="ap-suggest" id="ap-suggest-${esc(b.id)}"></small>` : ""}<small>${esc(b.sync_message || "")}</small><small>${esc(b.qbo_message || "")}</small></td><td>${b.qbo_id ? money(b.qbo_balance) : "—"}<small>${b.qbo_checked_at ? "Checked " + date(b.qbo_checked_at) : ""}</small></td><td>${(b.status === "received" || (b.status === "approved" && !b.sync_state)) && can("approve_vendor_bill") ? `${b.po_kind === "material" ? "" : `<button class="btn sm" type="button" data-ap-approve="${b.id}">Review & approve</button>`}<button class="btn sm danger" type="button" data-ap-reject="${b.id}">Reject</button>` : ""}${can("approve_vendor_bill") && ["failed", "uncertain"].includes(b.sync_state) ? `<button class="btn sm" data-ap-sync="${b.id}">${b.sync_state === "uncertain" ? "Check QBO receipt" : "Retry sync"}</button>` : ""}${b.qbo_id && can("approve_vendor_bill") ? `<button class="btn sm" data-ap-sync="${b.id}">Refresh balance</button>` : ""}${b.po_kind === "material" && b.status === "received" && can("link_material_purchase") ? `<button class="btn sm" type="button" data-ap-link="${b.id}">Link QuickBooks transaction</button>` : ""}${canReclassify && b.po_kind !== "material" && b.status !== "paid" ? `<button class="btn sm" data-ap-material="${b.po_id}">Mark as material purchase</button>` : ""}${canReclassify && b.status !== "rejected" ? `<button class="btn sm" data-ap-move="${b.po_id}">Move to another project</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="6">No vendor bills for this project yet.</td></tr>'}</tbody></table></div></div></div>`;
-    el("ap-reload").onclick = () => render().catch(error);
+    const payablesBody = `<div class="two"><p><strong>${money(live.reduce((s, b) => s + Number(b.amount), 0))}</strong> billed · <strong>${money(received.reduce((s, b) => s + Number(b.amount), 0))}</strong> awaiting approval</p><p><strong>${confirmed.length ? money(confirmed.reduce((s, b) => s + Number(b.qbo_balance ?? b.amount), 0)) : "Not yet synced"}</strong> remaining in QBO <small>(last recorded balances; payments and credits are managed there)</small></p></div><p class="note">${catalog.connected ? "Connected to the existing QuickBooks service. Approved subcontract bills are queued for their full amount." : "QuickBooks connector is not configured, so card charges cannot be looked up yet. Material orders still show as awaiting card charge and stay on the project cost."} ${materialOpen.length ? money(materialOpen.reduce((s, b) => s + Number(b.amount), 0)) + " awaiting card charge. That cost is on the project and is not in the approval queue." : ""}</p>${can("approve_vendor_bill") ? `<div class="actions"><button class="btn" id="ap-catalog">Refresh QuickBooks lists</button><button class="btn" id="ap-vendors">Vendor setup & W-9 review</button></div><label>QuickBooks customer / job for this project<select id="ap-customer"><option value="">No QBO customer mapping — project recorded in bill description</option>${options(catalog.customers || [], data.qbo_customer_id)}</select></label><button class="btn sm" id="ap-map">Save customer mapping</button>` : ""}<div class="actions">${can("issue_purchase_order") ? '<button class="btn primary" id="ap-material">Enter material order</button><button class="btn" id="ap-add">Enter vendor invoice</button>' : ""}</div>${canReclassify ? `<p class="note">A material bill that is already in QuickBooks is linked, not approved. Linking records the existing Bill or Purchase and does not queue a new one.</p>` : ""}<div class="sub-table"><table><thead><tr><th>Invoice / vendor</th><th>Contract & billed</th><th>Amount / due</th><th>Approval & QBO</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${bills.map((b) => `<tr><td><strong>${esc(b.vendor_invoice_number)}</strong><small>${esc(b.vendor)}</small><small>${esc(b.po_number)} · ${esc(b.po_kind || "subcontract")}</small></td><td>${money(b.contracted)} contracted<small>${money(b.billed_to_date)} billed${b.po_kind === "material" ? "" : Number(b.billed_to_date) > Number(b.contracted) ? " · OVER CONTRACT" : ""}</small></td><td>${money(b.amount)}<small>Due ${date(b.due_date)}</small>${Number(b.retention_held) ? `<small>${money(b.retention_held)} held, not approved for payment</small>` : ""}</td><td>${awaitingCard(b) ? "Awaiting card charge" : b.status === "paid" ? "Settled in QBO" : esc(b.status)}<small>${awaitingCard(b) ? "Recorded on the project. Nothing is sent to QuickBooks." : (esc(b.sync_state || "Not sent") + (b.qbo_id ? " · QBO #" + esc(b.qbo_id) : ""))}</small>${awaitingCard(b) ? `<small class="ap-suggest" id="ap-suggest-${esc(b.id)}"></small>` : ""}<small>${esc(b.sync_message || "")}</small><small>${esc(b.qbo_message || "")}</small></td><td>${b.qbo_id ? money(b.qbo_balance) : "—"}<small>${b.qbo_checked_at ? "Checked " + date(b.qbo_checked_at) : ""}</small></td><td>${(b.status === "received" || (b.status === "approved" && !b.sync_state)) && can("approve_vendor_bill") ? `${b.po_kind === "material" ? "" : `<button class="btn sm" type="button" data-ap-approve="${b.id}">Review & approve</button>`}<button class="btn sm danger" type="button" data-ap-reject="${b.id}">Reject</button>` : ""}${can("approve_vendor_bill") && ["failed", "uncertain"].includes(b.sync_state) ? `<button class="btn sm" data-ap-sync="${b.id}">${b.sync_state === "uncertain" ? "Check QBO receipt" : "Retry sync"}</button>` : ""}${b.qbo_id && can("approve_vendor_bill") ? `<button class="btn sm" data-ap-sync="${b.id}">Refresh balance</button>` : ""}${b.po_kind === "material" && b.status === "received" && can("link_material_purchase") ? `<button class="btn sm" type="button" data-ap-link="${b.id}">Link QuickBooks transaction</button>` : ""}${canReclassify && b.po_kind !== "material" && b.status !== "paid" ? `<button class="btn sm" data-ap-material="${b.po_id}">Mark as material purchase</button>` : ""}${canReclassify && b.status !== "rejected" ? `<button class="btn sm" data-ap-move="${b.po_id}">Move to another project</button>` : ""}</td></tr>`).join("") || '<tr><td colspan="6">No vendor bills for this project yet.</td></tr>'}</tbody></table></div>`;
+    el("project-payables").innerHTML = collapsedCard({
+      id: "bills",
+      title: "Vendor bills & payments",
+      summary: billsSummary(bills),
+      actions: `<button class="btn" id="ap-reload" type="button">Reload bills</button>`,
+      body: `<p>Enter invoices, compare them with contracted work, approve them here, and pay in QuickBooks.</p>${payablesBody}`,
+    });    el("ap-reload").onclick = () => render().catch(error);
     if (el("ap-catalog"))
       el("ap-catalog").onclick = async () => {
         try {
@@ -410,6 +416,54 @@ export function createAccounting({
     };
     return `<div class="card acct-map"><div class="card-h"><div><h3>Cost type accounts</h3></div></div><div class="card-b"><p class="note">Map each cost type to a QuickBooks account from the stored chart. An empty row uses the account chosen when that bill is approved. Use copies a suggestion into that row. Nothing is saved until Save.</p><div class="acct-map-table" role="table"><div class="acct-head" role="row"><span role="columnheader">Cost type</span><span role="columnheader">QuickBooks account</span><span role="columnheader">Suggestion</span></div>${rows.map(row).join("")}</div><div class="acct-grace"><label for="ap-grace">Agreement grace days</label><input id="ap-grace" type="number" min="0" max="365" value="${Number(settings.agreement_grace_days)}"><p class="note">Days a subcontract can be issued before a signed master agreement is required. The default is 14.</p></div><button class="btn primary" id="ap-save-accounts" type="button">Save</button></div></div>`;
   }
+  function stSelect(id, saved, options) {
+    const known = Array.isArray(options) ? options.slice() : [];
+    if (saved && !known.some((option) => String(option.id) === String(saved))) {
+      known.unshift({ id: saved, label: saved });
+    }
+    return `<select id="${id}"><option value="">Not set</option>${known
+      .map(
+        (option) =>
+          `<option value="${esc(option.id)}"${String(option.id) === String(saved || "") ? " selected" : ""}>${esc(option.label)}</option>`,
+      )
+      .join("")}</select>`;
+  }
+  function stPoSettingsCard(settings, options) {
+    if (!settings) return "";
+    if (settings.load_error) {
+      return `<div class="card" id="st-po-settings"><div class="card-h"><h3>ServiceTitan purchase orders</h3></div><div class="card-b"><p class="err">${esc(settings.load_error)}</p></div></div>`;
+    }
+    const toggle = settings.can_toggle
+      ? `<label><input id="st-po-sync-enabled" type="checkbox"${settings.enabled ? " checked" : ""}> Send purchase orders to ServiceTitan</label>`
+      : `<p><input id="st-po-sync-enabled" type="checkbox" disabled${settings.enabled ? " checked" : ""}> Sending is ${settings.enabled ? "on" : "off"}. Only an owner can change this.</p>`;
+    const lookup = options?.lookup_error ? `<p class="note">${esc(options.lookup_error)}</p>` : "";
+    return `<div class="card" id="st-po-settings"><div class="card-h"><h3>ServiceTitan purchase orders</h3></div><div class="card-b"><p class="note">Sending stays off until an owner turns it on here. The environment variable does not turn it on. Purchase order type, business unit, and inventory location are the company defaults. The preview uses the last saved location.</p>${toggle}${lookup}<div class="st-po-fields"><label>Purchase order type${stSelect("st-po-type", settings.purchase_order_type_id, options?.types)}</label><label>Business unit${stSelect("st-po-bu", settings.business_unit_id, options?.business_units)}</label><label>Inventory location${stSelect("st-po-location", settings.inventory_location_id, options?.locations)}</label></div><button class="btn primary" id="st-po-save-defaults" type="button">Save ServiceTitan defaults</button></div></div>`;
+  }
+  function laborSettingsCard(labor) {
+    const code = labor.st_labor_code;
+    const codeLine = !code
+      ? "Labor code: unavailable"
+      : `Labor code: ${esc(code.code)} ${esc(code.name)}`;
+    const error = labor.st_labor_code_error
+      ? `<p class="msg" id="labor-st-error">${esc(labor.st_labor_code_error)}</p>`
+      : "";
+    const gaps = labor.rate_gaps || [];
+    const gapList = gaps.length
+      ? `<ul id="labor-rate-gaps">${gaps
+          .map(
+            (gap) =>
+              `<li>${esc(gap.technician_name)}: neither a commission percent nor an hourly rate</li>`,
+          )
+          .join("")}</ul>`
+      : `<p id="labor-rate-gaps">No active field technician is missing both a commission percent and an hourly rate.</p>`;
+    const notices = labor.burden_notices || [];
+    const noticeList = notices.length
+      ? `<ul id="labor-burden-notices">${notices
+          .map((gap) => `<li>${esc(gap.technician_name)}: not set</li>`)
+          .join("")}</ul>`
+      : `<p id="labor-burden-notices">Every active field technician has a burden rate.</p>`;
+    return `<div class="card" id="labor-settings"><div class="card-h"><h3>Labor</h3></div><div class="card-b"><p class="note">Labor cost is billed labor times the technician's commission percent, plus burden. Burden is payroll timesheet hours times the burden rate. Hourly technicians use those hours times their hourly rate. A person is listed here only when they are an active field technician and ServiceTitan payroll has neither a commission percent nor an hourly rate. A missing burden rate is shown as not set. Pay rates are read through Journeyman's ServiceTitan login and are not stored here. Nothing on this page is written to ServiceTitan. The labor code is ServiceTitan pricebook service MHM.25PLFE. It is not chosen here.</p><p id="labor-st-code">${codeLine}</p>${error}<h4>Field technicians missing a commission percent and an hourly rate</h4>${gapList}<h4>Burden not set</h4>${noticeList}</div></div>`;
+  }
   async function movePurchaseOrder(poId) {
     openDrawer(
       "Move purchase order",
@@ -459,7 +513,7 @@ export function createAccounting({
   }
   function varianceText(variance) {
     if (!Number.isFinite(variance) || Math.abs(variance) <= 0.005) return "matches the order";
-    const sign = variance > 0 ? "+" : "−";
+    const sign = variance > 0 ? "+" : "\u2212";
     return `${sign}${money(Math.abs(variance))} variance (tax, shipping, or price)`;
   }
   function linkBlockReason(bill) {
@@ -566,11 +620,49 @@ export function createAccounting({
       host.innerHTML = "<p>Company settings are available to an owner or a manager.</p>";
       return;
     }
-    const [catalog, settings] = await Promise.all([
+    const [catalog, settings, labor] = await Promise.all([
       api("/accounting/catalog"),
       api("/accounting/cost-type-accounts"),
+      api("/settings/labor"),
     ]);
-    host.innerHTML = accountMappingCard(settings, catalog);
+    let stPo = null;
+    let stOptions = { types: [], business_units: [], locations: [], lookup_error: null };
+    try {
+      stPo = await api("/settings/service-titan-purchase-orders");
+      try {
+        stOptions = await api("/settings/service-titan-purchase-order-options");
+      } catch (e) {
+        stOptions = {
+          types: [],
+          business_units: [],
+          locations: [],
+          lookup_error: e.message || "ServiceTitan lists could not be loaded.",
+        };
+      }
+    } catch (e) {
+      stPo = { load_error: e.message || "ServiceTitan purchase order settings could not be loaded." };
+    }
+    host.innerHTML = accountMappingCard(settings, catalog) + laborSettingsCard(labor) + stPoSettingsCard(stPo, stOptions);
+    const stSave = el("st-po-save-defaults");
+    if (stSave && stPo && !stPo.load_error) {
+      stSave.onclick = async () => {
+        const body = {
+          purchase_order_type_id: el("st-po-type")?.value || null,
+          business_unit_id: el("st-po-bu")?.value || null,
+          inventory_location_id: el("st-po-location")?.value || null,
+        };
+        if (stPo.can_toggle) body.enabled = Boolean(el("st-po-sync-enabled")?.checked);
+        try {
+          await api("/settings/service-titan-purchase-orders", {
+            method: "PATCH",
+            body: JSON.stringify(body),
+          });
+          await renderSettings();
+        } catch (e) {
+          error(e);
+        }
+      };
+    }
     if (!el("ap-save-accounts")) return;
     for (const type of ["L", "M", "S", "O"]) {
       const use = el(`ap-use-${type}`);

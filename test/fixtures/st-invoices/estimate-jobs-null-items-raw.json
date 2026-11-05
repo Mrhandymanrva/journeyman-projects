@@ -1,0 +1,467 @@
+{
+ "321578684": {
+  "page": 1,
+  "pageSize": 200,
+  "hasMore": false,
+  "totalCount": null,
+  "data": [
+   {
+    "summary": null,
+    "items": null,
+    "customFields": null,
+    "active": true,
+    "discountTotal": "0.00",
+    "importId": null,
+    "exportId": null,
+    "exportSubstatus": null,
+    "materialSkuId": 0,
+    "membershipId": null,
+    "paidOn": null,
+    "invoiceConfiguration": "JobInvoice",
+    "rateSheetId": 281187361,
+    "id": 321578689,
+    "syncStatus": "Pending",
+    "budgetCodeId": null,
+    "referenceNumber": "144898",
+    "invoiceDate": "2026-10-19T00:00:00Z",
+    "dueDate": "2026-10-19T00:00:00Z",
+    "subTotal": "0.00",
+    "salesTax": "0.00",
+    "salesTaxCode": null,
+    "taxZoneId": null,
+    "total": "0.00",
+    "balance": "0.00",
+    "invoiceType": null,
+    "customer": {
+     "id": 1,
+     "name": "Customer Placeholder"
+    },
+    "customerAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "location": {
+     "id": 2,
+     "name": "Location Placeholder"
+    },
+    "locationAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "businessUnit": {
+     "id": 910001,
+     "name": "Richmond"
+    },
+    "termName": "Due Upon Receipt",
+    "createdBy": "UserPlaceholder",
+    "batch": null,
+    "depositedOn": null,
+    "createdOn": "2026-09-17T16:17:16.6561143Z",
+    "modifiedOn": "2026-10-19T18:37:21.2529004Z",
+    "adjustmentToId": null,
+    "job": {
+     "id": 321578684,
+     "number": "144898",
+     "type": "Estimate"
+    },
+    "projectId": 321586598,
+    "royalty": {
+     "status": "Pending",
+     "date": null,
+     "sentOn": null,
+     "memo": null
+    },
+    "employeeInfo": {
+     "id": 3,
+     "name": "UserPlaceholder",
+     "modifiedOn": "2026-09-25T07:20:35.7435199Z"
+    },
+    "commissionEligibilityDate": null,
+    "sentStatus": "NotSent",
+    "reviewStatus": "NeedsReview",
+    "reviewedOn": null,
+    "assignedTo": null
+   }
+  ]
+ },
+ "322371634": {
+  "page": 1,
+  "pageSize": 200,
+  "hasMore": false,
+  "totalCount": null,
+  "data": [
+   {
+    "summary": null,
+    "items": null,
+    "customFields": null,
+    "active": true,
+    "discountTotal": "0.00",
+    "importId": null,
+    "exportId": null,
+    "exportSubstatus": null,
+    "materialSkuId": 0,
+    "membershipId": null,
+    "paidOn": null,
+    "invoiceConfiguration": "JobInvoice",
+    "rateSheetId": 281187361,
+    "id": 322371639,
+    "syncStatus": "Pending",
+    "budgetCodeId": null,
+    "referenceNumber": "145404",
+    "invoiceDate": null,
+    "dueDate": null,
+    "subTotal": "0.00",
+    "salesTax": "0.00",
+    "salesTaxCode": null,
+    "taxZoneId": null,
+    "total": "0.00",
+    "balance": "0.00",
+    "invoiceType": null,
+    "customer": {
+     "id": 1,
+     "name": "Customer Placeholder"
+    },
+    "customerAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "location": {
+     "id": 2,
+     "name": "Location Placeholder"
+    },
+    "locationAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "businessUnit": {
+     "id": 910001,
+     "name": "Richmond"
+    },
+    "termName": "Due Upon Receipt",
+    "createdBy": "UserPlaceholder",
+    "batch": null,
+    "depositedOn": null,
+    "createdOn": "2026-10-07T15:02:56.8806266Z",
+    "modifiedOn": "2026-10-07T15:02:57.3628477Z",
+    "adjustmentToId": null,
+    "job": {
+     "id": 322371634,
+     "number": "145404",
+     "type": "Estimate"
+    },
+    "projectId": 321586598,
+    "royalty": {
+     "status": "Pending",
+     "date": null,
+     "sentOn": null,
+     "memo": null
+    },
+    "employeeInfo": {
+     "id": 3,
+     "name": "UserPlaceholder",
+     "modifiedOn": "2026-09-25T07:20:35.7435199Z"
+    },
+    "commissionEligibilityDate": null,
+    "sentStatus": "NotSent",
+    "reviewStatus": "NeedsReview",
+    "reviewedOn": null,
+    "assignedTo": null
+   }
+  ]
+ },
+ "322372185": {
+  "page": 1,
+  "pageSize": 200,
+  "hasMore": false,
+  "totalCount": null,
+  "data": [
+   {
+    "summary": null,
+    "items": null,
+    "customFields": null,
+    "active": true,
+    "discountTotal": "0.00",
+    "importId": null,
+    "exportId": null,
+    "exportSubstatus": null,
+    "materialSkuId": 0,
+    "membershipId": null,
+    "paidOn": null,
+    "invoiceConfiguration": "JobInvoice",
+    "rateSheetId": 281187361,
+    "id": 322372190,
+    "syncStatus": "Pending",
+    "budgetCodeId": null,
+    "referenceNumber": "145403",
+    "invoiceDate": "2026-10-20T00:00:00Z",
+    "dueDate": "2026-10-20T00:00:00Z",
+    "subTotal": "0.00",
+    "salesTax": "0.00",
+    "salesTaxCode": null,
+    "taxZoneId": null,
+    "total": "0.00",
+    "balance": "0.00",
+    "invoiceType": null,
+    "customer": {
+     "id": 1,
+     "name": "Customer Placeholder"
+    },
+    "customerAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "location": {
+     "id": 2,
+     "name": "Location Placeholder"
+    },
+    "locationAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "businessUnit": {
+     "id": 910001,
+     "name": "Richmond"
+    },
+    "termName": "Due Upon Receipt",
+    "createdBy": "UserPlaceholder",
+    "batch": null,
+    "depositedOn": null,
+    "createdOn": "2026-10-07T15:00:53.2694804Z",
+    "modifiedOn": "2026-10-20T15:12:52.6834789Z",
+    "adjustmentToId": null,
+    "job": {
+     "id": 322372185,
+     "number": "145403",
+     "type": "Estimate"
+    },
+    "projectId": 321586598,
+    "royalty": {
+     "status": "Pending",
+     "date": null,
+     "sentOn": null,
+     "memo": null
+    },
+    "employeeInfo": {
+     "id": 3,
+     "name": "UserPlaceholder",
+     "modifiedOn": "2026-09-25T07:20:35.7435199Z"
+    },
+    "commissionEligibilityDate": null,
+    "sentStatus": "NotSent",
+    "reviewStatus": "NeedsReview",
+    "reviewedOn": null,
+    "assignedTo": null
+   }
+  ]
+ },
+ "322380318": {
+  "page": 1,
+  "pageSize": 200,
+  "hasMore": false,
+  "totalCount": null,
+  "data": [
+   {
+    "summary": null,
+    "items": null,
+    "customFields": null,
+    "active": true,
+    "discountTotal": "0.00",
+    "importId": null,
+    "exportId": null,
+    "exportSubstatus": null,
+    "materialSkuId": 0,
+    "membershipId": null,
+    "paidOn": null,
+    "invoiceConfiguration": "JobInvoice",
+    "rateSheetId": 281187361,
+    "id": 322380323,
+    "syncStatus": "Pending",
+    "budgetCodeId": null,
+    "referenceNumber": "145406",
+    "invoiceDate": null,
+    "dueDate": null,
+    "subTotal": "0.00",
+    "salesTax": "0.00",
+    "salesTaxCode": null,
+    "taxZoneId": null,
+    "total": "0.00",
+    "balance": "0.00",
+    "invoiceType": null,
+    "customer": {
+     "id": 1,
+     "name": "Customer Placeholder"
+    },
+    "customerAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "location": {
+     "id": 2,
+     "name": "Location Placeholder"
+    },
+    "locationAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "businessUnit": {
+     "id": 910001,
+     "name": "Richmond"
+    },
+    "termName": "Due Upon Receipt",
+    "createdBy": "UserPlaceholder",
+    "batch": null,
+    "depositedOn": null,
+    "createdOn": "2026-10-07T15:07:39.7461174Z",
+    "modifiedOn": "2026-10-07T15:07:40.2498444Z",
+    "adjustmentToId": null,
+    "job": {
+     "id": 322380318,
+     "number": "145406",
+     "type": "Estimate"
+    },
+    "projectId": 321586598,
+    "royalty": {
+     "status": "Pending",
+     "date": null,
+     "sentOn": null,
+     "memo": null
+    },
+    "employeeInfo": {
+     "id": 3,
+     "name": "UserPlaceholder",
+     "modifiedOn": "2026-09-25T07:20:35.7435199Z"
+    },
+    "commissionEligibilityDate": null,
+    "sentStatus": "NotSent",
+    "reviewStatus": "NeedsReview",
+    "reviewedOn": null,
+    "assignedTo": null
+   }
+  ]
+ },
+ "322382243": {
+  "page": 1,
+  "pageSize": 200,
+  "hasMore": false,
+  "totalCount": null,
+  "data": [
+   {
+    "summary": null,
+    "items": null,
+    "customFields": null,
+    "active": true,
+    "discountTotal": "0.00",
+    "importId": null,
+    "exportId": null,
+    "exportSubstatus": null,
+    "materialSkuId": 0,
+    "membershipId": null,
+    "paidOn": null,
+    "invoiceConfiguration": "JobInvoice",
+    "rateSheetId": 281187361,
+    "id": 322382248,
+    "syncStatus": "Pending",
+    "budgetCodeId": null,
+    "referenceNumber": "145405",
+    "invoiceDate": "2026-10-26T00:00:00Z",
+    "dueDate": "2026-10-26T00:00:00Z",
+    "subTotal": "0.00",
+    "salesTax": "0.00",
+    "salesTaxCode": null,
+    "taxZoneId": null,
+    "total": "0.00",
+    "balance": "0.00",
+    "invoiceType": null,
+    "customer": {
+     "id": 1,
+     "name": "Customer Placeholder"
+    },
+    "customerAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "location": {
+     "id": 2,
+     "name": "Location Placeholder"
+    },
+    "locationAddress": {
+     "street": "1 Placeholder St",
+     "unit": null,
+     "city": "Placeholder City",
+     "state": "ZZ",
+     "zip": "00000",
+     "country": "USA"
+    },
+    "businessUnit": {
+     "id": 910001,
+     "name": "Richmond"
+    },
+    "termName": "Due Upon Receipt",
+    "createdBy": "UserPlaceholder",
+    "batch": null,
+    "depositedOn": null,
+    "createdOn": "2026-10-07T15:04:10.6379945Z",
+    "modifiedOn": "2026-10-26T20:28:33.4973967Z",
+    "adjustmentToId": null,
+    "job": {
+     "id": 322382243,
+     "number": "145405",
+     "type": "Estimate"
+    },
+    "projectId": 321586598,
+    "royalty": {
+     "status": "Pending",
+     "date": null,
+     "sentOn": null,
+     "memo": null
+    },
+    "employeeInfo": {
+     "id": 3,
+     "name": "UserPlaceholder",
+     "modifiedOn": "2026-09-25T07:20:35.7435199Z"
+    },
+    "commissionEligibilityDate": null,
+    "sentStatus": "NotSent",
+    "reviewStatus": "NeedsReview",
+    "reviewedOn": null,
+    "assignedTo": null
+   }
+  ]
+ }
+}

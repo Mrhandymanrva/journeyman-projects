@@ -2,8 +2,15 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import type { PortfolioFeedConfig } from "../adapters/portfolioFeed.js";
 import type { Database, SqlClient } from "../db/database.js";
+import { presentFieldRelease } from "../domain/fieldRelease.js";
+import { fieldStartColumns, newYorkDate, presentFieldStart } from "../domain/fieldStart.js";
+import { portfolioFeedLabor, portfolioLaborColumns, presentPortfolioLabor } from "../domain/laborActuals.js";
+import { presentLaborRefresh, readPortfolioFinancialFeed } from "../domain/projectSync.js";
+import { loadProjectHealth } from "../domain/projectHealth.js";
 import { sendData } from "../http/envelope.js";
 import { ApiError } from "../http/errors.js";
+import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { presentFeedStatus, readServiceTitanAccess } from "../domain/stStatusMap.js";
 
 /**
  * GET /api/v1/portfolio/summary — one read-only document describing the state
@@ -19,18 +26,30 @@ import { ApiError } from "../http/errors.js";
 const sha = (s: string) => createHash("sha256").update(s).digest();
 const num = (v: unknown) => (v === null || v === undefined ? 0 : Number(v));
 
+/** Timing-safe bearer check for the portfolio service token (PM_PORTFOLIO_TOKEN). */
+export function bearerMatchesToken(
+  authorization: string | undefined,
+  token: string,
+): boolean {
+  const match = /^Bearer\s+(.+)$/i.exec((authorization ?? "").trim());
+  if (!match) return false;
+  const presented = sha(match[1]!);
+  const expected = sha(token);
+  return (
+    presented.length === expected.length && timingSafeEqual(presented, expected)
+  );
+}
+
 export function portfolioRoutes(
   database: Database,
   config: PortfolioFeedConfig,
+  sources?: SourceConnections,
 ): Router {
   const router = Router();
-  const expected = sha(config.token);
 
   router.use((req, res, next) => {
     res.set("Cache-Control", "no-store");
-    const header = req.get("authorization") ?? "";
-    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-    if (!match || !timingSafeEqual(sha(match[1]!), expected)) {
+    if (!bearerMatchesToken(req.get("authorization"), config.token)) {
       next(new ApiError("unauthenticated", "A portfolio feed token is required."));
       return;
     }
@@ -38,9 +57,11 @@ export function portfolioRoutes(
   });
 
   router.get("/summary", (_req, res, next) => {
-    database
-      .withTenant(config.tenantId, (db) => buildSummary(db, config.tenantId))
-      .then((summary) => sendData(res, summary))
+    Promise.all([
+      database.withTenant(config.tenantId, (db) => buildSummary(db, config.tenantId)),
+      readServiceTitanAccess(sources?.serviceTitan?.client),
+    ])
+      .then(([summary, serviceTitan]) => sendData(res, { ...summary, service_titan: serviceTitan }))
       .catch(next);
   });
 
@@ -64,16 +85,26 @@ async function buildSummary(db: SqlClient, tenantId: string) {
     actual_start: string | null; updated_at: string; pm: string | null;
     revised_contract: string | null; committed_cost: string | null; projected_cost: string | null;
     gates_awaiting: string; draws_waiting: string;
+    field_released_at: unknown; field_release_note: string | null; field_released_by_name: string | null;
+    field_start: string | null; field_start_source: string | null; field_start_observed_at: unknown;
+    precon_open: string; precon_overdue: string;
+    st_status_name: string | null; st_substatus_name: string | null;
+    st_status_synced_at: unknown; st_status_write_result: string | null;
   }>(
     `SELECT p.id, p.project_number, p.name, p.stage::text AS stage, p.city, p.region,
             p.contract_value::text, p.target_margin::text,
             p.scheduled_start::text, p.scheduled_end::text, p.actual_start::text, p.updated_at::text,
+            ${fieldStartColumns("p")},
+            ${portfolioLaborColumns("p")},
             s.full_name AS pm,
             m.revised_contract::text, m.committed_cost::text, m.projected_cost::text,
             (SELECT count(*) FROM projects.stage_gates g WHERE g.project_id = p.id AND g.status = 'submitted')::text AS gates_awaiting,
-            (SELECT count(*) FROM projects.draws d WHERE d.project_id = p.id AND d.status IN ('earned','approved'))::text AS draws_waiting
+            (SELECT count(*) FROM projects.draws d WHERE d.project_id = p.id AND d.status IN ('earned','approved'))::text AS draws_waiting,
+            p.st_status_name, p.st_substatus_name, p.st_status_synced_at, p.st_status_write_result,
+            p.field_released_at, p.field_release_note, rel.full_name AS field_released_by_name
        FROM projects.projects p
        LEFT JOIN projects.staff s ON s.id = p.pm_id
+       LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
        LEFT JOIN projects.v_project_margin m ON m.project_id = p.id
       WHERE p.stage NOT IN ('complete','cancelled')
       ORDER BY p.updated_at DESC`,
@@ -122,13 +153,22 @@ async function buildSummary(db: SqlClient, tenantId: string) {
          FROM projects.v_unapplied_invoices`,
     )
   )[0];
+  // Eligibility views still include archived companies so scheduling and the
+  // directory stay the same. These portfolio counts must not: an archived
+  // vendor is not a blocked or expiring company.
   const vendors = await q<{ legal_name: string; expired_count: string; missing_count: string; next_expiry: string | null }>(
-    `SELECT legal_name, expired_count::text, missing_count::text, next_expiry::text
-       FROM projects.v_vendor_eligibility WHERE NOT schedulable ORDER BY legal_name`,
+    `SELECT e.legal_name, e.expired_count::text, e.missing_count::text, e.next_expiry::text
+       FROM projects.v_vendor_eligibility e
+       JOIN projects.vendors v ON v.id = e.vendor_id
+      WHERE NOT e.schedulable AND NOT v.archived
+      ORDER BY e.legal_name`,
   );
   const expiring = (
     await q<{ n: string }>(
-      `SELECT count(DISTINCT vendor_id)::text AS n FROM projects.v_vendor_compliance WHERE state = 'expiring'`,
+      `SELECT count(DISTINCT c.vendor_id)::text AS n
+         FROM projects.v_vendor_compliance c
+         JOIN projects.vendors v ON v.id = c.vendor_id
+        WHERE c.state = 'expiring' AND NOT v.archived`,
     )
   )[0];
 
@@ -171,6 +211,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
   const budgetedProjected = budgeted.reduce((t, p) => t + num(p.projected_cost), 0);
 
   const money = (r: { n: string; amount: string } | undefined) => ({ count: num(r?.n), amount: num(r?.amount) });
+  const financials = await readPortfolioFinancialFeed(db);
   return {
     generated_at: new Date().toISOString(),
     tenant: { id: tenantId, name: tenant?.display_name ?? null },
@@ -182,6 +223,7 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       projected_cost: projected,
       projected_margin_pct: budgetedContract > 0 ? (budgetedContract - budgetedProjected) / budgetedContract : null,
       completed_90d: { count: num(closed?.n), contract_value: num(closed?.value) },
+      health: await activeHealth(db, projects.map((p) => p.id)),
     },
     projects: projects.map((p) => {
       const revised = num(p.revised_contract ?? p.contract_value);
@@ -195,7 +237,18 @@ async function buildSummary(db: SqlClient, tenantId: string) {
         projected_cost: proj,
         projected_margin_pct: proj === null || revised <= 0 ? null : (revised - proj) / revised,
         scheduled_start: p.scheduled_start, scheduled_end: p.scheduled_end, actual_start: p.actual_start,
+        field_start: presentFieldStart(p),
+        labor: portfolioFeedLabor(presentPortfolioLabor(p as unknown as Record<string, unknown>)),
+        labor_refresh: presentLaborRefresh(financials.run, p.id),
+        reconciliation: financials.reconciliation.get(p.id) ?? null,
+        precon: { open: Number(p.precon_open ?? 0), overdue: Number(p.precon_overdue ?? 0) },
+        field_release: presentFieldRelease({
+          released_at: p.field_released_at,
+          released_by: p.field_released_by_name,
+          note: p.field_release_note,
+        }),
         gates_awaiting_approval: num(p.gates_awaiting), draws_waiting: num(p.draws_waiting),
+        service_titan_status: presentFeedStatus(p),
         updated_at: p.updated_at,
       };
     }),
@@ -210,6 +263,39 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       missing_daily_logs: missingLogs,
       unrecorded_invoices: unrecorded.map((r) => ({ ...r, amount: num(r.amount), days_since_issued: num(r.days_since_issued) })),
       unapplied_invoices: { count: num(unapplied?.n), amount: num(unapplied?.amount), unmatched_to_project: num(unapplied?.unmatched) },
+      unmatched_job_invoices: (await q<{
+        project_number: string; project_name: string; invoice_number: string; external_job_id: string | null;
+        total: string; balance: string;
+      }>(
+        `SELECT p.project_number, p.name AS project_name, i.invoice_number, i.external_job_id,
+                i.total::text, i.balance::text
+           FROM projects.st_invoice_observations i
+           JOIN projects.projects p ON p.id = i.project_id
+           JOIN projects.project_job_links j
+             ON j.project_id = i.project_id AND j.external_job_id = i.external_job_id AND j.source_active
+          WHERE NOT EXISTS (
+            SELECT 1 FROM projects.draws d
+             WHERE d.project_id = i.project_id
+               AND lower(btrim(d.external_invoice_number)) = lower(btrim(i.invoice_number))
+          )
+            AND NOT EXISTS (
+            SELECT 1 FROM projects.change_orders co
+             WHERE co.project_id = i.project_id
+               AND co.status = 'approved'
+               AND (
+                 lower(btrim(co.st_estimate_number)) = lower(btrim(i.invoice_number))
+                 OR lower(btrim(co.external_estimate_ref)) = lower(btrim(i.invoice_number))
+               )
+          )
+          ORDER BY p.project_number, i.invoice_number`,
+      )).map((row) => ({
+        project_number: row.project_number,
+        project_name: row.project_name,
+        invoice_number: row.invoice_number,
+        external_job_id: row.external_job_id,
+        total: num(row.total),
+        balance: num(row.balance),
+      })),
       vendors_blocked: vendors.map((v) => ({ name: v.legal_name, expired: num(v.expired_count), missing: num(v.missing_count), next_expiry: v.next_expiry })),
       vendors_expiring: num(expiring?.n),
       gates_awaiting_approval: projects.reduce((t, p) => t + num(p.gates_awaiting), 0),
@@ -221,6 +307,17 @@ async function buildSummary(db: SqlClient, tenantId: string) {
       change_orders_awaiting_customer: money(cos),
     },
   };
+}
+
+async function activeHealth(db: SqlClient, activeIds: string[]) {
+  const counts = { red: 0, yellow: 0, green: 0 };
+  const active = new Set(activeIds);
+  const today = newYorkDate(new Date().toISOString());
+  for (const row of await loadProjectHealth(db, today)) {
+    if (!active.has(row.project_id)) continue;
+    counts[row.health.band] += 1;
+  }
+  return counts;
 }
 
 function drawRow(d: { project_number: string; project_name: string; label: string; amount: string; earned_at: string | null; approved_at: string | null; external_invoice_number: string | null }) {

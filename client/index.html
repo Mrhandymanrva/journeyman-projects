@@ -3,10 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>
+(function () {
+  var key = "jp.theme";
+  var mode = "system";
+  try {
+    var stored = localStorage.getItem(key);
+    if (stored === "light" || stored === "dark" || stored === "system") mode = stored;
+  } catch (e) {}
+  var dark = mode === "dark" || (mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  var root = document.documentElement;
+  root.setAttribute("data-theme", dark ? "dark" : "light");
+  root.setAttribute("data-theme-mode", mode);
+  root.style.colorScheme = dark ? "dark" : "light";
+})();
+</script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Project Console — Journeyman Projects</title>
+<link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/console.css">
 <link rel="stylesheet" href="/workspace.css">
 <link rel="stylesheet" href="/projectControls.css">
+<link rel="stylesheet" href="/home.css">
 </head>
 <body>
 
@@ -18,20 +39,31 @@
     <div class="switch" id="switch"></div>
     <button class="btn sm" id="project-new" type="button">New project</button>
     <div class="who" id="who" hidden></div>
+    <div class="theme-toggle" role="group" aria-label="Color theme">
+      <button type="button" data-theme-choice="system" aria-pressed="true">System</button>
+      <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+      <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+    </div>
   </div>
 </div>
 
 <div class="wrap">
+  <div id="home" class="home" hidden></div>
   <div id="shell" hidden>
     <div class="head">
       <div>
-        <span class="lbl" id="pcode"></span>
+        <div class="project-kicker"><span class="lbl" id="pcode"></span><span class="tag" id="budget-flag" hidden></span></div>
         <h1 id="pname"></h1>
         <div class="addr" id="paddr"></div>
         <button class="btn sm" id="st-project-open" type="button">ServiceTitan project</button>
       </div>
       <div class="stats" id="pstats"></div>
     </div>
+
+    <section class="card" id="csr-handoff" hidden>
+      <div class="card-h"><span class="lbl">CSR hand-off</span></div>
+      <div class="card-b" id="csr-handoff-body"></div>
+    </section>
 
     <div id="notice"></div>
 
@@ -52,37 +84,90 @@
     </section>
     <div class="grid">
       <div>
-        <div class="card">
+        <div class="card" data-fin-section="st">
           <div class="card-h">
-            <span class="lbl">Budget vs. actual by cost code</span><span class="tag" id="btag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="st-financials">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">ServiceTitan project financials detail</span>
+            </button>
+            <button class="btn sm" id="st-refresh" type="button" hidden>Refresh from ServiceTitan</button>
+          </div>
+          <p class="note warn" id="st-refresh-status" role="status" aria-live="polite"></p>
+          <p class="fin-section-summary" id="fin-sum-st"></p>
+          <div class="card-b fin-section-body" id="st-financials" hidden></div>
+        </div>
+
+        <div class="card" data-fin-section="budget">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="fin-body-budget">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Budget vs. actual by cost code</span>
+            </button>
+            <span class="tag" id="btag"></span>
             <button class="btn sm" id="budget-add" type="button">Add line</button>
           </div>
-          <div class="card-b">
+          <p class="fin-section-summary" id="fin-sum-budget"></p>
+          <div class="card-b fin-section-body" id="fin-body-budget" hidden>
+            <div id="budget-entry"></div>
             <div class="bh"><div class="lbl">Cost code</div><div class="lbl">Budget</div><div class="lbl">Variance</div></div>
             <div id="budget"></div>
             <div class="legend">
-              <span><i style="background:#00539B"></i>Actual cost</span>
-              <span><i style="background:repeating-linear-gradient(135deg,#7FA9CD 0 4px,#A8C4DC 4px 8px)"></i>Committed, not yet billed</span>
-              <span><i style="background:#F58220"></i>Over budget</span>
-              <span><i style="background:#072744;width:2px"></i>Budget line</span>
+              <span><i class="swatch-actual"></i>Actual cost</span>
+              <span><i class="swatch-committed"></i>Committed, not yet billed</span>
+              <span><i class="swatch-over"></i>Over budget</span>
+              <span><i class="swatch-budget"></i>Budget line</span>
             </div>
           </div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="pos">
           <div class="card-h">
-            <span class="lbl">Purchase orders</span><span class="tag" id="potag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="pos">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Purchase orders</span>
+            </button>
+            <span class="tag" id="potag"></span>
             <button class="btn sm" id="po-new" type="button">Issue PO</button>
           </div>
-          <div class="card-b" id="pos"></div>
+          <p class="fin-section-summary" id="fin-sum-pos"></p>
+          <div class="card-b fin-section-body" id="pos" hidden></div>
         </div>
 
-        <div class="card">
+        <div class="card" data-fin-section="cos">
           <div class="card-h">
-            <span class="lbl">Change orders</span><span class="tag" id="cotag"></span>
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="cos">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Change orders</span>
+            </button>
+            <span class="tag" id="cotag"></span>
             <button class="btn sm" id="co-new" type="button">Raise change order</button>
           </div>
-          <div class="card-b" id="cos"></div>
+          <p class="fin-section-summary" id="fin-sum-cos"></p>
+          <div class="card-b fin-section-body" id="cos" hidden></div>
+        </div>
+
+        <div class="card" data-fin-section="closeout">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="closeout">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Closeout</span>
+            </button>
+            <span class="tag" id="closetag"></span>
+          </div>
+          <p class="fin-section-summary" id="fin-sum-closeout"></p>
+          <div class="card-b fin-section-body" id="closeout" hidden></div>
+        </div>
+
+        <div class="card" data-fin-section="labor">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="labor">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Labor</span>
+            </button>
+            <span class="tag" id="labortag"></span>
+          </div>
+          <p class="fin-section-summary" id="fin-sum-labor"></p>
+          <div class="card-b fin-section-body" id="labor" hidden></div>
         </div>
 
         <div class="card">
@@ -113,9 +198,17 @@
           <div class="card-b"><div class="chain" id="permits"></div></div>
         </div>
 
-        <div class="card">
-          <div class="card-h"><span class="lbl">Draw schedule</span><span class="tag" id="dtag"></span></div>
-          <div class="card-b" id="draws"></div>
+        <div class="card" data-fin-section="draws">
+          <div class="card-h">
+            <button type="button" class="fin-section-toggle" aria-expanded="false" aria-controls="draws">
+              <span class="fin-chevron" aria-hidden="true"></span>
+              <span class="lbl">Draw schedule</span>
+            </button>
+            <span class="tag" id="dtag"></span>
+            <button class="btn sm" id="ar-refresh" type="button" hidden>Refresh invoices</button>
+          </div>
+          <p class="fin-section-summary" id="fin-sum-draws"></p>
+          <div class="card-b fin-section-body" id="draws" hidden></div>
         </div>
       </div>
     </div>
@@ -148,6 +241,10 @@
   </div>
 </div>
 
+<script type="module">
+  import { mountThemeControls } from "/theme.js";
+  mountThemeControls(document);
+</script>
 <script src="/console.js" type="module"></script>
 </body>
 </html>

@@ -8,6 +8,7 @@ import {
   type Harness,
   type TenantFixture,
 } from './support/harness.js';
+import { tickGate } from './support/tickGate.js';
 
 let h: Harness;
 let t: TenantFixture;
@@ -178,6 +179,7 @@ describe('gates', () => {
     expect(byManager.status).toBe(403);
     expect(byManager.body.error.details.approver_role).toBe('project_manager');
 
+    await tickGate(h.as(t.staff.pm!.token), project.id, 2);
     const byPm = await h
       .as(t.staff.pm!.token)
       .post(`/api/v1/projects/projects/${project.id}/gates/2/approve`);
@@ -212,6 +214,7 @@ describe('gates', () => {
     expect((before.body.data as any[]).every((r) => r.baseline === r.budget_amount)).toBe(true);
 
     await owner().post(`/api/v1/projects/projects/${project.id}/gates/0/approve`);
+    await tickGate(owner(), project.id, 1);
     const gate1 = await owner().post(`/api/v1/projects/projects/${project.id}/gates/1/approve`);
     expect(gate1.status).toBe(200);
     expect(gate1.body.data.freezes_baseline).toBe(true);
@@ -236,6 +239,7 @@ describe('gates', () => {
       source_kind: 'journeyman_estimate',
     });
     await owner().post(`/api/v1/projects/projects/${project.id}/gates/0/approve`);
+    await tickGate(owner(), project.id, 1);
     await owner().post(`/api/v1/projects/projects/${project.id}/gates/1/approve`);
     await owner()
       .post(`/api/v1/projects/projects/${project.id}/gates/1/reject`)

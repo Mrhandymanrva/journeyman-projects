@@ -140,6 +140,7 @@ describe('startup assertions', () => {
     const asSuperuser: Database = {
       withTenant: (id, fn) => h.db.withTenant(id, fn),
       withoutTenant: (fn) => h.db.asOwner(fn),
+      tryAdvisoryLock: async () => null,
       close: async () => {},
     };
 

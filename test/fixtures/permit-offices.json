@@ -1,0 +1,63 @@
+{
+  "source_urls": ["https://www.rva.gov/planning"],
+  "completeness": "partial",
+  "data_gaps": ["after-hours inspection line"],
+  "offices": [
+    {
+      "municipality": "City of Richmond",
+      "state": "va",
+      "office_name": "Planning and Development Review",
+      "address_line1": "900 E Broad St",
+      "address_line2": "Room 110",
+      "office_city": "Richmond",
+      "postal_code": "23219",
+      "main_phone": "804-646-6304",
+      "website_url": "https://www.rva.gov",
+      "portal_url": "https://permits.rva.gov",
+      "work_requiring_permit": "Residential alterations",
+      "required_documents": "Application and site plan",
+      "plan_requirements": "PDF, to scale",
+      "fee_notes": "See fee schedule",
+      "fee_schedule_url": "https://www.rva.gov/fees",
+      "typical_review_days": 12,
+      "inspection_method": "phone",
+      "inspection_phone": "804-646-6440",
+      "notes": "City office",
+      "last_verified": "2026-10-01",
+      "contacts": [
+        {
+          "name": "Alex Kim",
+          "role": "Plan reviewer",
+          "phone": "804-555-0100",
+          "email": "alex@example.test",
+          "notes": "handles residential plan review; call before 10am"
+        },
+        {
+          "name": "Jordan Lee",
+          "title": "Inspections",
+          "phone": "804-555-0101",
+          "email": "jordan@example.test",
+          "notes": "afternoon inspections"
+        }
+      ]
+    },
+    {
+      "municipality": "Henrico County",
+      "state": "VA",
+      "office_name": "Building Inspections",
+      "main_phone": "804-501-4360",
+      "website_url": "https://henrico.us",
+      "typical_review_days": 9,
+      "inspection_method": "portal",
+      "inspection_url": "https://henrico.us/inspect",
+      "contacts": [
+        {
+          "name": "Sam Patel",
+          "contact_role": "Permit technician",
+          "email": "sam@example.test",
+          "notes": "counter questions"
+        }
+      ]
+    }
+  ]
+}

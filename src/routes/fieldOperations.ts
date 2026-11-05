@@ -11,6 +11,11 @@ import { sendData } from "../http/envelope.js";
 import { ApiError, notFound } from "../http/errors.js";
 import { requireCapability } from "../http/capabilities.js";
 import {
+  importPermitOffices,
+  parsePermitOfficeCsv,
+  parsePermitOfficeJson,
+} from "../domain/permitOffices.js";
+import {
   staffRoute,
   type StaffContext,
   type StaffRouterDeps,
@@ -560,43 +565,132 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   router.get(
     "/jurisdictions",
     staffRoute(deps, async (ctx) => {
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `SELECT id, name, portal_url, contact_phone, typical_review_days,
-                inspection_cutoff_time, notes
-           FROM projects.jurisdictions ORDER BY name`,
+      const { rows } = await ctx.db.query<{ id: string }>(
+        `SELECT ${OFFICE_COLUMNS} FROM projects.jurisdictions ORDER BY name, state`,
       );
-      sendData(ctx.res, rows);
+      sendData(ctx.res, await withContacts(ctx, rows));
+    }),
+  );
+
+  router.post(
+    "/jurisdictions/import",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const offices =
+        typeof ctx.req.body === "string"
+          ? parsePermitOfficeCsv(ctx.req.body)
+          : parsePermitOfficeJson(ctx.req.body);
+      if (offices.length === 0) {
+        throw new ApiError("validation_failed", "The import file has no offices.");
+      }
+      sendData(
+        ctx.res,
+        await importPermitOffices(ctx.db, ctx.staff.tenantId, offices),
+      );
     }),
   );
 
   router.post(
     "/jurisdictions",
     staffRoute(deps, async (ctx) => {
-      requireCapability(ctx.staff.role, "manage_vendors");
-      const body = parseBody(
-        z.object({
-          name: z.string().min(1),
-          portal_url: z.string().nullish(),
-          contact_phone: z.string().nullish(),
-          typical_review_days: z.number().int().min(0).nullish(),
-          notes: z.string().nullish(),
-        }),
-        ctx.req.body,
-      );
-      const { rows } = await ctx.db.query<Record<string, unknown>>(
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const body = parseBody(officeWriteSchema, ctx.req.body);
+      const { rows } = await ctx.db.query<{ id: string }>(
         `INSERT INTO projects.jurisdictions
-           (tenant_id, name, portal_url, contact_phone, typical_review_days, notes)
-         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, name, typical_review_days`,
+           (tenant_id, name, state, office_name, address_line1, address_line2, office_city,
+            postal_code, contact_phone, website_url, portal_url, work_requiring_permit,
+            required_documents, plan_requirements, fee_notes, fee_schedule_url,
+            typical_review_days, inspection_method, inspection_phone, inspection_url,
+            notes, last_verified)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+         RETURNING id`,
+        officeValues(ctx.staff.tenantId, body),
+      );
+      sendData(ctx.res, await loadOffice(ctx, rows[0]!.id), undefined, 201);
+    }),
+  );
+
+  router.get(
+    "/jurisdictions/:id",
+    staffRoute(deps, async (ctx) => {
+      const id = parseUuidParam(ctx.req.params.id, "Permit office");
+      sendData(ctx.res, await loadOffice(ctx, id));
+    }),
+  );
+
+  router.patch(
+    "/jurisdictions/:id",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const id = parseUuidParam(ctx.req.params.id, "Permit office");
+      await loadOffice(ctx, id);
+      const body = parseBody(officePatchSchema, ctx.req.body);
+      const entries = Object.entries(patchColumns(body)).filter(([, value]) => value !== undefined);
+      if (entries.length) {
+        const sets = entries.map(([column], index) => `${column} = $${index + 2}`).join(", ");
+        await ctx.db.query(
+          `UPDATE projects.jurisdictions SET ${sets} WHERE id = $1`,
+          [id, ...entries.map(([, value]) => value)],
+        );
+      }
+      sendData(ctx.res, await loadOffice(ctx, id));
+    }),
+  );
+
+  router.post(
+    "/jurisdictions/:id/contacts",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const id = parseUuidParam(ctx.req.params.id, "Permit office");
+      await loadOffice(ctx, id);
+      const body = parseBody(contactWriteSchema, ctx.req.body);
+      const { rows } = await ctx.db.query<{ id: string }>(
+        `INSERT INTO projects.jurisdiction_contacts
+           (tenant_id, jurisdiction_id, name, title, phone, email, notes, sort_order)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,
+           (SELECT coalesce(max(sort_order), -1) + 1 FROM projects.jurisdiction_contacts WHERE jurisdiction_id = $2))
+         RETURNING id`,
         [
           ctx.staff.tenantId,
+          id,
           body.name,
-          body.portal_url ?? null,
-          body.contact_phone ?? null,
-          body.typical_review_days ?? null,
+          body.title ?? body.role ?? null,
+          body.phone ?? null,
+          body.email ?? null,
           body.notes ?? null,
         ],
       );
-      sendData(ctx.res, rows[0], undefined, 201);
+      sendData(ctx.res, await loadContact(ctx, rows[0]!.id), undefined, 201);
+    }),
+  );
+
+  router.patch(
+    "/jurisdiction-contacts/:id",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const id = parseUuidParam(ctx.req.params.id, "Contact");
+      await loadContact(ctx, id);
+      const body = parseBody(contactPatchSchema, ctx.req.body);
+      const entries = Object.entries(contactColumns(body)).filter(([, value]) => value !== undefined);
+      if (entries.length) {
+        const sets = entries.map(([column], index) => `${column} = $${index + 2}`).join(", ");
+        await ctx.db.query(
+          `UPDATE projects.jurisdiction_contacts SET ${sets} WHERE id = $1`,
+          [id, ...entries.map(([, value]) => value)],
+        );
+      }
+      sendData(ctx.res, await loadContact(ctx, id));
+    }),
+  );
+
+  router.delete(
+    "/jurisdiction-contacts/:id",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "manage_permit_offices");
+      const id = parseUuidParam(ctx.req.params.id, "Contact");
+      await loadContact(ctx, id);
+      await ctx.db.query(`DELETE FROM projects.jurisdiction_contacts WHERE id = $1`, [id]);
+      sendData(ctx.res, { id, deleted: true });
     }),
   );
 
@@ -604,6 +698,238 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
 }
 
 // ---------------------------------------------------------------------------
+
+const OFFICE_COLUMNS = `id, name, state, office_name, address_line1, address_line2, office_city,
+  postal_code, contact_phone, website_url, portal_url, work_requiring_permit, required_documents,
+  plan_requirements, fee_notes, fee_schedule_url, typical_review_days, inspection_method,
+  inspection_phone, inspection_url, notes, last_verified::text AS last_verified,
+  inspection_cutoff_time`;
+
+const clearable = (max: number) =>
+  z
+    .string()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((value) => {
+      if (value == null) return value;
+      const trimmed = value.trim();
+      return trimmed === "" ? null : trimmed;
+    });
+
+const httpUrl = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((value) => /^https?:\/\//i.test(value), "Use an http or https URL");
+
+const optionalUrl = z.union([httpUrl, z.null()]).optional();
+
+const stateSchema = z
+  .string()
+  .trim()
+  .transform((value) => value.toUpperCase())
+  .pipe(z.string().regex(/^[A-Z]{2}$/, "Use a two-letter state"));
+
+const officeFields = {
+  office_name: clearable(200),
+  address_line1: clearable(200),
+  address_line2: clearable(200),
+  office_city: clearable(200),
+  postal_code: clearable(20),
+  contact_phone: clearable(80),
+  website_url: optionalUrl,
+  portal_url: optionalUrl,
+  work_requiring_permit: clearable(4000),
+  required_documents: clearable(4000),
+  plan_requirements: clearable(4000),
+  fee_notes: clearable(4000),
+  fee_schedule_url: optionalUrl,
+  typical_review_days: z.number().int().min(0).max(3650).nullable().optional(),
+  inspection_method: z
+    .enum(["phone", "portal", "email", "in_person", "other"])
+    .nullable()
+    .optional(),
+  inspection_phone: clearable(80),
+  inspection_url: optionalUrl,
+  notes: clearable(2000),
+  last_verified: z.string().date().nullable().optional(),
+};
+
+const officeWriteSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    state: stateSchema,
+    ...officeFields,
+  })
+  .strict();
+
+const officePatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    state: stateSchema.optional(),
+    ...officeFields,
+  })
+  .strict();
+
+const contactFields = {
+  title: clearable(200),
+  role: clearable(200),
+  phone: clearable(80),
+  email: clearable(200),
+  notes: clearable(2000),
+};
+
+const contactWriteSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    ...contactFields,
+  })
+  .strict();
+
+const contactPatchSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200).optional(),
+    ...contactFields,
+  })
+  .strict();
+
+type OfficeWrite = z.infer<typeof officeWriteSchema>;
+
+function officeValues(tenantId: string, body: OfficeWrite): unknown[] {
+  return [
+    tenantId,
+    body.name,
+    body.state,
+    body.office_name ?? null,
+    body.address_line1 ?? null,
+    body.address_line2 ?? null,
+    body.office_city ?? null,
+    body.postal_code ?? null,
+    body.contact_phone ?? null,
+    body.website_url ?? null,
+    body.portal_url ?? null,
+    body.work_requiring_permit ?? null,
+    body.required_documents ?? null,
+    body.plan_requirements ?? null,
+    body.fee_notes ?? null,
+    body.fee_schedule_url ?? null,
+    body.typical_review_days ?? null,
+    body.inspection_method ?? null,
+    body.inspection_phone ?? null,
+    body.inspection_url ?? null,
+    body.notes ?? null,
+    body.last_verified ?? null,
+  ];
+}
+
+function patchColumns(body: z.infer<typeof officePatchSchema>): Record<string, unknown> {
+  return {
+    name: body.name,
+    state: body.state,
+    office_name: body.office_name,
+    address_line1: body.address_line1,
+    address_line2: body.address_line2,
+    office_city: body.office_city,
+    postal_code: body.postal_code,
+    contact_phone: body.contact_phone,
+    website_url: body.website_url,
+    portal_url: body.portal_url,
+    work_requiring_permit: body.work_requiring_permit,
+    required_documents: body.required_documents,
+    plan_requirements: body.plan_requirements,
+    fee_notes: body.fee_notes,
+    fee_schedule_url: body.fee_schedule_url,
+    typical_review_days: body.typical_review_days,
+    inspection_method: body.inspection_method,
+    inspection_phone: body.inspection_phone,
+    inspection_url: body.inspection_url,
+    notes: body.notes,
+    last_verified: body.last_verified,
+  };
+}
+
+function contactColumns(body: {
+  name?: string;
+  title?: string | null;
+  role?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  notes?: string | null;
+}): Record<string, unknown> {
+  const title = body.title !== undefined ? body.title : body.role;
+  return {
+    name: body.name,
+    title,
+    phone: body.phone,
+    email: body.email,
+    notes: body.notes,
+  };
+}
+
+async function withContacts<T extends { id: string }>(
+  ctx: StaffContext,
+  offices: T[],
+): Promise<Array<T & { contacts: ContactRow[] }>> {
+  if (offices.length === 0) return [];
+  const contacts = await ctx.db.query<ContactRow & { jurisdiction_id: string }>(
+    `SELECT id, jurisdiction_id, name, title, phone, email, notes, sort_order
+       FROM projects.jurisdiction_contacts
+      WHERE jurisdiction_id = ANY($1::uuid[])
+      ORDER BY sort_order, name, id`,
+    [offices.map((office) => office.id)],
+  );
+  const byOffice = new Map<string, ContactRow[]>();
+  for (const contact of contacts.rows) {
+    const list = byOffice.get(contact.jurisdiction_id) ?? [];
+    list.push({
+      id: contact.id,
+      name: contact.name,
+      title: contact.title,
+      phone: contact.phone,
+      email: contact.email,
+      notes: contact.notes,
+      sort_order: contact.sort_order,
+    });
+    byOffice.set(contact.jurisdiction_id, list);
+  }
+  return offices.map((office) => ({
+    ...office,
+    contacts: byOffice.get(office.id) ?? [],
+  }));
+}
+
+async function loadOffice(ctx: StaffContext, id: string) {
+  const { rows } = await ctx.db.query<{ id: string }>(
+    `SELECT ${OFFICE_COLUMNS} FROM projects.jurisdictions WHERE id = $1`,
+    [id],
+  );
+  const office = rows[0];
+  if (!office) throw notFound("Permit office not found");
+  const [withPeople] = await withContacts(ctx, [office]);
+  return withPeople!;
+}
+
+interface ContactRow {
+  id: string;
+  name: string;
+  title: string | null;
+  phone: string | null;
+  email: string | null;
+  notes: string | null;
+  sort_order: number;
+}
+
+async function loadContact(ctx: StaffContext, id: string): Promise<ContactRow> {
+  const { rows } = await ctx.db.query<ContactRow>(
+    `SELECT id, name, title, phone, email, notes, sort_order
+       FROM projects.jurisdiction_contacts WHERE id = $1`,
+    [id],
+  );
+  const contact = rows[0];
+  if (!contact) throw notFound("Contact not found");
+  return contact;
+}
 
 async function loadVisiblePermit(
   ctx: StaffContext,

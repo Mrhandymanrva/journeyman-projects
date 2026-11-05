@@ -6,7 +6,10 @@ import { PasswordSessions, passwordAuthRoutes } from "./http/passwordAuth.js";
 import { userRoutes } from "./routes/users.js";
 import { stScheduleRoutes } from "./routes/stSchedule.js";
 import { stProjectRoutes } from "./routes/stProjects.js";
-import { vendorIntakeRoutes } from "./routes/vendorIntake.js";
+import {
+  serviceVendorDocumentUpload,
+  vendorIntakeRoutes,
+} from "./routes/vendorIntake.js";
 import { bidRequestRoutes, bidResponseRoutes } from "./routes/bidRequests.js";
 import { bidMailConfig, type BidMailConfig } from "./adapters/bidMail.js";
 import { scheduleChangeRoutes } from "./routes/scheduleChanges.js";
@@ -15,15 +18,19 @@ import { sourceRoutes } from "./routes/sources.js";
 import { portfolioVendorRoutes } from "./routes/portfolioVendors.js";
 import { portfolioProjectRoutes } from "./routes/portfolioProjects.js";
 import { ssoRoutes, type SsoConfig } from "./routes/sso.js";
-import { portfolioRoutes } from "./routes/portfolio.js";
+import { bearerMatchesToken, portfolioRoutes } from "./routes/portfolio.js";
+import { stLaborDiagnosticRoutes } from "./routes/stLaborDiagnostic.js";
 import type { PortfolioFeedConfig } from "./adapters/portfolioFeed.js";
 import type { SourceConnections } from "./adapters/sourceConnections.js";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { clientBuildId } from "./http/buildId.js";
 import express, { type Express } from "express";
 import type { Database } from "./db/database.js";
 import { errorHandler } from "./http/envelope.js";
 import { ApiError } from "./http/errors.js";
+import { enforceUtf8Charset } from "./http/utf8Charset.js";
 import {
   staffAuthentication,
   type StaffSessionStore,
@@ -31,12 +38,19 @@ import {
 import type { MemoryStaffSessions } from "./http/memoryStaffSessions.js";
 import { sessionRoutes } from "./routes/session.js";
 import { referenceRoutes } from "./routes/reference.js";
+import { csrHandoffRoutes } from "./routes/csrHandoff.js";
+import { homeRoutes } from "./routes/home.js";
 import { projectRoutes } from "./routes/projects.js";
 import { gateRoutes } from "./routes/gates.js";
+import { fieldReleaseRoutes } from "./routes/fieldRelease.js";
+import { preconTaskRoutes } from "./routes/preconTasks.js";
 import { budgetRoutes } from "./routes/budget.js";
 import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
 import { vendorRoutes } from "./routes/vendors.js";
 import { changeOrderRoutes } from "./routes/changeOrders.js";
+import { closeoutRoutes } from "./routes/closeout.js";
+import { laborRoutes } from "./routes/labor.js";
+import { healthSnapshotRoutes } from "./routes/healthSnapshots.js";
 import { drawRoutes } from "./routes/draws.js";
 import { statementRoutes } from "./routes/statement.js";
 import { externalInvoiceRoutes } from "./routes/externalInvoices.js";
@@ -68,6 +82,8 @@ export interface AppOptions {
   };
   /** Sign in with Command Center (client id, secret, tenant). Absent means no /sso routes and no button. */
   sso?: SsoConfig;
+  /** Setting names that kept SSO off. Reported by /api/v1/auth/config. Never values. */
+  ssoConfigIssue?: string[];
   /** Serve the console from client/. Off in tests. */
   serveConsole?: boolean;
 }
@@ -86,6 +102,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(opts: AppOptions): Express {
   const app = express();
   app.disable("x-powered-by");
+  app.use(enforceUtf8Charset);
   app.use(
     "/api/v1/projects/vendors/:id/documents/upload",
     express.json({ limit: "12mb" }),
@@ -94,11 +111,29 @@ export function createApp(opts: AppOptions): Express {
     "/api/v1/projects/projects/:id/controls/:recordId/file",
     express.json({ limit: "12mb" }),
   );
+  app.use(
+    "/api/v1/projects/jurisdictions/import",
+    express.text({
+      type: ["text/csv", "text/plain", "application/csv"],
+      limit: "2mb",
+    }),
+  );
   app.use(express.json({ limit: "2mb" }));
   app.use("/api/v1/bid-response", bidResponseRoutes(opts.database));
 
-  app.get('/api/v1/auth/config', (_req,res) => {
-    res.set('Cache-Control','no-store').json({data:{devLoginEnabled: Boolean(opts.devLogin?.enabled && opts.devLogin.nodeEnv !== 'production'), ssoEnabled: Boolean(opts.sso), ssoStart: opts.sso ? '/sso/start' : null}});
+  app.get('/api/v1/auth/config', (_req, res) => {
+    const data: {
+      devLoginEnabled: boolean;
+      ssoEnabled: boolean;
+      ssoStart: string | null;
+      ssoConfigIssue?: string[];
+    } = {
+      devLoginEnabled: Boolean(opts.devLogin?.enabled && opts.devLogin.nodeEnv !== 'production'),
+      ssoEnabled: Boolean(opts.sso),
+      ssoStart: opts.sso ? '/sso/start' : null,
+    };
+    if (opts.ssoConfigIssue?.length) data.ssoConfigIssue = opts.ssoConfigIssue;
+    res.set('Cache-Control', 'no-store').json({ data });
   });
   const sessions = new PasswordSessions(opts.database, opts.staffSessions);
   const deps = { database: opts.database, sessions };
@@ -108,15 +143,51 @@ export function createApp(opts: AppOptions): Express {
   );
 
   if (opts.portfolio) {
-    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, opts.portfolio));
-    app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, opts.portfolio));
-    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, opts.portfolio));
+    const portfolio = opts.portfolio;
+    app.use("/api/v1/portfolio", portfolioRoutes(opts.database, portfolio, opts.sources));
+    app.use("/api/v1/diagnostics", stLaborDiagnosticRoutes(portfolio, opts.sources));
+    app.use("/api/v1/portfolio", portfolioVendorRoutes(opts.database, portfolio));
+    app.use("/api/v1/portfolio", portfolioProjectRoutes(opts.database, portfolio, opts.sources));
+    // This bearer already reads documents and writes vendors on /portfolio.
+    // It may upload a vendor document here and nowhere else under /projects.
+    // Any other Authorization value falls through to staff login, unchanged.
+    app.post(
+      "/api/v1/projects/vendors/:id/documents/upload",
+      (req, res, next) => {
+        if (!bearerMatchesToken(req.get("authorization"), portfolio.token)) {
+          next();
+          return;
+        }
+        serviceVendorDocumentUpload(opts.database, portfolio, req, res).catch(
+          next,
+        );
+      },
+    );
   }
 
   if (opts.sso) app.use(ssoRoutes(opts.database, opts.sso));
 
   app.get("/health", (_req, res) => {
-    res.json({ data: { status: "ok" } });
+    res.set("Cache-Control", "no-store");
+    res.json({ data: { status: "ok", build_id: clientBuildId() } });
+  });
+
+  // A database ping for Railway restarts. Failure is a 503 and is not alerted.
+  app.get("/health/ready", (_req, res) => {
+    void opts.database
+      .withoutTenant(async (db) => {
+        await db.query("SELECT 1");
+      })
+      .then(() => {
+        if (!res.headersSent) res.json({ data: { status: "ok" } });
+      })
+      .catch(() => {
+        if (!res.headersSent) {
+          // eslint-disable-next-line no-console
+          console.error("[health] ready check failed");
+          res.status(503).json({ data: { status: "unavailable" } });
+        }
+      });
   });
 
   if (opts.devLogin?.enabled) {
@@ -153,17 +224,24 @@ export function createApp(opts: AppOptions): Express {
   staff.use(sessionRoutes(deps));
   staff.use(userRoutes(deps, opts.sources));
   staff.use(referenceRoutes(deps));
-  staff.use(projectRoutes(deps));
+  staff.use(homeRoutes(deps));
+  staff.use(csrHandoffRoutes(deps));
+  staff.use(projectRoutes(deps, opts.sources ?? {}));
   staff.use(projectControlRoutes(deps));
   staff.use(recordExportRoutes(deps, opts.sources));
   staff.use(gateRoutes(deps));
+  staff.use(fieldReleaseRoutes(deps));
+  staff.use(preconTaskRoutes(deps));
   staff.use(budgetRoutes(deps));
   staff.use(accountingRoutes(deps,opts.accounting));
-  staff.use(purchaseOrderRoutes(deps,opts.accounting));
+  staff.use(purchaseOrderRoutes(deps, opts.accounting, opts.sources));
   staff.use(vendorRoutes(deps));
   staff.use(vendorIntakeRoutes(deps));
   staff.use(bidRequestRoutes(deps, opts.bidMail ?? bidMailConfig()));
   staff.use(changeOrderRoutes(deps));
+  staff.use(closeoutRoutes(deps));
+  staff.use(laborRoutes(deps, opts.sources ?? {}));
+  staff.use(healthSnapshotRoutes(deps));
   staff.use(drawRoutes(deps));
   staff.use(statementRoutes(deps));
   staff.use(externalInvoiceRoutes(deps));
@@ -186,6 +264,16 @@ export function createApp(opts: AppOptions): Express {
     // Static, no build step. The console is the reference mock ported to live
     // data — vanilla HTML and CSS, which is what it was handed over as.
     const clientDir = path.resolve(here, "../client");
+    const consolePage = () => {
+      const html = readFileSync(path.join(clientDir, "index.html"), "utf8");
+      const meta = `<meta name="app-build" content="${clientBuildId()}">`;
+      if (html.includes('name="app-build"')) return html;
+      return html.replace('<meta charset="utf-8">', `<meta charset="utf-8">\n${meta}`);
+    };
+    app.get(["/", "/index.html"], (_req, res) => {
+      res.set("Cache-Control", "no-cache");
+      res.type("html").send(consolePage());
+    });
     app.use(
       "/pdfjs",
       express.static(path.resolve(here, "../node_modules/pdfjs-dist"), {

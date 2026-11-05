@@ -32,6 +32,10 @@ export function createSTProjectConnector({
             : "/projects/" + pm.id + "/servicetitan",
           { method: "POST", body: JSON.stringify(body) },
         );
+        const warnings = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : [];
+        if (warnings.length && el("st-project-message")) {
+          el("st-project-message").textContent = warnings.join(" ");
+        }
         await onChanged(r.id || pm.id);
       }
       el("st-project-refresh")?.addEventListener("click", async (e) => {

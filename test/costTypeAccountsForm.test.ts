@@ -54,6 +54,24 @@ describe('cost type account form', () => {
             catalog: [],
           };
         }
+        if (path === '/settings/labor') {
+          return {
+            st_labor_code: { code: 'MHM.25PLFE', name: 'Project Labor From Estimate', st_id: '91025' },
+            st_labor_code_error: null,
+            rate_gaps: [
+              {
+                technician_name: 'Riley Cho',
+                messages: ['No ServiceTitan commission percent or hourly rate for Riley Cho'],
+              },
+            ],
+            burden_notices: [
+              {
+                technician_name: 'Justin M.',
+                messages: ['burden not set for Justin M.'],
+              },
+            ],
+          };
+        }
         throw new Error(`unexpected ${path}`);
       },
       el: (id: string) => nodes.get(id) ?? null,
@@ -82,6 +100,20 @@ describe('cost type account form', () => {
     expect(html).toContain('>Subcontractors</span>');
     expect(html).toContain('id="ap-grace"');
     expect(html).toContain('Agreement grace days');
+    expect(html).toContain('>Labor</h3>');
+    expect(html).not.toContain('id="labor-rate"');
+    expect(html).not.toContain('Burdened hourly rate');
+    expect(html).toContain('id="labor-rate-gaps"');
+    expect(html).toContain('Riley Cho: neither a commission percent nor an hourly rate');
+    expect(html).toContain('Justin M.: not set');
+    expect(html).toContain("billed labor times the technician's commission percent");
+    expect(html).not.toContain('left out of actual cost');
+    expect(html).not.toContain('Active technicians missing a ServiceTitan rate');
+    expect(html).toContain('id="labor-st-code"');
+    expect(html).toContain('Labor code: MHM.25PLFE Project Labor From Estimate');
+    expect(html).not.toContain('id="labor-code"');
+    expect(html).not.toContain('Save labor settings');
+    expect(html).not.toContain('labor-settings-save');
     expect(nodes.get('ap-acct-L')).toBeTruthy();
     expect(nodes.get('ap-acct-M')).toBeTruthy();
     expect(nodes.get('ap-acct-S')).toBeTruthy();
@@ -92,6 +124,67 @@ describe('cost type account form', () => {
     expect(nodes.get('ap-acct-M')!.value).toBe('mat');
     expect(nodes.get('ap-acct-S')!.value).toBe('');
     expect(calls.some((call) => call.method === 'PATCH')).toBe(false);
+  });
+
+  it('shows a ServiceTitan labor-code error and no picker', async () => {
+    const nodes = new Map<string, FakeNode>();
+    function make(id: string): FakeNode {
+      const node: FakeNode = {
+        id,
+        value: '',
+        onclick: null,
+        _html: '',
+        get innerHTML() {
+          return this._html;
+        },
+        set innerHTML(html: string) {
+          this._html = String(html);
+          for (const match of String(html).matchAll(/\sid="([^"]+)"/g)) {
+            if (!nodes.has(match[1]!)) nodes.set(match[1]!, make(match[1]!));
+          }
+        },
+      };
+      nodes.set(id, node);
+      return node;
+    }
+    make('company-settings');
+    const accounting = createAccounting({
+      api: async (path) => {
+        if (path === '/accounting/catalog') return { connected: false, accounts: [] };
+        if (path === '/accounting/cost-type-accounts') {
+          return {
+            agreement_grace_days: 14,
+            accounts: { L: null, M: null, S: null, O: null },
+            suggestions: { L: null, M: null, S: null, O: null },
+            catalog: [],
+          };
+        }
+        if (path === '/settings/labor') {
+          return {
+            st_labor_code: null,
+            st_labor_code_error:
+              'ServiceTitan labor code MHM.25PLFE not found or inactive; labor hours are uncoded',
+            rate_gaps: [],
+          };
+        }
+        throw new Error(`unexpected ${path}`);
+      },
+      el: (id: string) => nodes.get(id) ?? null,
+      esc: (value: unknown) => String(value ?? ''),
+      can: () => true,
+      current: () => null,
+      openDrawer() {},
+      closeDrawer() {},
+    });
+    await accounting.renderSettings();
+    const html = nodes.get('company-settings')!._html;
+    expect(html).toContain('class="msg" id="labor-st-error"');
+    expect(html).toContain(
+      'ServiceTitan labor code MHM.25PLFE not found or inactive; labor hours are uncoded',
+    );
+    expect(html).toContain('Labor code: unavailable');
+    expect(html).not.toContain('id="labor-code"');
+    expect(html).not.toContain('Save labor settings');
   });
 });
 

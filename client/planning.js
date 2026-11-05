@@ -1,4 +1,4 @@
-import {renderGantt,bindGantt} from "./gantt.js";
+import { renderGantt, bindGantt, phaseName, UNPHASED } from "./gantt.js";
 import { createSubcontractors } from "./subcontractors.js";
 import { renderScheduleBoard, issues } from "./scheduleBoard.js";
 import { createSourceViews } from "./sources.js";
@@ -45,7 +45,43 @@ export function createPlanning({
     "beforebegin",
     '<p class="hint" id="planning-st-status" role="status"></p>',
   );
-  el("planning-st-refresh").addEventListener("click", () => void lookahead());
+  el("planning-st-refresh").addEventListener("click", () => void refreshStJobs());
+  let refreshing = false;
+  async function refreshStJobs() {
+    if (refreshing) return;
+    const project = current();
+    if (!project?.id || !can("refresh_labor")) {
+      await lookahead();
+      return;
+    }
+    refreshing = true;
+    const button = el("planning-st-refresh");
+    button.disabled = true;
+    el("planning-st-status").textContent = "Reading this project's ServiceTitan appointments…";
+    let note = "";
+    try {
+      const result = await api("/projects/" + project.id + "/plan-appointments/refresh", {
+        method: "POST",
+        body: "{}",
+      });
+      note =
+        "Refresh read " + Number(result?.stored ?? 0) + " ST appointments" +
+        (result?.error ? ". " + result.error : "") + ".";
+    } catch (error) {
+      note = "Refresh failed: " + error.message;
+    }
+    refreshing = false;
+    await lookahead();
+    // lookahead() rewrites the status line; keep the refresh outcome visible.
+    const status = el("planning-st-status");
+    if (status && note) {
+      status.textContent = note + " " + status.textContent;
+      if (note.startsWith("Refresh failed")) status.className = "hint warn";
+    }
+    setTimeout(() => {
+      if (el("planning-st-refresh")) el("planning-st-refresh").disabled = false;
+    }, 3000);
+  }
   let generation = 0;
   const day = () => {
     const d = new Date();
@@ -87,19 +123,7 @@ export function createPlanning({
           "<div><strong>" + value + "</strong><span>" + label + "</span></div>",
       )
       .join("");
-    const phases = [
-      ...new Set([
-        ...rows.map((r) => r.phase).filter(Boolean),
-        "ServiceTitan jobs",
-      ]),
-    ].sort();
-    const previous = el("planning-phase").value;
-    el("planning-phase").innerHTML =
-      '<option value="">All phases</option>' +
-      phases
-        .map((p) => '<option value="' + esc(p) + '">' + esc(p) + "</option>")
-        .join("");
-    if (phases.includes(previous)) el("planning-phase").value = previous;
+    setPhaseOptions(rows);
     if (!el("plan-scheduled-work")) await lookahead();
   }
   async function lookahead() {
@@ -128,8 +152,8 @@ export function createPlanning({
             ),
         api(
           (all
-            ? "/servicetitan/schedule"
-            : "/projects/" + project.id + "/servicetitan/schedule") +
+            ? "/plan-appointments"
+            : "/projects/" + project.id + "/plan-appointments") +
             "?from=" +
             from +
             "&to=" +
@@ -142,13 +166,23 @@ export function createPlanning({
       if (stResult.status === "fulfilled") {
         source = stResult.value;
         stCache.set(key, source);
-        el("planning-st-status").textContent = !source.configured
-          ? "ServiceTitan is not configured for this account."
-          : !source.linkedProjects
-            ? "Connect this project to ServiceTitan to include technician jobs."
-            : source.rows.length +
-              " ST appointments · Times shown in America/New_York · Refreshed " +
-              new Date(source.observedAt).toLocaleTimeString();
+        const status = el("planning-st-status");
+        status.textContent = source.message
+          ? source.message
+          : !source.configured
+            ? "ServiceTitan is not configured for this account."
+            : !source.linkedProjects
+              ? "Connect this project to ServiceTitan to include technician jobs."
+              : source.rows.length +
+                " ST appointments · Times shown in America/New_York · last read " +
+                (source.appointmentsReadAt
+                  ? new Date(source.appointmentsReadAt).toLocaleString()
+                  : "not yet");
+        const warn =
+          Number(source.skippedAppointments) > 0 ||
+          (Array.isArray(source.failedJobs) && source.failedJobs.length > 0) ||
+          source.readError;
+        status.className = warn ? "hint warn" : "hint";
       } else {
         source = stCache.get(key);
         el("planning-st-status").textContent =
@@ -163,11 +197,12 @@ export function createPlanning({
       stRows = source?.rows ?? [];
       let rows = [...pmResult.value, ...stRows];
       if (revision !== generation) return;
+      setPhaseOptions(rows);
       const phase = el("planning-phase").value;
       const filter = el("planning-filter").value;
       rows = rows.filter(
         (r) =>
-          (!phase || r.phase === phase) &&
+          (!phase || phaseName(r) === phase) &&
           (filter === "all" ||
             (filter === "unassigned"
               ? issues(r, day()).includes("Unassigned")
@@ -194,51 +229,65 @@ export function createPlanning({
             `<div><strong>${n}</strong><span>${label}</span></div>`,
         )
         .join("");
-      el("planning-rows").innerHTML = (el("planning-view").value === "timeline" ? renderGantt : renderScheduleBoard)({
-        days,
-        rows,
-        from,
-        view: el("planning-view").value,
-        all,
-        projectId: project.id,
-        editable: can("advance_stage"),
-        esc,
-        today: day(),
-      });
-      bindGantt(el("planning-rows"), {rows, save: async (row, dates) => {
-        await api("/schedule/"+row.id,{method:"PATCH",body:JSON.stringify({...dates,expected_window_start:row.window_start,expected_window_end:row.window_end})});
-        projectRows=await api("/projects/"+project.id+"/schedule");
-        await lookahead();
-      }});
-      el("planning-rows")
-        .querySelectorAll("[data-st-appointment]")
-        .forEach((b) =>
-          b.addEventListener("click", () => {
-            const r = stRows.find((r) => r.id === b.dataset.stAppointment);
-            if (!r) return;
-            const time = (v) =>
-              new Date(v).toLocaleString("en-US", {
-                timeZone: r.time_zone,
-                dateStyle: "medium",
-                timeStyle: "short",
-              });
-            openDrawer(
-              "ServiceTitan appointment",
-              `<h3>${esc(r.title)}</h3><p>${esc(r.project_name)}</p><p><strong>${esc(time(r.appointment_start))} → ${esc(time(r.appointment_end))}</strong><br>America/New_York · ${esc(r.source_status)}</p><p>Technicians: ${esc(r.resources.map((x) => x.name).join(", ") || "Unassigned")}</p><p>${esc(r.summary?.replace(/<[^>]*>/g, " ") || "")}</p><p>This appointment is owned by ServiceTitan. Refresh the schedule after changes in ST.</p>${r.project_id === current().id && r.job_link_id ? '<button class="btn" id="st-schedule-dispatch">Open dispatch review</button>' : ""}`,
-              () =>
-                el("st-schedule-dispatch")?.addEventListener("click", () =>
-                  sourceViews.dispatch(r.job_link_id, r.title),
-                ),
-            );
-          }),
-        );
-      el("planning-rows")
-        .querySelectorAll("[data-plan-edit]")
-        .forEach((b) =>
-          b.addEventListener("click", () =>
-            activity(projectRows.find((r) => r.id === b.dataset.planEdit)),
-          ),
-        );
+      const paint = (visibleRows) => {
+        el("planning-rows").innerHTML = (el("planning-view").value === "timeline" ? renderGantt : renderScheduleBoard)({
+          days,
+          rows: visibleRows,
+          from,
+          view: el("planning-view").value,
+          all,
+          projectId: project.id,
+          editable: can("advance_stage"),
+          esc,
+          today: day(),
+        });
+        bindGantt(el("planning-rows"), {
+          rows: visibleRows,
+          save: async (row, dates) => {
+            await api("/schedule/" + row.id, {
+              method: "PATCH",
+              body: JSON.stringify({
+                ...dates,
+                expected_window_start: row.window_start,
+                expected_window_end: row.window_end,
+              }),
+            });
+            projectRows = await api("/projects/" + project.id + "/schedule");
+            await lookahead();
+          },
+          rerender: () => paint(visibleRows),
+        });
+        el("planning-rows")
+          .querySelectorAll("[data-st-appointment]")
+          .forEach((b) =>
+            b.addEventListener("click", () => {
+              const r = stRows.find((r) => r.id === b.dataset.stAppointment);
+              if (!r) return;
+              const time = (v) =>
+                new Date(v).toLocaleString("en-US", {
+                  timeZone: r.time_zone,
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                });
+              openDrawer(
+                "ServiceTitan appointment",
+                `<h3>${esc(r.title)}</h3><p>${esc(r.project_name)}</p><p><strong>${esc(time(r.appointment_start))} → ${esc(time(r.appointment_end))}</strong><br>America/New_York · ${esc(r.source_status)}</p><p>Technicians: ${esc(r.resources.map((x) => x.name).join(", ") || "Unassigned")}</p><p>${esc(r.summary?.replace(/<[^>]*>/g, " ") || "")}</p><p>This appointment is owned by ServiceTitan. Refresh the schedule after changes in ST.</p>${r.project_id === current().id && r.job_link_id ? '<button class="btn" id="st-schedule-dispatch">Open dispatch review</button>' : ""}`,
+                () =>
+                  el("st-schedule-dispatch")?.addEventListener("click", () =>
+                    sourceViews.dispatch(r.job_link_id, r.title),
+                  ),
+              );
+            }),
+          );
+        el("planning-rows")
+          .querySelectorAll("[data-plan-edit]")
+          .forEach((b) =>
+            b.addEventListener("click", () =>
+              activity(projectRows.find((r) => r.id === b.dataset.planEdit)),
+            ),
+          );
+      };
+      paint(rows);
     } catch (e) {
       if (revision === generation) el("planning-rows").textContent = e.message;
     }
@@ -585,6 +634,28 @@ export function createPlanning({
   el("planning-job").addEventListener("click", jobs);
   el("planning-from").addEventListener("change", lookahead);
   el("planning-all").addEventListener("change", lookahead);
+  function setPhaseOptions(sourceRows) {
+    const names = [];
+    const seen = new Set();
+    for (const row of sourceRows) {
+      const name = phaseName(row);
+      if (seen.has(name)) continue;
+      seen.add(name);
+      names.push(name);
+    }
+    const ordered = [
+      ...names.filter((name) => name !== UNPHASED),
+      ...names.filter((name) => name === UNPHASED),
+    ];
+    const select = el("planning-phase");
+    const previous = select.value;
+    select.innerHTML =
+      '<option value="">All phases</option>' +
+      ordered
+        .map((p) => '<option value="' + esc(p) + '">' + esc(p) + "</option>")
+        .join("");
+    if (ordered.includes(previous)) select.value = previous;
+  }
   for (const id of ["planning-view", "planning-phase", "planning-filter", "planning-zoom"])
     el(id).addEventListener("change", lookahead);
   el("planning-prev").addEventListener("click", () => {

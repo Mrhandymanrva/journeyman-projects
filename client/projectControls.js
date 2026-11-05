@@ -1,3 +1,5 @@
+import { collapsedCard, reservesSummary } from "./financialsSections.js";
+import { goalKeyResultHelpHtml } from "./goalHelp.js";
 import { projectTemplates, templateContent } from "./projectTemplates.js";
 const day = () =>
   new Intl.DateTimeFormat("en-CA", {
@@ -22,6 +24,7 @@ export function createProjectControls({
     staff = [],
     resources = [],
     jobs = [],
+    phases = [],
     page = "plan",
     tab = "tasks",
     folder = "",
@@ -50,10 +53,30 @@ export function createProjectControls({
     });
   const status = (s) =>
     `<span class="control-status status-${esc(s)}">${esc(label(s))}</span>`;
+  const rollupTone = {
+    not_started: "not_started",
+    in_progress: "in_progress",
+    complete: "complete",
+  };
+  const rollupText = {
+    not_started: "Not started",
+    in_progress: "In progress",
+    complete: "Completed",
+  };
+  const flagTone = { late: "red", at_risk: "amber" };
+  const flagText = { late: "Late", at_risk: "At risk" };
+  const rollupBadge = (rollup) => {
+    if (!rollup?.status) return "";
+    const status = `<span class="control-status plain status-${esc(rollupTone[rollup.status] ?? rollup.status)}">${esc(rollupText[rollup.status] ?? label(rollup.status))}</span>`;
+    const flag = rollup.flag
+      ? ` <span class="control-status plain status-${esc(flagTone[rollup.flag] ?? rollup.flag)}">${esc(flagText[rollup.flag] ?? label(rollup.flag))}</span>`
+      : "";
+    return status + flag;
+  };
   const btn = (text, action, id = "", extra = "") =>
     `<button class="btn" data-control-action="${action}" data-record="${id}" ${extra}>${text}</button>`;
   const edits = (r) =>
-    `${writable(r.kind) ? btn("Edit", "edit", r.id) : ""}${writable(r.kind) && r.kind === "milestone" ? btn(r.active ? "Delete" : "Restore", r.active ? "delete-milestone" : "restore-milestone", r.id) : ""}${btn("History", "history", r.id)}${r.kind !== "document" ? btn("Record / ST", "read", r.id) : ""}`;
+    `${writable(r.kind) ? btn("Edit", "edit", r.id) : ""}${writable(r.kind) && (r.kind === "milestone" || r.kind === "goal") ? btn(r.active ? "Delete" : "Restore", r.active ? "delete-record" : "restore-record", r.id) : ""}${btn("History", "history", r.id)}${r.kind !== "document" ? btn("Record / ST", "read", r.id) : ""}`;
   const records = () => state.records.filter((r) => r.active);
   const children = (id) =>
     records().filter((r) => r.kind === "task" && r.data.parent_id === id);
@@ -101,9 +124,12 @@ export function createProjectControls({
         api("/staff"),
         api("/resources"),
         api("/projects/" + projectId + "/jobs"),
+        api("/planning-catalog").catch(() => ({ phases: [] })),
       ]);
       if (ticket !== epoch || projectId !== current()?.id) return;
+      const catalog = data[4];
       [state, staff, resources, jobs] = data;
+      phases = Array.isArray(catalog?.phases) ? catalog.phases : [];
       draw(target);
       const params = new URLSearchParams(location.search);
       const linkedDoc = params.get("document");
@@ -143,9 +169,7 @@ export function createProjectControls({
             ? roadmap()
             : tab === "goals"
               ? goals()
-              : tab === "status"
-                ? reports()
-                : burndown();
+              : burndown();
     } else if (page === "documents") body = documents();
     else if (page === "risks") body = risks();
     else if (page === "communications") body = communications();
@@ -168,7 +192,7 @@ export function createProjectControls({
           .map((r) => {
             const d = r.data,
               group = children(r.id).length;
-            return `<tr class="${r.active ? "" : "control-archived"}"><td><input aria-label="Complete ${esc(d.title)}" type="checkbox" data-task-check="${r.id}" ${progress(r) === 100 ? "checked" : ""} ${group || !writable("task") || !r.active ? "disabled" : ""}></td><td style="padding-left:${12 + Math.min(r.depth, 8) * 16}px"><small>${r.code}</small> <strong>${esc(d.title)}</strong>${!r.active ? " (archived)" : ""}<small>${d.dependency_ids.length ? "After: " + esc(d.dependency_ids.map(name).join(", ")) : ""}${d.milestone_id ? " · Milestone: " + esc(name(d.milestone_id)) : ""}</small></td><td>${esc(person(d.owner_id))}<small>${esc(resources.find((x) => x.id === d.resource_id)?.name ?? "")}${d.job_link_id ? " · ST job " + esc(jobs.find((j) => j.id === d.job_link_id)?.source_job_number ?? jobs.find((j) => j.id === d.job_link_id)?.external_job_id ?? "") : ""}</small></td><td>${esc(d.start_on)} → ${esc(d.due_on)}<small>${d.completed_on ? "Completed " + esc(d.completed_on) : d.due_on < day() ? "Overdue" : ""}</small></td><td>${group ? progress(r) + "%" : status(d.state)}</td><td>${edits(r)}</td></tr>`;
+            return `<tr id="item-${esc(r.id)}" class="${r.active ? "" : "control-archived"}"><td><input aria-label="Complete ${esc(d.title)}" type="checkbox" data-task-check="${r.id}" ${progress(r) === 100 ? "checked" : ""} ${group || !writable("task") || !r.active ? "disabled" : ""}></td><td style="padding-left:${12 + Math.min(r.depth, 8) * 16}px"><small>${r.code}</small> <strong>${esc(d.title)}</strong>${!r.active ? " (archived)" : ""}<small>${d.dependency_ids.length ? "After: " + esc(d.dependency_ids.map(name).join(", ")) : ""}${d.milestone_id ? " · Milestone: " + esc(name(d.milestone_id)) : ""}${d.phase ? " · Phase: " + esc(d.phase) : ""}</small></td><td>${esc(person(d.owner_id))}<small>${esc(resources.find((x) => x.id === d.resource_id)?.name ?? "")}${d.job_link_id ? " · ST job " + esc(jobs.find((j) => j.id === d.job_link_id)?.source_job_number ?? jobs.find((j) => j.id === d.job_link_id)?.external_job_id ?? "") : ""}</small></td><td>${esc(d.start_on)} → ${esc(d.due_on)}<small>${d.completed_on ? "Completed " + esc(d.completed_on) : d.due_on < day() ? "Overdue" : ""}</small></td><td>${group ? progress(r) + "%" : status(d.state)}</td><td>${edits(r)}</td></tr>`;
           })
           .join("") ||
         '<tr><td colspan="6">No tasks yet. Add a work package, then assign child tasks to it.</td></tr>'
@@ -182,36 +206,60 @@ export function createProjectControls({
     return (
       header(
         "Roadmap & milestones",
-        "Major deliverables, acceptance criteria and target dates, linked to project goals.",
+        "Not started when no linked task is done, in progress when some are done, and completed when all are done. Late and at risk show beside the status. A milestone with no linked tasks uses the status you set.",
         "milestone",
       ) +
-      `<div class="control-roadmap">${rows.map((r) => `<article class="card"><small>${esc(r.data.due_on)}</small><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3>${status(r.data.state)}<p>${esc(r.data.success_criteria || r.data.description || "Add acceptance criteria.")}</p><p>${esc(person(r.data.owner_id))}${r.data.goal_id ? " · " + esc(name(r.data.goal_id)) : ""}</p><p>${records().filter((t) => t.kind === "task" && t.data.milestone_id === r.id).length} linked tasks</p>${edits(r)}</article>`).join("") || empty("Add milestones such as permit approval, rough-in inspection, substantial completion and handover.")}</div>`
+      `<div class="control-roadmap">${
+        rows
+          .map((r) => {
+            const linked = records().filter(
+              (t) => t.kind === "task" && t.data.milestone_id === r.id,
+            );
+            const done =
+              r.rollup?.done ??
+              linked.filter((t) => t.data.state === "complete").length;
+            const total = r.rollup?.total ?? linked.length;
+            const count = total
+              ? `${done} of ${total} tasks done`
+              : "No linked tasks";
+            return `<article class="card" id="item-${esc(r.id)}"><small>${esc(r.data.due_on)}</small><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3>${rollupBadge(r.rollup) || status(r.data.state)}<p>${esc(r.data.success_criteria || r.data.description || "Add acceptance criteria.")}</p><p>${esc(person(r.data.owner_id))}${r.data.goal_id ? " · " + esc(name(r.data.goal_id)) : ""}</p><p>${esc(count)}</p>${edits(r)}</article>`;
+          })
+          .join("") ||
+        empty(
+          "Add milestones such as permit approval, rough-in inspection, substantial completion and handover.",
+        )
+      }</div>`
     );
   }
   function goals() {
     return (
       header(
         "Objectives & key results",
-        "Define the outcome and measure progress with one or more key results.",
+        "One percent, from linked milestones. Each milestone counts the share of its tasks that are done. Key results are optional.",
         "goal",
       ) +
       `<div class="control-roadmap">${
         active("goal")
-          .map(
-            (r) =>
-              `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${status(r.data.state)}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small>${r.data.key_results
-                .map((k) => {
-                  const p = pct(
-                    (100 * (k.current - k.start)) / (k.target - k.start),
-                  );
-                  return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
-                })
-                .join("")}${edits(r)}</article>`,
-          )
+          .map((r) => {
+            const roll = r.rollup;
+            const progress =
+              roll && roll.percent != null
+                ? `<div class="control-kr"><strong>Progress</strong><p>${pct(roll.percent)}%</p><progress max="100" value="${pct(roll.percent)}">${pct(roll.percent)}%</progress></div>`
+                : `<p class="hint">No linked milestones yet.</p>`;
+            const measured = (r.data.key_results ?? []).length
+              ? (r.data.key_results ?? [])
+                  .map((k) => {
+                    const p = pct(
+                      (100 * (k.current - k.start)) / (k.target - k.start),
+                    );
+                    return `<div class="control-kr"><strong>${esc(k.name)}</strong><p>${k.current} / ${k.target} ${esc(k.unit)} · ${p}%</p><progress max="100" value="${p}">${p}%</progress></div>`;
+                  })
+                  .join("")
+              : '<p class="hint">No measured number yet. Edit the goal to add start, target, current, and a unit.</p>';
+            return `<article class="card"><h3>${esc(r.data.title)}${r.active ? "" : " (archived)"}</h3><p>${esc(r.data.description)}</p>${rollupBadge(roll) || status(r.data.state)}${progress}<small>Owner: ${esc(person(r.data.owner_id))} · Target ${r.data.due_on}</small><button type="button" class="measure-link" data-goal-measures="${esc(r.id)}" aria-expanded="false" aria-controls="goal-measures-${esc(r.id)}">Add a measured number (optional)</button><div id="goal-measures-${esc(r.id)}" hidden>${measured}</div>${edits(r)}</article>`;
+          })
           .join("") ||
-        empty(
-          "Add an objective, then define measurable key results and a target date.",
-        )
+        empty("Add an objective and a target date. Key results are optional.")
       }</div>`
     );
   }
@@ -223,7 +271,7 @@ export function createProjectControls({
     );
     return (
       header(
-        "RAG status reports",
+        "Status (RAG)",
         "Green = on track · Amber = needs attention · Red = intervention needed. Assessments are recorded by the project team.",
         "report",
       ) +
@@ -266,7 +314,7 @@ export function createProjectControls({
       max = Math.max(1, b.total, ...h.map((p) => p.remaining)),
       x = (d) => 60 + (days(start, d) / duration) * 780,
       y = (n) => 240 - (n / max) * 190;
-    body += `<div class="control-chart"><svg viewBox="0 0 920 300" role="img" aria-label="Remaining task burndown"><line x1="60" y1="240" x2="850" y2="240" stroke="#94a3b8"/><line x1="60" y1="45" x2="60" y2="240" stroke="#94a3b8"/><text x="25" y="50">${max}</text><text x="35" y="244">0</text><path d="M${x(start)} ${y(b.total)} L${x(b.finish_on)} 240" stroke="#94a3b8" stroke-width="2" stroke-dasharray="6 4" fill="none"/><polyline points="${h.map((p) => x(p.on_date) + "," + y(p.remaining)).join(" ")}" stroke="#2367a2" stroke-width="3" fill="none"/>${h.map((p) => `<circle cx="${x(p.on_date)}" cy="${y(p.remaining)}" r="5" fill="#2367a2"><title>${p.on_date}: ${p.remaining} remaining / ${p.total} tasks in scope</title></circle>`).join("")}<text x="60" y="272">${start}</text><text x="840" y="272" text-anchor="end">${end}</text></svg></div><p>Solid blue: recorded remaining tasks · Dashed gray: baseline target (${b.total} remaining → 0 by ${b.finish_on}).</p><p class="hint">One observation is retained per day when tasks change. Gaps connect recorded observations; they are not daily measurements. A new baseline preserves the old records and starts a new chart.</p><div class="control-table"><table><thead><tr><th>Recorded date</th><th>Tasks in scope</th><th>Remaining</th></tr></thead><tbody>${h.map((p) => `<tr><td>${p.on_date}</td><td>${p.total}</td><td>${p.remaining}</td></tr>`).join("")}</tbody></table></div>`;
+    body += `<div class="control-chart"><svg viewBox="0 0 920 300" role="img" aria-label="Remaining task burndown"><line x1="60" y1="240" x2="850" y2="240" stroke="var(--chart-axis)"/><line x1="60" y1="45" x2="60" y2="240" stroke="var(--chart-axis)"/><text fill="var(--ink)" x="25" y="50">${max}</text><text fill="var(--ink)" x="35" y="244">0</text><path d="M${x(start)} ${y(b.total)} L${x(b.finish_on)} 240" stroke="var(--chart-axis)" stroke-width="2" stroke-dasharray="6 4" fill="none"/><polyline points="${h.map((p) => x(p.on_date) + "," + y(p.remaining)).join(" ")}" stroke="var(--chart-line)" stroke-width="3" fill="none"/>${h.map((p) => `<circle cx="${x(p.on_date)}" cy="${y(p.remaining)}" r="5" fill="var(--chart-line)"><title>${p.on_date}: ${p.remaining} remaining / ${p.total} tasks in scope</title></circle>`).join("")}<text fill="var(--ink)" x="60" y="272">${start}</text><text fill="var(--ink)" x="840" y="272" text-anchor="end">${end}</text></svg></div><p>Solid line: recorded remaining tasks · Dashed line: baseline target (${b.total} remaining → 0 by ${b.finish_on}).</p><p class="hint">One observation is retained per day when tasks change. Gaps connect recorded observations; they are not daily measurements. A new baseline preserves the old records and starts a new chart.</p><div class="control-table"><table><thead><tr><th>Recorded date</th><th>Tasks in scope</th><th>Remaining</th></tr></thead><tbody>${h.map((p) => `<tr><td>${p.on_date}</td><td>${p.total}</td><td>${p.remaining}</td></tr>`).join("")}</tbody></table></div>`;
     return body;
   }
   function documents() {
@@ -293,8 +341,9 @@ export function createProjectControls({
   function risks() {
     const rows = active("risk");
     return (
+      reports() +
       header(
-        "Risk register & ROAM",
+        "Risk register (ROAM)",
         "Score likelihood × impact from 1–5. ROAM: Resolved, Owned, Accepted, Mitigated.",
         "risk",
       ) +
@@ -354,14 +403,15 @@ export function createProjectControls({
       drawn = rows
         .filter((r) => r.active)
         .reduce((s, r) => s + r.data.drawn, 0);
-    return (
-      header(
-        "Reserves & financial buffers",
-        "Planning allowances tracked separately from budget, commitments and actual costs. Drawing a reserve does not post a bill or change ST/QB.",
-        "reserve",
-      ) +
-      `<div class="control-metrics"><div><small>Allocated</small><strong>${money(allocated)}</strong></div><div><small>Drawn / designated</small><strong>${money(drawn)}</strong></div><div><small>Remaining</small><strong>${money(allocated - drawn)}</strong></div></div><div class="control-table"><table><thead><tr><th>Reserve</th><th>Category / risk</th><th>Allocated</th><th>Drawn</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.data.title)}${r.active ? "" : " (archived)"}</td><td>${esc(label(r.data.category))}<small>${r.data.risk_id ? esc(name(r.data.risk_id)) : ""}</small></td><td>${money(r.data.allocated)}</td><td>${money(r.data.drawn)}</td><td>${money(r.data.allocated - r.data.drawn)}</td><td>${edits(r)}</td></tr>`).join("") || '<tr><td colspan="6">No reserve allocations recorded.</td></tr>'}</tbody></table></div>`
-    );
+    return collapsedCard({
+      id: "reserves",
+      title: "Reserves & financial buffers",
+      summary: reservesSummary(rows),
+      actions: writable("reserve") ? btn("Add reserve", "new", "reserve") : "",
+      body:
+        `<p>Planning allowances tracked separately from budget, commitments and actual costs. Drawing a reserve does not post a bill or change ST/QB.</p>` +
+        `<div class="control-metrics"><div><small>Allocated</small><strong>${money(allocated)}</strong></div><div><small>Drawn / designated</small><strong>${money(drawn)}</strong></div><div><small>Remaining</small><strong>${money(allocated - drawn)}</strong></div></div><div class="control-table"><table><thead><tr><th>Reserve</th><th>Category / risk</th><th>Allocated</th><th>Drawn</th><th>Remaining</th><th>Actions</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.data.title)}${r.active ? "" : " (archived)"}</td><td>${esc(label(r.data.category))}<small>${r.data.risk_id ? esc(name(r.data.risk_id)) : ""}</small></td><td>${money(r.data.allocated)}</td><td>${money(r.data.drawn)}</td><td>${money(r.data.allocated - r.data.drawn)}</td><td>${edits(r)}</td></tr>`).join("") || '<tr><td colspan="6">No reserve allocations recorded.</td></tr>'}</tbody></table></div>`,
+    });
   }
   async function reload() {
     await mount(
@@ -396,15 +446,19 @@ export function createProjectControls({
               draw(target);
             } else if (action === "new") form(id);
             else if (action === "edit") form(r.kind, r);
-            else if (action === "delete-milestone") {
-              const count = state.records.filter(t => t.kind === "task" && t.data.milestone_id === r.id).length;
-              if (!window.confirm(`Delete "${r.data.title}" from the project plan?${count ? ` Its ${count} linked task(s) will be kept and unlinked.` : ""} You can restore the milestone using Include archived records.`)) return;
+            else if (action === "delete-record") {
+              const linked = r.kind === "goal"
+                ? state.records.filter((t) => t.kind === "milestone" && t.data.goal_id === r.id)
+                : state.records.filter((t) => t.kind === "task" && t.data.milestone_id === r.id);
+              const noun = r.kind === "goal" ? "goal" : "milestone";
+              const kept = r.kind === "goal" ? "milestone(s)" : "task(s)";
+              if (!window.confirm(`Delete "${r.data.title}" from the project plan?${linked.length ? ` Its ${linked.length} linked ${kept} will be kept and unlinked.` : ""} You can restore the ${noun} using Include archived records.`)) return;
               b.disabled = true;
               await api(url() + "/" + r.id, {method:"DELETE",body:JSON.stringify({version:r.version})});
               await reload();
-            } else if (action === "restore-milestone") {
+            } else if (action === "restore-record") {
               b.disabled = true;
-              await save(r,r.data,true);
+              await save(r, r.data, true);
               await reload();
             }
             else if (action === "baseline") baselineForm();
@@ -426,6 +480,17 @@ export function createProjectControls({
           }
         }),
     );
+    target.querySelectorAll("[data-goal-measures]").forEach((button) => {
+      button.onclick = () => {
+        const panel = document.getElementById(
+          "goal-measures-" + button.dataset.goalMeasures,
+        );
+        if (!panel) return;
+        const open = panel.hidden;
+        panel.hidden = !open;
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+      };
+    });
     target.querySelectorAll("[data-task-check]").forEach(
       (c) =>
         (c.onchange = async () => {
@@ -474,6 +539,12 @@ export function createProjectControls({
     records()
       .filter((r) => r.kind === k)
       .map((r) => [r.id, r.data.title]);
+  const phaseChoices = (currentPhase) => {
+    const text = String(currentPhase ?? "").trim();
+    const values = [...phases];
+    if (text && !values.includes(text)) values.push(text);
+    return values;
+  };
   function form(k, r = null, template = "") {
     formKind = k;
     const d = r?.data ?? {},
@@ -493,13 +564,39 @@ export function createProjectControls({
         d.owner_id,
       ) +
       area("description", "Description / rationale", d.description);
-    if (["task", "goal", "milestone"].includes(k))
+    if (k === "task")
       html += select(
         "state",
         "Status",
         ["not_started", "in_progress", "blocked", "complete"],
         d.state ?? "not_started",
       );
+    if (k === "goal")
+      html +=
+        '<p class="hint">The percent is calculated from linked milestones, counting tasks done inside each one. It cannot be typed in.</p>';
+    if (k === "milestone") {
+      const linked = r
+        ? records().filter(
+            (t) => t.kind === "task" && t.data.milestone_id === r.id,
+          ).length
+        : 0;
+      if (linked > 0)
+        html +=
+          '<p class="hint">Status is calculated from linked tasks. It cannot be set here.</p>';
+      else
+        html +=
+          '<p class="hint">No linked tasks, so you can set the status. Not started, in progress, or completed.</p>' +
+          select(
+            "state",
+            "Status",
+            [
+              ["not_started", "Not started"],
+              ["in_progress", "In progress"],
+              ["complete", "Completed"],
+            ],
+            d.state === "blocked" ? "in_progress" : (d.state ?? "not_started"),
+          );
+    }
     if (k === "task")
       html +=
         `<div class="control-columns">${input("start_on", "Start", d.start_on ?? dt, "date", true)}${input("due_on", "Finish / due", d.due_on ?? dt, "date", true)}${input("completed_on", "Actual completion", d.completed_on, "date")}</div>` +
@@ -528,6 +625,13 @@ export function createProjectControls({
           d.resource_id,
         ) +
         select(
+          "phase",
+          "Phase",
+          phaseChoices(d.phase),
+          d.phase || "",
+        ) +
+        '<p class="hint">Same phases as the Gantt. Leave this blank when the task has no phase.</p>' +
+        select(
           "job_link_id",
           "Related ST job",
           jobs
@@ -547,11 +651,23 @@ export function createProjectControls({
     if (k === "goal")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
-        '<h3>Measurable key results</h3><div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button>';
+        '<button class="measure-link" type="button" id="cf-show-kr" aria-expanded="false" aria-controls="cf-kr-panel">Add a measured number (optional)</button>' +
+        '<div id="cf-kr-panel" hidden><h3>Measurable key results</h3>' +
+        goalKeyResultHelpHtml() +
+        '<div id="cf-key-results"></div><button class="btn" type="button" id="cf-add-kr">Add key result</button></div>';
     if (k === "milestone")
       html +=
         input("due_on", "Target date", d.due_on ?? dt, "date", true) +
-        input("completed_on", "Actual completion", d.completed_on, "date") +
+        (r &&
+        records().filter((t) => t.kind === "task" && t.data.milestone_id === r.id)
+          .length
+          ? ""
+          : input(
+              "completed_on",
+              "Actual completion",
+              d.completed_on,
+              "date",
+            )) +
         select("goal_id", "Project goal", opts("goal"), d.goal_id) +
         area(
           "success_criteria",
@@ -652,10 +768,11 @@ export function createProjectControls({
           18,
         ) +
         '<p class="hint">Use ## for section headings, - for lists, **bold** for emphasis, and pipe-separated tables. Preview and PDF export format these automatically. Save a revision before publishing to ST.</p>';
-    if (k === "report")
+    if (k === "report") {
+      const rag = state.rag || { schedule: "green", cost: "green" };
       html +=
         input("as_of", "Reporting date", d.as_of ?? dt, "date", true) +
-        ["overall", "scope", "schedule", "cost", "quality"]
+        ["overall", "scope"]
           .map((key) =>
             select(
               key,
@@ -665,6 +782,17 @@ export function createProjectControls({
             ),
           )
           .join("") +
+        `<p class="hint">Schedule and cost come from project health, so this report cannot disagree with it. They cannot be typed in.</p><div class="control-rag-grid"><div><small>Schedule</small>${status(rag.schedule)}</div><div><small>Cost</small>${status(rag.cost)}</div></div><input type="hidden" id="cf-schedule" value="${esc(rag.schedule)}"><input type="hidden" id="cf-cost" value="${esc(rag.cost)}">` +
+        select(
+          "quality",
+          "Quality status",
+          ["not_assessed", "green", "amber", "red"],
+          d.quality ?? "not_assessed",
+        ) +
+        "";
+    }
+    if (k === "report")
+      html +=
         area("achievements", "Achievements", d.achievements) +
         area("next_steps", "Next steps / commitments", d.next_steps) +
         area("decisions", "Decisions / help needed", d.decisions);
@@ -682,12 +810,14 @@ export function createProjectControls({
         row.querySelector("button").onclick = () => row.remove();
         el("cf-key-results").append(row);
       };
-      (
-        d.key_results ?? [
-          { name: "", start: 0, target: 100, current: 0, unit: "%" },
-        ]
-      ).forEach(add);
+      (d.key_results ?? []).forEach(add);
       el("cf-add-kr").onclick = () => add();
+      el("cf-show-kr").onclick = () => {
+        const panel = el("cf-kr-panel");
+        const open = panel.hidden;
+        panel.hidden = !open;
+        el("cf-show-kr").setAttribute("aria-expanded", open ? "true" : "false");
+      };
     }
     el("control-form").onsubmit = async (e) => {
       e.preventDefault();
@@ -715,6 +845,7 @@ export function createProjectControls({
         "milestone_id",
         "resource_id",
         "job_link_id",
+        "phase",
         "goal_id",
         "risk_id",
         "completed_on",
@@ -728,14 +859,16 @@ export function createProjectControls({
       }
       if (k === "document") data.template = d.template ?? template;
       if (k === "goal")
-        data.key_results = [...el("cf-key-results").children].map((row) =>
-          Object.fromEntries(
-            [...row.querySelectorAll("[data-kr]")].map((n) => [
-              n.dataset.kr,
-              n.type === "number" ? Number(n.value) : n.value,
-            ]),
-          ),
-        );
+        data.key_results = [...el("cf-key-results").children]
+          .map((row) =>
+            Object.fromEntries(
+              [...row.querySelectorAll("[data-kr]")].map((n) => [
+                n.dataset.kr,
+                n.type === "number" ? Number(n.value) : n.value,
+              ]),
+            ),
+          )
+          .filter((row) => String(row.name ?? "").trim());
       el("cf-save").disabled = true;
       try {
         await save(r, data, r ? el("cf-active").checked : true);
@@ -969,7 +1102,7 @@ export function createProjectControls({
       : null;
     const content =
       type === "application/pdf"
-        ? '<div id="uploaded-pdf"><div class="document-actions"><button class="btn" id="pdf-prev" disabled>Previous page</button><span id="pdf-page" role="status">Loading PDF�</span><button class="btn" id="pdf-next" disabled>Next page</button></div><p id="pdf-error" role="alert"></p><canvas id="pdf-canvas" aria-label="Uploaded PDF page" style="max-width:100%;height:auto;border:1px solid #cad6df"></canvas><details><summary>Page text</summary><pre id="pdf-text" style="white-space:pre-wrap"></pre></details></div>'
+        ? '<div id="uploaded-pdf"><div class="document-actions"><button class="btn" id="pdf-prev" disabled>Previous page</button><span id="pdf-page" role="status">Loading PDF…</span><button class="btn" id="pdf-next" disabled>Next page</button></div><p id="pdf-error" role="alert"></p><canvas id="pdf-canvas" aria-label="Uploaded PDF page" style="max-width:100%;height:auto;border:1px solid var(--rule)"></canvas><details><summary>Page text</summary><pre id="pdf-text" style="white-space:pre-wrap"></pre></details></div>'
         : type === "image/png" || type === "image/jpeg"
           ? '<img src="' +
             href +
@@ -1272,31 +1405,10 @@ export function createProjectControls({
     );
   }
   async function dashboard(targetId) {
-    const id = current()?.id;
-    if (!id) return;
-    try {
-      const data = await api("/projects/" + id + "/controls");
-      if (current()?.id !== id) return;
-      const rows = data.records.filter((r) => r.active),
-        reports = rows
-          .filter((r) => r.kind === "report")
-          .sort(
-            (a, b) =>
-              b.data.as_of.localeCompare(a.data.as_of) ||
-              b.created_at.localeCompare(a.created_at),
-          );
-      const tasks = rows.filter(
-        (r) =>
-          r.kind === "task" &&
-          !rows.some((c) => c.kind === "task" && c.data.parent_id === r.id),
-      );
-      el(targetId).innerHTML =
-        `<div class="card control-dashboard"><h2>Project health & delivery</h2><div class="control-metrics"><a href="#plan">${status(reports[0]?.data.overall ?? "not_assessed")}<small>Latest reported RAG${reports[0] ? " · " + reports[0].data.as_of : ""}</small></a><a href="#plan"><strong>${tasks.filter((r) => r.data.state === "complete").length} / ${tasks.length}</strong><small>Tasks complete</small></a><a href="#risks"><strong>${rows.filter((r) => r.kind === "risk" && r.data.roam !== "resolved").length}</strong><small>Open risks</small></a><a href="#communications"><strong>${rows.filter((r) => r.kind === "communication" && r.data.next_on && r.data.next_on <= day()).length}</strong><small>Updates due</small></a></div></div>`;
-    } catch (e) {
-      if (current()?.id === id)
-        el(targetId).textContent =
-          "Project controls could not load: " + e.message;
-    }
+    // The schedule tile is the only project-progress number.
+    // This slot used to render a second row from WBS task counts.
+    const node = el(targetId);
+    if (node) node.replaceChildren();
   }
   return {
     mount,

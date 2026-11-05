@@ -62,6 +62,39 @@ beforeAll(async () => {
 afterAll(async () => {
   await h?.close();
 });
+it("keeps s and S in contact names at the start, middle, and end", async () => {
+  const samples = ["Susan", "Jessica", "Chris", "sasha", "JeSsica", "ChriS"];
+  const ids: string[] = [];
+  for (const [index, name] of samples.entries()) {
+    const created = await owner()
+      .post(base + "/vendors")
+      .send({
+        legal_name: name + " Co",
+        email: `contact-${index}@names.test`,
+        primary_contact: name,
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    ids.push(created.body.data.id);
+    const detail = await owner().get(base + "/vendors/" + created.body.data.id);
+    expect(detail.body.data.primary_contact).toBe(name);
+  }
+  const listed = (await owner().get(base + "/vendors?q=Jessica")).body.data;
+  expect(listed.find((row: { id: string }) => row.id === ids[1]).primary_contact).toBe("Jessica");
+  const edited = await owner()
+    .patch(base + "/vendors/" + ids[2])
+    .send({ primary_contact: "ChriS" });
+  expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+  expect(edited.body.data.primary_contact).toBe("ChriS");
+  expect((await owner().get(base + "/vendors/" + ids[2])).body.data.primary_contact).toBe("ChriS");
+  for (const id of ids) {
+    const archived = await owner().patch(base + "/vendors/" + id).send({ archived: true });
+    expect(archived.status, JSON.stringify(archived.body)).toBe(200);
+    expect(archived.body.data.primary_contact).toBe(
+      id === ids[2] ? "ChriS" : samples[ids.indexOf(id)],
+    );
+  }
+});
+
 it("persists full intake and sorts/filter trades without losing specialties on partial edits", async () => {
   await owner()
     .patch(base + "/vendors/" + vendor)

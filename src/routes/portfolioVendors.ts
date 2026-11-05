@@ -9,7 +9,8 @@ import { ApiError } from "../http/errors.js";
  * The subcontractor half of the portfolio feed: the tenant's vendor directory, readable and writable by the owner's
  * dashboard under the same bearer token as /summary. Every vendor carries updated_at; the dashboard keeps its own
  * copy with its own updated_at and the newer side wins, so a write here is accepted only when the caller's timestamp
- * is newer than the row's. Documents are read here but uploaded in Journeyman, where the file lives.
+ * is newer than the row's. Document metadata is read here. The same bearer may upload a file only at
+ * POST /api/v1/projects/vendors/:id/documents/upload; marking a document verified stays a staff action.
  */
 const VENDOR_FIELDS = z.object({
   legal_name: z.string().min(1).max(200),
@@ -47,7 +48,7 @@ const SELECT = `
          COALESCE(e.missing_count, 0)::int AS missing_count, COALESCE(e.expiring_count, 0)::int AS expiring_count, e.next_expiry::text AS next_expiry,
          COALESCE((SELECT json_agg(json_build_object('kind', c.kind::text, 'state', c.state, 'expires_on', c.expires_on::text, 'blocks', c.blocks_scheduling) ORDER BY c.kind)
                      FROM projects.v_vendor_compliance c WHERE c.vendor_id = v.id), '[]'::json) AS compliance,
-         COALESCE((SELECT json_agg(json_build_object('kind', d.kind::text, 'issued_on', d.issued_on::text, 'expires_on', d.expires_on::text, 'verified_at', d.verified_at, 'has_file', d.file_data IS NOT NULL OR d.file_key IS NOT NULL) ORDER BY d.kind, d.expires_on DESC NULLS LAST)
+         COALESCE((SELECT json_agg(json_build_object('kind', d.kind::text, 'issued_on', d.issued_on::text, 'expires_on', d.expires_on::text, 'verified_at', d.verified_at, 'notes', d.notes, 'has_file', d.file_data IS NOT NULL OR d.file_key IS NOT NULL) ORDER BY d.kind, d.expires_on DESC NULLS LAST)
                      FROM projects.vendor_documents d WHERE d.vendor_id = v.id), '[]'::json) AS documents
     FROM projects.vendors v
     LEFT JOIN projects.v_vendor_eligibility e ON e.vendor_id = v.id`;

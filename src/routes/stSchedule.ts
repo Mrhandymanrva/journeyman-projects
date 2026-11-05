@@ -2,14 +2,24 @@ import { Router } from "express";
 import { z } from "zod";
 import {
   staffExternalRoute,
+  staffRoute,
   type StaffContext,
   type StaffRouterDeps,
 } from "../http/staffSession.js";
-import { unitFilter } from "../http/capabilities.js";
+import { requireCapability, unitFilter } from "../http/capabilities.js";
 import { ApiError } from "../http/errors.js";
 import { sendData } from "../http/envelope.js";
 import { loadVisibleProject, parseBody, parseUuidParam } from "./shared.js";
 import type { SourceConnections } from "../adapters/sourceConnections.js";
+import { assignAppointmentPhases } from "../domain/planPhase.js";
+import {
+  appointmentSkipWarning,
+  claimPlanAppointmentRefresh,
+  finishPlanAppointmentRefresh,
+  planAppointmentMessage,
+  readPlanLinkStatus,
+  refreshProjectPlanAppointments,
+} from "../domain/planAppointments.js";
 type Target = {
   id: string;
   name: string;
@@ -64,7 +74,7 @@ export function stScheduleRoutes(
     );
     const targets = (
       await ctx.db.query<Target>(
-        `SELECT p.id,p.name,p.project_number,s.external_project_id,s.connection_key FROM projects.projects p LEFT JOIN projects.st_project_connections s ON s.project_id=p.id AND s.external_system_id=$1 WHERE ($2::uuid IS NULL OR p.id=$2) AND ($3::uuid IS NULL OR p.business_unit_id=$3) AND (s.project_id IS NOT NULL OR EXISTS(SELECT 1 FROM projects.project_job_links j WHERE j.project_id=p.id AND j.external_system_id=$1 AND j.source_active)) ORDER BY p.id`,
+        `SELECT p.id,p.name,p.project_number,s.external_project_id,s.connection_key FROM projects.projects p LEFT JOIN projects.st_project_connections s ON s.project_id=p.id AND s.external_system_id=$1 WHERE ($2::uuid IS NULL OR p.id=$2) AND ($3::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id=$3) AND (s.project_id IS NOT NULL OR EXISTS(SELECT 1 FROM projects.project_job_links j WHERE j.project_id=p.id AND j.external_system_id=$1 AND j.source_active)) ORDER BY p.id`,
         [c.externalSystemId, id, unit],
       )
     ).rows;
@@ -161,7 +171,7 @@ export function stScheduleRoutes(
                   " · " +
                   a.appointmentNumber,
                 summary: result.job.summary ?? null,
-                phase: "ServiceTitan jobs",
+                phase: null,
                 window_start: start,
                 window_end: end,
                 appointment_start: a.start,
@@ -204,6 +214,7 @@ export function stScheduleRoutes(
           "conflict",
           "Project access or ST links changed during refresh. Try again.",
         );
+      await assignAppointmentPhases(ctx.db, rows);
       sendData(ctx.res, {
         configured: !!p.c,
         linkedProjects: p.targets.length,
@@ -215,5 +226,206 @@ export function stScheduleRoutes(
   );
   router.get("/projects/:id/servicetitan/schedule", handler);
   router.get("/servicetitan/schedule", handler);
+  router.get(
+    "/projects/:id/plan-appointments",
+    staffRoute(deps, async (ctx) => {
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      await loadVisibleProject(ctx, id, "id");
+      sendData(ctx.res, await storedAppointments(ctx, id, ctx.req.query));
+    }),
+  );
+  router.get(
+    "/plan-appointments",
+    staffRoute(deps, async (ctx) => {
+      sendData(ctx.res, await storedAppointments(ctx, null, ctx.req.query));
+    }),
+  );
+  router.post(
+    "/projects/:id/plan-appointments/refresh",
+    staffExternalRoute(
+      deps,
+      async (ctx) => {
+        const id = parseUuidParam(ctx.req.params.id, "Project");
+        await loadVisibleProject(ctx, id, "id");
+        requireCapability(ctx.staff.role, "refresh_labor");
+        const source = sources.serviceTitan;
+        if (!source || source.tenantId !== ctx.staff.tenantId || !source.client.readJob) {
+          throw new ApiError(
+            "conflict",
+            "ServiceTitan is not configured for this account. Existing appointments were left as they are.",
+          );
+        }
+        const link = await readPlanLinkStatus(ctx.db, id, null);
+        if (!link.linkedProjects) {
+          throw new ApiError(
+            "conflict",
+            "Connect this project to ServiceTitan to include technician jobs.",
+          );
+        }
+        const jobs = await ctx.db.query<{ external_job_id: string }>(
+          `SELECT external_job_id
+             FROM projects.project_job_links
+            WHERE project_id = $1
+              AND external_system_id = $2
+              AND source_active
+            ORDER BY external_job_id`,
+          [id, source.externalSystemId],
+        );
+        const gate = claimPlanAppointmentRefresh(`${ctx.staff.tenantId}:${id}`);
+        if (gate !== "ok") {
+          throw new ApiError(
+            "rate_limited",
+            "Wait a few seconds before refreshing ServiceTitan jobs again.",
+          );
+        }
+        return {
+          id,
+          tenantId: ctx.staff.tenantId,
+          jobs: jobs.rows,
+          readJob: (jobId: string) => source.client.readJob(jobId),
+        };
+      },
+      async (prepared) => {
+        try {
+          return await refreshProjectPlanAppointments(deps.database, {
+            tenantId: prepared.tenantId,
+            projectId: prepared.id,
+            jobs: prepared.jobs,
+            readJob: prepared.readJob,
+          });
+        } finally {
+          finishPlanAppointmentRefresh(`${prepared.tenantId}:${prepared.id}`);
+        }
+      },
+      async (ctx, prepared, result) => {
+        requireCapability(ctx.staff.role, "refresh_labor");
+        await loadVisibleProject(ctx, prepared.id, "id");
+        sendData(ctx.res, {
+          stored: result.stored,
+          skipped: result.skipped,
+          failedJobs: result.failedJobs,
+          warnings: result.warnings,
+          readAt: result.readAt,
+          error: result.error,
+        });
+      },
+    ),
+  );
   return router;
+}
+
+async function storedAppointments(
+  ctx: StaffContext,
+  projectId: string | null,
+  query: StaffContext["req"]["query"],
+) {
+  const q = parseBody(
+    z.object({ from: z.string().date(), to: z.string().date() }).refine(
+      (value) => value.to >= value.from && Date.parse(value.to) - Date.parse(value.from) <= 370 * 86400000,
+      { message: "Choose a date range of up to a year." },
+    ),
+    query,
+  );
+  const zone = "America/New_York";
+  const localDate = (value: string) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date(value));
+  const unit = unitFilter(ctx.staff.businessUnitId, ctx.settings.enforceBusinessUnitScoping);
+  const rows = await ctx.db.query<{
+    project_id: string;
+    project_name: string;
+    project_number: string;
+    external_job_id: string;
+    external_appointment_id: string;
+    job_number: string;
+    appointment_number: string;
+    job_status: string;
+    starts_at: Date;
+    ends_at: Date;
+    status: string;
+    technicians: Array<{ id: string; name: string }> | string;
+  }>(
+    `SELECT a.project_id::text, p.name AS project_name, p.project_number,
+            a.external_job_id, a.external_appointment_id, a.job_number,
+            a.appointment_number, a.job_status, a.starts_at, a.ends_at,
+            a.status, a.technicians
+       FROM projects.st_plan_appointments a
+       JOIN projects.projects p ON p.id = a.project_id
+      WHERE a.active
+        AND a.status !~* 'cancel'
+        AND a.job_status !~* 'cancel'
+        AND ($1::uuid IS NULL OR a.project_id = $1)
+        AND ($2::uuid IS NULL OR p.business_unit_id IS NULL OR p.business_unit_id = $2)
+      ORDER BY a.starts_at`,
+    [projectId, unit],
+  );
+  const visible = rows.rows.flatMap((row) => {
+    const start = row.starts_at.toISOString();
+    const end = row.ends_at.toISOString();
+    const windowStart = localDate(start);
+    const windowEnd = localDate(new Date(Date.parse(end) - 1).toISOString());
+    if (windowStart > q.to || windowEnd < q.from) return [];
+    const people = (Array.isArray(row.technicians) ? row.technicians : []).map((tech) => ({
+      id: "st-tech:" + tech.id,
+      name: tech.name,
+      kind: "employee",
+      trade: "ServiceTitan",
+      schedulable: true,
+    }));
+    return [{
+      id: "st:" + row.project_id + ":" + row.external_appointment_id,
+      source: "servicetitan",
+      project_id: row.project_id,
+      project_name: row.project_name,
+      project_number: row.project_number,
+      external_job_id: row.external_job_id,
+      appointment_id: row.external_appointment_id,
+      appointment_number: row.appointment_number,
+      title: "ST job " + row.job_number + " · " + row.appointment_number,
+      job_link_id: null as string | null,
+      phase: null as string | null,
+      window_start: windowStart,
+      window_end: windowEnd,
+      appointment_start: start,
+      appointment_end: end,
+      time_zone: zone,
+      source_status: row.status,
+      status: /done|complete/i.test(row.status) ? "complete" : "confirmed",
+      resources: people,
+      read_only: true,
+    }];
+  });
+  await assignAppointmentPhases(ctx.db, visible);
+  const link = await readPlanLinkStatus(ctx.db, projectId, unit);
+  const message = planAppointmentMessage({
+    configured: link.configured,
+    linkedProjects: link.linkedProjects,
+    inRange: visible.length,
+    readAt: link.readAt,
+    skipped: link.skipped,
+    failedJobs: link.failedJobs,
+    readError: link.readError,
+  });
+  return {
+    configured: link.configured,
+    linkedProjects: link.linkedProjects,
+    rows: visible,
+    observedAt: link.readAt,
+    appointmentsReadAt: link.readAt,
+    skippedAppointments: link.skipped,
+    failedJobs: link.failedJobs,
+    warnings: [
+      appointmentSkipWarning(link.skipped),
+      ...link.failedJobs.map((job) => `Job ${job.jobId} appointments: ${job.message}`),
+      link.failedJobs.length === 0 ? link.readError : null,
+    ].filter((warning): warning is string => !!warning),
+    readError: link.readError,
+    message,
+    timeZone: zone,
+    readOnly: true,
+  };
 }

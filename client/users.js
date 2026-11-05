@@ -1,3 +1,5 @@
+import { roleTitle } from "./roleTitles.js";
+
 export function createUsers({ api, el, esc, openDrawer, closeDrawer, can }) {
   let users = [],
     units = [],
@@ -11,7 +13,7 @@ export function createUsers({ api, el, esc, openDrawer, closeDrawer, can }) {
     "office",
     "bookkeeper",
   ];
-  const roleLabel = (r) => r.replaceAll("_", " ");
+  const roleLabel = (r) => roleTitle(r);
   function setup(result) {
     const url = location.origin + "/#setup=" + result.setupToken;
     openDrawer(

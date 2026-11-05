@@ -194,6 +194,12 @@ UPDATE projects.tenant_settings SET enforce_business_unit_scoping = true
 
 Both run inside a transaction with `app.tenant_id` set. Everything does.
 
+## Permit offices
+
+The first successful boot loads `db/seeds/permit_offices_import.csv` (18 offices, 41 contacts) with the same importer as `POST /jurisdictions/import`. The tenant is `SSO_TENANT_ID`, or `PM_PORTFOLIO_TENANT_ID` when that is unset, or the only row in `projects.tenants` when neither is set. Production has that one tenant. The pre-deploy step runs the same load when `DATABASE_URL` is set.
+
+A row in `projects.permit_office_seed_runs` records that the load committed. The next boot logs offices created 0, offices updated 0, contacts 0 and does not open the file, so an edit made in the console stays. A database with no tenant yet logs a skip and tries again on the next boot. More than one tenant, with neither id set, is skipped rather than written into every tenant.
+
 ## Backups
 
 Standard `pg_dump`, with one caveat worth knowing before you need it: a restore

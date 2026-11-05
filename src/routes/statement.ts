@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { sendData } from '../http/envelope.js';
 import { requireCapability } from '../http/capabilities.js';
 import { staffRoute, type StaffRouterDeps } from '../http/staffSession.js';
+import { pendingEstimateRevision } from '../domain/arMatch.js';
 import { loadVisibleProject, num, parseUuidParam } from './shared.js';
 
 /**
@@ -140,6 +141,9 @@ export function statementRoutes(deps: StaffRouterDeps): Router {
         original_contract: round2(original),
         approved_change_orders: round2(approvedChanges),
         revised_contract: round2(original + approvedChanges),
+        // Sold estimates that are not an approved local change order. Shown
+        // beside the revised contract. They are not added into it.
+        pending_estimate_revisions: await pendingEstimateRevision(ctx.db, projectId),
 
         // The draw schedule is a percentage of the ORIGINAL contract and does
         // not reopen when a change order is approved. So on a project with

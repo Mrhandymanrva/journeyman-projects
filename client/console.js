@@ -1,6 +1,43 @@
+import { bindFieldRelease, fieldReleaseHtml } from "./fieldRelease.js";
+import {
+  INSPECTION_RESULTS,
+  PRECON_STATUSES,
+  PRECON_TYPES,
+  bindPrecon,
+  preconHtml,
+} from "./precon.js";
+import { bindCsrHandoff, csrHandoffHtml } from "./handoff.js";
+import { createHome, landingChoice, revealLinkedItem } from "./home.js";
+import { roleTitle } from "./roleTitles.js";
 import { createWorkspace } from "./workspace.js";
+import { workspacePages } from "./workspaceNav.js";
 import { createSTProjectConnector } from "./stProjectConnector.js";
+import { laborCardHtml } from "./laborCard.js";
 import { createPlanning } from "./planning.js";
+import {
+  closeoutCardHtml,
+  closeoutDoneCount,
+  closeoutDoneLabel,
+  closeoutSavePayload,
+} from "./closeoutCard.js";
+import { financialsDashboardHtml } from "./financialsDashboard.js";
+import { bindStPoSync, stPoSyncHtml } from "./stPoSync.js";
+import {
+  bindBudgetEntryFigures,
+  bindSoldEstimateButton,
+  budgetEntryHtml,
+  budgetEntryPayload,
+  budgetFormEditable,
+} from "./budgetEntry.js";
+import {
+  bindEnterBudget,
+  budgetSummary,
+  changeOrderSummary,
+  drawSummary,
+  laborSummary,
+  purchaseOrderSummary,
+  stDetailSummary,
+} from "./financialsSections.js";
 /** Project data and workflows. workspace.js organizes them into dashboard and navigation views. */
 
 const API = "/api/v1/projects";
@@ -11,8 +48,15 @@ let setupToken = location.hash.startsWith("#setup=")
 if (setupToken) history.replaceState(null, "", location.pathname);
 
 const money = (n) => "$" + Math.round(n).toLocaleString("en-US");
+const laborMoney = (n) =>
+  "$" +
+  Number(n || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+// U+2212 MINUS SIGN, escaped so a Latin-1 reread of this file cannot mangle it.
 const signed = (n) =>
-  (n < 0 ? "âˆ’" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
+  (n < 0 ? "\u2212" : "+") + "$" + Math.abs(Math.round(n)).toLocaleString("en-US");
 const el = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? "").replace(
@@ -174,7 +218,7 @@ async function boot() {
     el("tenant").textContent = session.tenant.display_name;
     el("who").hidden = false;
     el("who").innerHTML =
-      `${esc(session.staff.full_name)} · ${esc(session.staff.role.replace(/_/g, " "))}` +
+      `${esc(session.staff.full_name)} · ${esc(roleTitle(session.staff.role))}` +
       `<button type="button" id="signout">sign out</button>`;
     el("signout").addEventListener("click", signOut);
 
@@ -183,27 +227,35 @@ async function boot() {
       "manage_company_settings",
     );
     projects = await loadProjects();
+    renderSwitch();
     if (projects.length === 0) {
-      el("boot").textContent =
-        "No projects yet. Choose Add from ServiceTitan to get started.";
+      el("boot").hidden = true;
       if (location.hash === "#users") await workspace.openUsers();
+      else await workspace.openHome();
       return;
     }
-    renderSwitch();
     const linkedProject = new URLSearchParams(location.search).get("project");
     if (linkedProject && !projects.some((p) => p.id === linkedProject))
       throw Error(
         "You do not have access to the project in this document link.",
       );
-    current =
-      projects.find((p) => p.id === linkedProject) ??
-      projects.find(
-        (p) =>
-          p.id ===
-          localStorage.getItem("jp.activeProject." + session.tenant.id),
-      ) ??
-      projects[0];
-    await select(current.id);
+    const choice = landingChoice({
+      search: location.search,
+      hash: location.hash,
+      rememberedProjectId: localStorage.getItem(
+        "jp.activeProject." + session.tenant.id,
+      ),
+      projectPages: Object.keys(workspacePages),
+    });
+    if (
+      choice.kind === "project" &&
+      projects.some((p) => p.id === choice.projectId)
+    ) {
+      await select(choice.projectId);
+      return;
+    }
+    el("boot").hidden = true;
+    await workspace.openHome();
   } catch (err) {
     if (err.status === 401) {
       showSignIn(token ? "That session is no longer valid." : "");
@@ -274,6 +326,7 @@ function filterProjects() {
           esc(project.id) +
           '">' +
           esc(project.project_number + " — " + project.name) +
+          budgetMark(project) +
           "</option>",
       )
       .join("");
@@ -290,9 +343,9 @@ function filterProjects() {
 const shortName = (name) => String(name).split(" — ")[0];
 
 function pipColour(p) {
-  if (p.exception_count === undefined) return "#C3CBC5";
-  if (p.exception_count === 0) return "#1D7A4C";
-  return p.exception_severity === "bad" ? "#B4231F" : "#F58220";
+  if (p.exception_count === undefined) return "var(--pip-idle)";
+  if (p.exception_count === 0) return "var(--status-track)";
+  return p.exception_severity === "bad" ? "var(--status-late)" : "var(--status-risk)";
 }
 
 // ------------------------------------------------------------------- select
@@ -317,6 +370,10 @@ async function select(projectId) {
       pos,
       logs,
       cos,
+      closeout,
+      labor,
+      stFinancials,
+      financialSummary,
     ] = await Promise.all([
       api(`/projects/${projectId}`),
       api(`/projects/${projectId}/cost-position`),
@@ -329,13 +386,27 @@ async function select(projectId) {
       api(`/projects/${projectId}/purchase-orders`),
       api(`/projects/${projectId}/daily-logs`),
       api(`/projects/${projectId}/change-orders`),
+      api(`/projects/${projectId}/closeout`),
+      api(`/projects/${projectId}/labor`),
+      api(`/projects/${projectId}/service-titan-financials`).catch(() => null),
+      api(`/projects/${projectId}/financials/summary`).catch(() => null),
     ]);
 
     if (revision !== selectionRevision) return;
     current = { id: projectId, ...detail };
     localStorage.setItem("jp.activeProject." + session.tenant.id, projectId);
+    const projectUrl = new URL(location.href);
+    projectUrl.searchParams.set("project", projectId);
+    if (!projectUrl.hash || projectUrl.hash === "#home")
+      projectUrl.hash = "dashboard";
+    history.replaceState(
+      null,
+      "",
+      projectUrl.pathname + projectUrl.search + projectUrl.hash,
+    );
     if (el("project-search")) filterProjects();
     el("boot").hidden = true;
+    if (el("home")) el("home").hidden = true;
     el("shell").hidden = false;
     render({
       detail,
@@ -349,6 +420,10 @@ async function select(projectId) {
       pos,
       logs,
       cos,
+      closeout,
+      labor,
+      stFinancials,
+      financialSummary,
     });
   } catch (err) {
     if (revision !== selectionRevision) return;
@@ -360,6 +435,8 @@ async function select(projectId) {
 // ------------------------------------------------------------------- render
 
 function render(d) {
+  if (current && d.cos)
+    current.sold_estimates = d.cos.unmatched_sold_estimates ?? [];
   const p = d.detail;
 
   el("pcode").textContent = [
@@ -385,19 +462,56 @@ function render(d) {
     "ServiceTitan is the official project record repository. Publish PM document revisions to ST; saved drafts stay in this workspace.";
 
   renderStats(p, d.margin, d.cost);
-  renderNotice(d.budget, d.drawData);
+  renderBudgetFlag(p);
+  renderNotice(d.budget, d.drawData, p);
   renderStageBar(p, p.gates);
-  renderGates(p.gates);
-  renderBudget(d.cost, d.budget);
+  renderGates(p);
+  renderFinancialsDashboard(d.financialSummary);
+  void renderStPoSync(p.id);
+  renderBudget(d.cost, d.budget, d.financialSummary?.soldEstimate);
   renderPurchaseOrders(d.pos);
   renderChangeOrders(d.cos);
+  renderCloseout(d.closeout);
+  renderLabor(d.labor);
+  renderStFinancials(d.stFinancials);
   renderSubs(d.schedule);
   void planning.render(d.schedule);
   renderLogs(d.logs);
-  renderBlockers(d.exceptions, d.schedule, d.drawData);
+  renderBlockers(d.exceptions, d.schedule, d.drawData, d.cost, p);
   renderPermits(d.permits);
   renderDraws(d.drawData);
   workspace.render(d);
+  renderPrecon(d.detail);
+  void renderCsrHandoff(current.id, p.stage);
+  revealLinkedItem();
+}
+
+async function renderCsrHandoff(projectId, stage) {
+  const card = el("csr-handoff");
+  if (!card) return;
+  if (stage !== "handoff") {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const body = el("csr-handoff-body");
+  body.textContent = "Loading hand-off…";
+  try {
+    const view = await api(`/projects/${projectId}/handoff`);
+    if (!current || current.id !== projectId) return;
+    body.innerHTML = csrHandoffHtml(view, {
+      esc,
+      canSave: can("save_csr_handoff"),
+    });
+    bindCsrHandoff(body, {
+      api,
+      projectId,
+      onSaved: () => select(projectId),
+    });
+  } catch (error) {
+    if (!current || current.id !== projectId) return;
+    body.textContent = error.message;
+  }
 }
 
 function addressLine(p) {
@@ -417,6 +531,55 @@ function dayLine(p) {
   if (!Number.isFinite(day) || !Number.isFinite(total) || total <= 0)
     return null;
   return `Day ${day} of ${total}`;
+}
+
+function budgetMark(project) {
+  if (project?.budget_alert === "over_budget") return " — Over budget";
+  if (project?.budget_alert === "warning") return " — Budget warning";
+  return "";
+}
+
+function formatPct(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return "—";
+  const rounded = Math.round(n * 10) / 10;
+  return (Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)) + "%";
+}
+
+function budgetFlagCopy(alert, pct) {
+  const shown = formatPct(pct);
+  if (alert === "over_budget") {
+    return {
+      className: "tag bad",
+      bannerClass: "banner",
+      title: "Over budget",
+      detail: `Actual cost is ${shown} of budget.`,
+    };
+  }
+  if (alert === "warning") {
+    return {
+      className: "tag warn",
+      bannerClass: "banner warn",
+      title: "Budget warning",
+      detail: `Actual cost has reached ${shown} of budget.`,
+    };
+  }
+  return null;
+}
+
+function renderBudgetFlag(detail) {
+  const flag = el("budget-flag");
+  if (!flag) return;
+  const copy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (!copy) {
+    flag.hidden = true;
+    flag.textContent = "";
+    flag.className = "tag";
+    return;
+  }
+  flag.hidden = false;
+  flag.className = copy.className;
+  flag.textContent = `${copy.title} · ${formatPct(detail.actual_to_budget_pct)} of budget`;
 }
 
 function renderStats(p, margin, cost) {
@@ -447,9 +610,15 @@ function renderStats(p, margin, cost) {
     <div class="stat"><span class="lbl">Projected margin</span>${marginCell}</div>`;
 }
 
-function renderNotice(budget, drawData) {
+function renderNotice(budget, drawData, detail) {
   const notices = [];
-  if (budget.baseline_frozen) {
+  const budgetCopy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (budgetCopy) {
+    notices.push(
+      `<div class="${budgetCopy.bannerClass}"><b>${esc(budgetCopy.title)}</b>${esc(budgetCopy.detail)}</div>`,
+    );
+  }
+  if (budget.baseline_frozen && budget.entry?.entered) {
     notices.push(
       `<div class="banner warn"><b>Budget baseline frozen</b>Gate ${budget.frozen_by_gate} was approved, so budget lines are locked. Changes after the freeze belong on a change order.</div>`,
     );
@@ -467,11 +636,13 @@ function renderNotice(budget, drawData) {
   el("notice").innerHTML = notices.join("");
 }
 
-function renderGates(gates) {
+function renderGates(project) {
   // Count and content are tenant configuration. The mock's five-entry
   // GATE_LABELS array is gone; this reads what the tenant actually has.
+  const gates = project.gates || [];
   const currentIndex = gates.findIndex((g) => g.status !== "approved");
   const stage = currentIndex === -1 ? gates.length : currentIndex;
+  const released = Boolean(project.field_release?.released);
 
   el("gates").innerHTML = gates
     .map((g, i) => {
@@ -487,13 +658,36 @@ function renderGates(gates) {
       const outstanding = (g.checklist || []).filter((c) => !c.done).length;
       const detail =
         outstanding > 0 && i === stage ? ` · ${outstanding} outstanding` : "";
+      const releaseMark =
+        Number(g.gate_number) === 2
+          ? released
+            ? " · Field release recorded"
+            : " · No field release"
+          : "";
+      const approver = roleTitle(g.approver_role);
       return `<div class="gate ${cls} actionable" data-gate="${g.gate_number}">
       <div class="stamp">${i < stage ? "✓" : g.gate_number}</div>
       <div class="gate-t"><span class="n">${esc(g.title)}</span>
-      <span class="m">Gate ${g.gate_number} · ${meta}${detail}</span></div>
+      <span class="m">Gate ${g.gate_number} · ${meta}${detail}${approver ? ` · ${esc(approver)}` : ""}${releaseMark}</span></div>
     </div>`;
     })
     .join("");
+
+  const gate2 = gates.find((g) => Number(g.gate_number) === 2);
+  const releasePanel = fieldReleaseHtml({
+    release: project.field_release,
+    canRelease: can("record_field_release"),
+    esc,
+    items: gate2?.checklist || [],
+    fieldStart: project.field_start,
+  });
+  const gate2Node = el("gates").querySelector('.gate[data-gate="2"]');
+  if (gate2Node) gate2Node.insertAdjacentHTML("afterend", releasePanel);
+  else el("gates").insertAdjacentHTML("beforeend", releasePanel);
+  bindFieldRelease(el("gates").querySelector(".field-release"), {
+    onRelease: (note) => saveFieldRelease(note, false),
+    onUndo: (note) => saveFieldRelease(note, true),
+  });
 
   // Every gate opens, not just the current one: a rejected gate two stages back
   // is exactly the thing someone needs to get at.
@@ -507,20 +701,130 @@ function renderGates(gates) {
   );
 }
 
-function renderBudget(cost, budget) {
-  if (cost.length === 0) {
-    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
-    el("btag").textContent = "No budget";
-    el("btag").className = "tag";
+async function saveFieldRelease(note, undo) {
+  await api(
+    `/projects/${current.id}/field-release${undo ? "/undo" : ""}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ note: note || null }),
+    },
+  );
+  closeDrawer();
+  await select(current.id);
+}
+
+function setFinSummary(id, text) {
+  const node = el("fin-sum-" + id);
+  if (node) node.textContent = text;
+}
+
+function renderFinancialsDashboard(summary) {
+  const node = el("fin-summary");
+  if (!node) return;
+  node.innerHTML = financialsDashboardHtml(summary);
+}
+
+async function renderStPoSync(projectId) {
+  const host = el("st-po-sync");
+  if (!host) return;
+  const stPoRole = session?.staff?.role;
+  if (stPoRole !== "owner" && stPoRole !== "manager" && stPoRole !== "project_manager") {
+    host.innerHTML = "";
     return;
   }
+  host.innerHTML = stPoSyncHtml({ loading: true });
+  try {
+    const data = await api(`/projects/${projectId}/service-titan-purchase-orders`);
+    host.innerHTML = stPoSyncHtml({ orders: data.orders, writesEnabled: data.writes_enabled });
+    bindStPoSync(host, {
+      api,
+      onPreview: (poId) => api(`/purchase-orders/${poId}/service-titan-sync`),
+      onSave: (poId, choices) =>
+        api(`/purchase-orders/${poId}/service-titan-choices`, {
+          method: "PUT",
+          body: JSON.stringify(choices),
+        }),
+      onSearchSkus: (poId, query) =>
+        api(`/purchase-orders/${poId}/service-titan-skus?q=${encodeURIComponent(query)}`),
+      onConfirm: (poId, choices) =>
+        api(`/purchase-orders/${poId}/service-titan-sync`, {
+          method: "POST",
+          body: JSON.stringify({ confirm: true, choices }),
+        }),
+    });
+  } catch (err) {
+    host.innerHTML = stPoSyncHtml({ error: err.message || "ServiceTitan sync could not be loaded." });
+  }
+}
 
+function renderBudgetEntry(budget, soldEstimate) {
+  const host = el("budget-entry");
+  if (!host) return;
+  const frozen = Boolean(budget?.baseline_frozen);
+  const entered = Boolean(budget?.entry?.entered);
+  const editable = budgetFormEditable({
+    canEdit: can("edit_budget_before_freeze"),
+    frozen,
+    entered,
+  });
+  host.innerHTML = budgetEntryHtml(budget?.entry, {
+    editable,
+    frozen: frozen && entered,
+    soldEstimate,
+  });
+  bindSoldEstimateButton(document);
+  bindBudgetEntryFigures(document);
+  const form = el("budget-entry-form");
+  if (!form || !editable) return;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const msg = el("budget-entry-msg");
+    const parsed = budgetEntryPayload({
+      contract_value: el("budget-contract")?.value,
+      labor: el("budget-labor")?.value,
+      labor_hours: el("budget-hours")?.value,
+      materials: el("budget-materials")?.value,
+      subcontractor: el("budget-sub")?.value,
+      other: el("budget-other")?.value,
+    });
+    if (parsed.error) {
+      if (msg) {
+        msg.textContent = parsed.error;
+        msg.className = "msg bad";
+      }
+      return;
+    }
+    try {
+      await api(`/projects/${current.id}/budget/entry`, {
+        method: "PUT",
+        body: JSON.stringify(parsed.body),
+      });
+      await select(current.id);
+    } catch (err) {
+      if (msg) {
+        msg.textContent = err.message;
+        msg.className = "msg bad";
+      }
+    }
+  });
+}
+
+function renderBudget(cost, budget, soldEstimate) {
+  setFinSummary("budget", budgetSummary(cost, budget?.entry));
+  renderBudgetEntry(budget, soldEstimate);
   const freeze = {
     frozen: Boolean(budget?.baseline_frozen),
     gateNumber: budget?.frozen_by_gate,
   };
   const editable = can("edit_budget_before_freeze");
-  el("budget-add").hidden = !editable || freeze.frozen;
+  const add = el("budget-add");
+  if (add) add.hidden = !editable || freeze.frozen;
+  if (cost.length === 0) {
+    el("budget").innerHTML = `<div class="state">No budget lines yet.</div>`;
+    el("btag").textContent = budget?.entry?.entered ? "No cost-code lines" : "No budget";
+    el("btag").className = "tag";
+    return;
+  }
 
   const maxScale = Math.max(
     ...cost.map((r) =>
@@ -542,13 +846,33 @@ function renderBudget(cost, budget) {
       const comW = (Math.max(0, within - Math.min(a, b)) / S) * 100;
       const ovrW = (over / S) * 100;
       const cls = v < 0 ? "over" : tot > 0 && v > 0 ? "und" : "";
-      return `<div class="brow ${editable ? "editable" : ""}" data-code="${esc(r.cost_code)}">
+      const unbudgeted = r.description === "Unbudgeted labor";
+      const lineFlag =
+        r.budget_alert === "warning"
+          ? `<span class="tag warn">Budget warning · ${esc(formatPct(r.actual_to_budget_pct))} of budget</span>`
+          : r.budget_alert === "over_budget"
+            ? `<span class="tag bad">Over budget · ${esc(formatPct(r.actual_to_budget_pct))} of budget</span>`
+            : "";
+      const label = unbudgeted
+        ? `<span class="c">${esc(r.cost_code)}</span>Unbudgeted labor`
+        : `<span class="c">${esc(r.cost_code)}</span>${esc(r.description)}`;
+      const detail = Array.isArray(r.lines)
+        ? `<ul class="labor-lines">${r.lines
+            .map(
+              (line) =>
+                `<li><span>${esc(line.description)}</span><span>${laborMoney(line.amount)}</span></li>`,
+            )
+            .join("")}</ul>`
+        : "";
+      return `<div class="brow ${editable && !unbudgeted ? "editable" : ""}" data-code="${esc(r.cost_code)}"${unbudgeted ? ' data-unbudgeted="true" id="unbudgeted-labor"' : ""}>
       <div class="btop">
-        <div class="bname"><span class="c">${esc(r.cost_code)}</span>${esc(r.description)}
-          ${editable ? '<span class="edit-hint">edit</span>' : ""}</div>
+        <div class="bname">${label}
+          ${lineFlag}
+          ${editable && !unbudgeted ? '<span class="edit-hint">edit</span>' : ""}</div>
         <div class="bnum">${money(b)}</div>
         <div class="bnum ${cls}">${tot === 0 ? "—" : signed(v)}</div>
       </div>
+      ${detail}
       <div class="track">
         <div class="seg act" style="width:${actW}%"></div>
         <div class="seg com" style="left:${actW}%;width:${comW}%"></div>
@@ -562,6 +886,7 @@ function renderBudget(cost, budget) {
   if (editable) {
     document.querySelectorAll("#budget .brow").forEach((node) =>
       node.addEventListener("click", () => {
+        if (node.dataset.unbudgeted) return;
         const line = (budget?.lines ?? []).find(
           (l) => l.code === node.dataset.code,
         );
@@ -631,8 +956,29 @@ const shortDate = (d) => (d ? String(d).slice(5).replace("-", "/") : "");
 const monthYear = (d) =>
   d ? `${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : "";
 
-function renderBlockers(exceptions, schedule, drawData) {
+function renderBlockers(exceptions, schedule, drawData, cost, detail) {
   const rows = [];
+  const projectCopy = budgetFlagCopy(detail?.budget_alert, detail?.actual_to_budget_pct);
+  if (projectCopy) {
+    rows.push({
+      s: detail.budget_alert === "over_budget" ? "bad" : "warn",
+      t: projectCopy.title,
+      m: projectCopy.detail,
+      r: formatPct(detail.actual_to_budget_pct),
+      rc: detail.budget_alert === "over_budget" ? "bad" : "warn",
+    });
+  }
+  for (const line of cost ?? []) {
+    if (line.budget_alert !== "warning" && line.budget_alert !== "over_budget") continue;
+    const over = line.budget_alert === "over_budget";
+    rows.push({
+      s: over ? "bad" : "warn",
+      t: `Cost code ${line.cost_code} ${over ? "over budget" : "at budget warning"}`,
+      m: `${line.description} · actual cost is ${formatPct(line.actual_to_budget_pct)} of budget`,
+      r: formatPct(line.actual_to_budget_pct),
+      rc: over ? "bad" : "warn",
+    });
+  }
 
   for (const s of schedule) {
     if (s.vendor_id && s.vendor_schedulable === false) {
@@ -713,9 +1059,138 @@ function renderBlockers(exceptions, schedule, drawData) {
   b2.className = "tag " + (nb ? "bad" : "ok");
 }
 
+function renderPrecon(project) {
+  const root = el("precon");
+  if (!root || !project) return;
+  const tasks = project.precon?.tasks || [];
+  root.innerHTML = preconHtml({
+    precon: project.precon,
+    canEdit: can("manage_precon_tasks"),
+    esc,
+  });
+  bindPrecon(root, {
+    onApply: () =>
+      api(`/projects/${project.id}/precon-tasks/apply-template`, { method: "POST" }).then(
+        () => select(project.id),
+      ),
+    onStatus: (id, status) =>
+      api(`/precon-tasks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      }).then(() => select(project.id)),
+    onAdd: () => preconTaskDrawer(project, null),
+    onEdit: (id) => preconTaskDrawer(project, tasks.find((task) => task.id === id)),
+    onInspect: (id) => inspectionDrawer(tasks.find((task) => task.id === id)),
+  });
+}
+
+async function preconTaskDrawer(project, task) {
+  let offices = [];
+  try {
+    offices = await api("/jurisdictions");
+  } catch (err) {
+    offices = [];
+  }
+  const value = task || {};
+  const typeOptions = PRECON_TYPES.map(
+    ([id, label]) =>
+      `<option value="${id}"${value.type === id ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+  const statusOptions = PRECON_STATUSES.map(
+    ([id, label]) =>
+      `<option value="${id}"${(value.status || "not_started") === id ? " selected" : ""}>${esc(label)}</option>`,
+  ).join("");
+  const roles = ["owner", "manager", "project_manager", "estimator", "office", "bookkeeper"];
+  openDrawer(
+    task ? "Edit preconstruction task" : "Add preconstruction task",
+    `<form id="precon-form">
+      ${field("Type", `<select id="precon-type">${typeOptions}</select>`)}
+      ${field("Title", `<input id="precon-title" maxlength="200" required value="${esc(value.title || "")}">`)}
+      ${field("Owner", `<select id="precon-owner">${roles.map((role) => `<option value="${role}"${value.owner_role === role ? " selected" : ""}>${esc(role.replace(/_/g, " "))}</option>`).join("")}</select>`)}
+      ${field("Due", `<input id="precon-due" type="date" value="${esc(String(value.due_on || "").slice(0, 10))}">`)}
+      ${field("Status", `<select id="precon-status">${statusOptions}</select>`)}
+      ${field("Permit office", `<select id="precon-office"><option value="">None</option>${offices.map((office) => `<option value="${office.id}"${value.jurisdiction_id === office.id ? " selected" : ""}>${esc(office.name)}, ${esc(office.state)}</option>`).join("")}</select>`)}
+      ${field("Notes", `<textarea id="precon-notes" maxlength="2000" rows="3">${esc(value.notes || "")}</textarea>`)}
+      <p class="err" id="precon-error" role="alert"></p>
+      <button class="btn primary" type="submit">Save task</button>
+    </form>`,
+    () => {
+      el("precon-form").onsubmit = async (event) => {
+        event.preventDefault();
+        const error = el("precon-error");
+        error.textContent = "";
+        const button = event.target.querySelector("button");
+        button.disabled = true;
+        const body = {
+          type: el("precon-type").value,
+          title: el("precon-title").value.trim(),
+          owner_role: el("precon-owner").value,
+          due_on: el("precon-due").value || null,
+          status: el("precon-status").value,
+          jurisdiction_id: el("precon-office").value || null,
+          notes: el("precon-notes").value.trim() || null,
+        };
+        try {
+          await api(task ? `/precon-tasks/${task.id}` : `/projects/${project.id}/precon-tasks`, {
+            method: task ? "PATCH" : "POST",
+            body: JSON.stringify(body),
+          });
+          closeDrawer();
+          await select(project.id);
+        } catch (err) {
+          error.textContent = err.message;
+          button.disabled = false;
+        }
+      };
+    },
+  );
+}
+
+function inspectionDrawer(task) {
+  if (!task) return;
+  openDrawer(
+    "Add inspection",
+    `<form id="inspection-form">
+      <p>${esc(task.title)}</p>
+      ${field("Scheduled", `<input id="inspection-scheduled" type="date">`)}
+      ${field("Occurred", `<input id="inspection-occurred" type="date">`)}
+      ${field("Result", `<select id="inspection-result">${INSPECTION_RESULTS.map(([id, label]) => `<option value="${id}">${esc(label)}</option>`).join("")}</select>`)}
+      ${field("Notes", `<textarea id="inspection-notes" maxlength="2000" rows="3"></textarea>`)}
+      <p class="err" id="inspection-error" role="alert"></p>
+      <button class="btn primary" type="submit">Save inspection</button>
+    </form>`,
+    () => {
+      el("inspection-form").onsubmit = async (event) => {
+        event.preventDefault();
+        const error = el("inspection-error");
+        error.textContent = "";
+        const button = event.target.querySelector("button");
+        button.disabled = true;
+        try {
+          await api(`/precon-tasks/${task.id}/inspections`, {
+            method: "POST",
+            body: JSON.stringify({
+              scheduled_on: el("inspection-scheduled").value || null,
+              occurred_on: el("inspection-occurred").value || null,
+              result: el("inspection-result").value,
+              notes: el("inspection-notes").value.trim() || null,
+            }),
+          });
+          closeDrawer();
+          await select(current.id);
+        } catch (err) {
+          error.textContent = err.message;
+          button.disabled = false;
+        }
+      };
+    },
+  );
+}
+
 function renderPermits(permits) {
   const links = permits.flatMap((p) =>
     (p.milestones || []).map((m) => ({
+      id: m.id,
       s:
         m.status === "complete"
           ? "done"
@@ -739,7 +1214,7 @@ function renderPermits(permits) {
   el("permits").innerHTML = links
     .map(
       (x) => `
-    <div class="link ${x.s}"><div class="t">${esc(x.t)}</div>${
+    <div class="link ${x.s}" id="item-${esc(x.id)}"><div class="t">${esc(x.t)}</div>${
       x.d ? `<div class="d">${esc(x.d)}</div>` : ""
     }</div>`,
     )
@@ -776,7 +1251,7 @@ function serviceTitanNumberControl(dr, drawData, canRecord) {
         drawData.revenue_system,
       )}.`;
   if (!canRecord) {
-    return `<div class="stref"><span class="w">${recorded} Ask an owner, manager or office user to record it.</span></div>`;
+    return `<div class="stref"><span class="w">${recorded} Ask an owner, a manager, the project coordinator, or office to record it.</span></div>`;
   }
   return `<div class="stref${dr.external_invoice_number ? " filled" : ""}">
         <span class="w">${recorded}</span>
@@ -792,10 +1267,54 @@ function serviceTitanNumberControl(dr, drawData, canRecord) {
         }</div>`;
 }
 
-function renderDraws(drawData) {
-  const canRecord = ["owner", "manager", "office"].includes(session.staff.role);
+function drawMatchLine(dr) {
+  const match = dr.match;
+  if (!match || match.state === "none") return "";
+  if (match.state === "matched") {
+    const unpaid = Number(match.balance) > 0;
+    return `<div class="m">${unpaid ? "Unpaid" : "Paid"} · matched ${esc(match.invoice_number)} · balance ${money(
+      match.balance,
+    )}</div>`;
+  }
+  const suggestion = dr.suggestion;
+  if (!suggestion) return "";
+  const confirm = can("record_external_invoice")
+    ? `<button class="btn sm" data-st-suggest="${dr.id}" data-number="${esc(
+        suggestion.invoice_number,
+      )}" type="button">Use ${esc(suggestion.invoice_number)}</button>`
+    : "";
+  return `<div class="m">Suggested ServiceTitan invoice ${esc(
+    suggestion.invoice_number,
+  )}. Confirming records the number here. It does not write to ServiceTitan.</div>${confirm}`;
+}
 
-  el("draws").innerHTML = drawData.draws
+function renderDraws(drawData) {
+  setFinSummary("draws", drawSummary(drawData));
+  const canRecord = can("record_external_invoice");
+  const refresh = el("ar-refresh");
+  if (refresh) {
+    refresh.hidden = !can("refresh_ar");
+    refresh.onclick = async () => {
+      refresh.disabled = true;
+      try {
+        const result = await api(`/projects/${current.id}/servicetitan/ar-refresh`, { method: "POST" });
+        if (result && result.refreshed === false) window.alert(result.message);
+        await select(current.id);
+      } catch (err) {
+        refresh.disabled = false;
+        window.alert(err.message);
+      }
+    };
+  }
+
+  const unused = drawData.unmatched_invoices || [];
+  const unusedNote =
+    unused.length > 1
+      ? `<p class="note">More than one ServiceTitan invoice is unused, so none was suggested: ${unused
+          .map((row) => esc(row.invoice_number))
+          .join(", ")}.</p>`
+      : "";
+  el("draws").innerHTML = unusedNote + drawData.draws
     .map((dr) => {
       let ref = "";
       if (dr.status === "approved" && !dr.external_invoice_number) {
@@ -815,7 +1334,7 @@ function renderDraws(drawData) {
               : `<div class="stref">
         <span class="w">No invoice recorded in ${esc(
           drawData.revenue_system,
-        )} — ask an owner, manager or office user to record it</span></div>`;
+        )} — ask an owner, a manager, the project coordinator, or office to record it</span></div>`;
       } else if (dr.external_invoice_number) {
         const verified = dr.external_invoice_verified_at;
         ref =
@@ -835,7 +1354,7 @@ function renderDraws(drawData) {
       <div class="draw-h"><span class="t">${esc(dr.label)}</span><span class="a num">${money(
         dr.amount,
       )}</span></div>
-      <div class="m">${esc(meta)}</div>${drawActionsFor(dr)}${ref}</div>`;
+      <div class="m">${esc(meta)}</div>${drawMatchLine(dr)}${drawActionsFor(dr)}${ref}</div>`;
     })
     .join("");
 
@@ -845,7 +1364,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -859,7 +1378,7 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
       }
     });
@@ -871,7 +1390,7 @@ function renderDraws(drawData) {
       const value = (input.value || "").trim();
       if (!value) {
         input.focus();
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         return;
       }
       btn.disabled = true;
@@ -885,8 +1404,23 @@ function renderDraws(drawData) {
       } catch (err) {
         btn.disabled = false;
         input.disabled = false;
-        input.style.borderColor = "#B4231F";
+        input.style.borderColor = "var(--status-late)";
         input.title = err.message;
+      }
+    });
+  });
+  document.querySelectorAll("#draws [data-st-suggest]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await api(`/draws/${btn.dataset.stSuggest}/external-invoice`, {
+          method: "PATCH",
+          body: JSON.stringify({ external_invoice_number: btn.dataset.number }),
+        });
+        await select(current.id);
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(err.message);
       }
     });
   });
@@ -991,10 +1525,25 @@ async function submit(button, fn) {
 
 const field = (label, html) =>
   `<label><span class="lbl">${label}</span>${html}</label>`;
+const stamp = (value) => {
+  if (!value) return "Not recorded";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return esc(value);
+  return esc(
+    parsed.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" }),
+  );
+};
 const messageSlot = '<p class="msg" id="drawer-msg"></p>';
 const today = () => new Date().toISOString().slice(0, 10);
 
 // ------------------------------------------------------------------- gates
+
+function gateHint(item) {
+  if (!item || item.key === "site_ready" || typeof item.ready !== "boolean") return "";
+  return item.ready
+    ? `<div class="m">Ready in the project record. A person still ticks this.</div>`
+    : `<div class="m">Not ready in the project record.</div>`;
+}
 
 function gateDrawer(gate) {
   const checklist = gate.checklist || [];
@@ -1010,9 +1559,7 @@ function gateDrawer(gate) {
     `${messageSlot}
      <p class="note">
        Approved by <b>${esc(
-         gate.approver_role
-           ? gate.approver_role.replace(/_/g, " ")
-           : "owner only",
+         roleTitle(gate.approver_role) || "Owner",
        )}</b>, which comes from this account's gate template rather than a fixed
        role. Currently <b>${esc(gate.status)}</b>.
        ${gate.freezes_baseline ? " Approving this gate freezes the budget baseline." : ""}
@@ -1026,17 +1573,29 @@ function gateDrawer(gate) {
                         ${item.done ? "checked" : ""} ${open ? "" : "disabled"}>
                  <div class="t"><label for="chk-${i}">${esc(item.label)}</label>
                  ${item.done_at ? `<div class="m">ticked ${esc(item.done_at.slice(0, 10))}</div>` : ""}
+                 ${gateHint(item)}
                  </div></div>`,
              )
              .join("")}</div>`
          : '<p class="note">No checklist on this gate. Checklists are tenant configuration.</p>'
+     }
+     ${
+       Number(gate.gate_number) === 2
+         ? fieldReleaseHtml({
+             release: current?.field_release,
+             canRelease: can("record_field_release"),
+             esc,
+             showItems: false,
+             fieldStart: current?.field_start,
+           })
+         : ""
      }
      ${field("Note", '<textarea id="gate-note" placeholder="Required to reject or reopen"></textarea>')}
      ${
        mayApprove
          ? ""
          : `<p class="msg">Gate ${gate.gate_number} is approved by ${esc(
-             gate.approver_role ?? "an owner",
+             roleTitle(gate.approver_role) || "an owner",
            )}. You can tick the checklist but not sign it off.</p>`
      }
      <div class="actions right">
@@ -1111,6 +1670,13 @@ function gateDrawer(gate) {
           "",
         );
       }
+      if (Number(gate.gate_number) === 2) {
+        bindFieldRelease(el("drawer-body").querySelector(".field-release"), {
+          onRelease: (note) => saveFieldRelease(note, false),
+          onUndo: (note) => saveFieldRelease(note, true),
+          onError: (err) => drawerMessage(err.message),
+        });
+      }
     },
   );
 }
@@ -1134,9 +1700,22 @@ function renderStageBar(project, gates) {
           ? `blocked: gate ${blocking[0].gate_number} (${blocking[0].title}) is ${blocking[0].status}`
           : `ready to advance to ${next}`;
 
+  const st = project.st_status;
+  const badge = st?.badge
+    ? `<span class="st-status-badge" data-st-badge="${esc(st.badge)}">ServiceTitan ${esc(st.badge)}</span>`
+    : "";
+  const gateWarning = st?.gate_warning
+    ? `<p class="st-gate-warning" role="status">${esc(st.gate_warning)}</p>`
+    : "";
+  const writeError =
+    st && (st.write_result === "rejected" || st.write_result === "failed") && st.write_detail
+      ? `<p class="st-write-error" role="alert">${esc(st.write_detail)}</p>`
+      : "";
+
   el("stagebar").innerHTML = `
     <span class="lbl">Stage</span>
     <span class="now">${esc(String(project.stage).replace(/_/g, " "))}</span>
+    ${badge}
     <span class="why ${blocking.length ? "blocked" : ""}">${esc(why)}</span>
     ${
       next && project.stage !== "cancelled"
@@ -1144,15 +1723,20 @@ function renderStageBar(project, gates) {
             allowed ? "" : "disabled"
           }>Advance to ${esc(next)}</button>`
         : ""
-    }`;
+    }
+    ${gateWarning}
+    ${writeError}`;
 
   el("stage-advance")?.addEventListener("click", async (e) => {
     e.target.disabled = true;
     try {
-      await api(`/projects/${current.id}/stage`, {
+      const updated = await api(`/projects/${current.id}/stage`, {
         method: "POST",
         body: JSON.stringify({ stage: next }),
       });
+      if (updated?.st_status_sync && updated.st_status_sync.ok === false) {
+        alert(updated.st_status_sync.message);
+      }
       await select(current.id);
     } catch (err) {
       e.target.disabled = false;
@@ -1248,6 +1832,7 @@ async function addBudgetLineDrawer() {
 // --------------------------------------------------------- purchase orders
 
 function renderPurchaseOrders(pos) {
+  setFinSummary("pos", purchaseOrderSummary(pos));
   el("potag").textContent = pos.length ? `${pos.length} raised` : "none";
   el("po-new").hidden = !can("issue_purchase_order");
 
@@ -1764,6 +2349,7 @@ async function newProjectDrawer() {
 el("project-new").textContent = "Add from ServiceTitan";
 el("project-new").addEventListener("click", newProjectDrawer);
 el("budget-add").addEventListener("click", addBudgetLineDrawer);
+bindEnterBudget(document);
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
 el("log-new").addEventListener("click", dailyLogDrawer);
@@ -1772,16 +2358,30 @@ el("log-new").addEventListener("click", dailyLogDrawer);
 
 let coLines = [];
 
+function soldEstimateNote(data) {
+  const rows = data.unmatched_sold_estimates || [];
+  if (!rows.length) return "";
+  const amount = Number(data.pending_estimate_revisions || 0);
+  return `<p class="note">Sold in ServiceTitan, not in the budget yet: ${rows
+    .map((row) => `${esc(row.name || row.id)} · ${money(row.customer_amount)}`)
+    .join(", ")}. ${money(
+    amount,
+  )} is not in the revised contract until someone approves a local change order.</p>`;
+}
+
 function renderChangeOrders(data) {
+  setFinSummary("cos", changeOrderSummary(data));
   const cos = data.change_orders;
   el("cotag").textContent = cos.length
     ? `${cos.filter((c) => c.status === "approved").length} of ${cos.length} approved`
     : "none";
   el("co-new").hidden = !can("send_change_order");
+  const pending = soldEstimateNote(data);
 
   if (cos.length === 0) {
     el("cos").innerHTML =
-      '<div class="state">No change orders. This is the only sanctioned way to move a frozen budget.</div>';
+      '<div class="state">No change orders. This is the only sanctioned way to move a frozen budget.</div>' +
+      pending;
     return;
   }
 
@@ -1811,7 +2411,7 @@ function renderChangeOrders(data) {
         </div>
         <div class="row-r">${signed(co.customer_amount)}</div></div>`;
     })
-    .join("");
+    .join("") + pending;
 
   document.querySelectorAll("#cos [data-co]").forEach((node) =>
     node.addEventListener("click", () => {
@@ -1819,6 +2419,48 @@ function renderChangeOrders(data) {
       if (co) changeOrderDrawer(co, data.approval_threshold, data.local_invoices_allowed);
     }),
   );
+}
+
+function changeOrderLog(co) {
+  const open = co.status !== "void" && co.status !== "rejected";
+  const mayEnter = open && can("record_change_order_entered");
+  const maySign = open && can("record_change_order_signed");
+  return `<span class="lbl">Log</span>
+    <p class="note">Found, priced, entered in ServiceTitan, and signed record what already happened. Send and Approve, further down, are a different pair. Send marks that it went to the customer. Approve is the step that posts the budget.</p>
+    <div class="row"><div class="row-b"><div class="row-t">Found</div><div class="row-m">${stamp(co.found_at)}</div></div></div>
+    <div class="row"><div class="row-b"><div class="row-t">Priced</div><div class="row-m">${
+      co.priced_at
+        ? stamp(co.priced_at)
+        : "Not priced yet. Owner or manager records the customer amount and the cost lines."
+    }</div></div></div>
+    <div class="row"><div class="row-b"><div class="row-t">Entered in ServiceTitan</div><div class="row-m">${
+      co.entered_st_at
+        ? `${stamp(co.entered_st_at)} · estimate ${esc(co.st_estimate_number)}`
+        : "Not entered in ServiceTitan yet. Recording the number here does not write to ServiceTitan."
+    }</div></div></div>
+    ${
+      mayEnter
+        ? `${field(
+            "ServiceTitan estimate number",
+            `<input id="co-st-number" maxlength="80" value="${esc(co.st_estimate_number || "")}">`,
+          )}
+          <div class="actions"><button class="btn sm" id="co-entered" type="button">Record entered in ServiceTitan</button></div>`
+        : ""
+    }
+    <div class="row"><div class="row-b"><div class="row-t">Signed</div><div class="row-m">The tech collected the signature. This screen records it. It does not send anything and it does not post the budget.${
+      co.signed_at
+        ? `<br>${stamp(co.signed_at)}${co.signature_note ? ` · ${esc(co.signature_note)}` : ""}`
+        : ""
+    }</div></div></div>
+    ${
+      maySign
+        ? `${field(
+            "Signature note",
+            `<textarea id="co-sign-note" maxlength="2000">${esc(co.signature_note || "")}</textarea>`,
+          )}
+          <div class="actions"><button class="btn sm" id="co-signed" type="button">Record the signature</button></div>`
+        : ""
+    }`;
 }
 
 function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
@@ -1845,6 +2487,8 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
            : ""
        }
      </p>
+     ${changeOrderLog(co)}
+     <span class="lbl">Send and approve</span>
      ${
        co.lines.length
          ? `<span class="lbl">Cost lines</span>${co.lines
@@ -1915,12 +2559,170 @@ function changeOrderDrawer(co, threshold, localInvoicesAllowed) {
           api(`/change-orders/${co.id}/reject`, { method: "POST" }),
         ),
       );
+      el("co-entered")?.addEventListener("click", (e) =>
+        submit(e.target, () =>
+          api(`/change-orders/${co.id}/entered`, {
+            method: "POST",
+            body: JSON.stringify({
+              st_estimate_number: el("co-st-number").value.trim(),
+            }),
+          }),
+        ),
+      );
+      el("co-signed")?.addEventListener("click", (e) =>
+        submit(e.target, () =>
+          api(`/change-orders/${co.id}/signed`, {
+            method: "POST",
+            body: JSON.stringify({ note: el("co-sign-note").value.trim() }),
+          }),
+        ),
+      );
     },
   );
 }
 
+const ST_REFRESH_TIMEOUT_MS = 180_000;
+
+function renderStFinancials(money) {
+  setFinSummary("st", stDetailSummary(money));
+  const node = el("st-financials");
+  if (!node) return;
+  const refresh = el("st-refresh");
+  if (refresh) {
+    refresh.hidden = !can("refresh_labor");
+    refresh.disabled = false;
+    refresh.textContent = "Refresh from ServiceTitan";
+    // onclick, not addEventListener: a re-render must not stack handlers.
+    refresh.onclick = async () => {
+      if (refresh.disabled) return;
+      const projectId = current.id;
+      const status = el("st-refresh-status");
+      refresh.disabled = true;
+      refresh.textContent = "Reading ServiceTitan…";
+      if (status) status.textContent = "";
+      // The refresh reads every job on the project. Never leave the button
+      // greyed out: give up after three minutes and say so.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ST_REFRESH_TIMEOUT_MS);
+      let failure = null;
+      try {
+        await api(`/projects/${projectId}/labor/refresh`, {
+          method: "POST",
+          signal: controller.signal,
+        });
+      } catch (err) {
+        failure =
+          err?.name === "AbortError"
+            ? "ServiceTitan did not answer within 3 minutes. The previous numbers are unchanged. Try again in a few minutes."
+            : err?.message || String(err);
+      } finally {
+        clearTimeout(timer);
+        refresh.disabled = false;
+        refresh.textContent = "Refresh from ServiceTitan";
+      }
+      if (failure) {
+        if (status) status.textContent = `Refresh failed: ${failure}`;
+        return;
+      }
+      if (current?.id === projectId) await select(projectId);
+    };
+  }
+  if (!money || !money.observed_at) {
+    const early = money?.error
+      ? `<p class="note warn">${esc(String(money.error))}</p>`
+      : "";
+    node.innerHTML =
+      early +
+      '<p class="note">ServiceTitan project financials have not been read yet. Refresh reads invoices, payroll burden, and purchase orders. Nothing is written back.</p>';
+    return;
+  }
+  const materialsMissing = money.materials_expense_read === false;
+  const pct = Number(money.marginPercent || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const line = (label, value) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m">${laborMoney(value)}</div></div></div>`;
+  const missingLine = (label) =>
+    `<div class="row"><div class="row-b"><div class="row-t">${label}</div><div class="row-m"><span class="fin-dash" title="ServiceTitan did not return this figure. Nothing is estimated.">\u2014</span></div></div></div>`;
+  const readAt = `<p class="note">Read from ServiceTitan at ${esc(stamp(money.observed_at))}</p>`;
+  const problems = money.error ? String(money.error).split("; ").filter(Boolean) : [];
+  const kept = problems.some((line) => /stored hours kept|left as they are|kept their last/i.test(line));
+  const readError = problems.length
+    ? `<details class="note warn"><summary>${problems.length} ServiceTitan note${problems.length === 1 ? "" : "s"} from that refresh.${kept ? " Failed lines kept their last stored values." : ""}</summary><ul>${problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul></details>`
+    : "";
+  node.innerHTML = `${readAt}${readError}<p class="note">Billed counts every invoice line, including lines that are not labor or materials. Labor and materials still follow the ServiceTitan account label. Labor burden on this card is paid timesheet hours times each technician's burden rate. The ServiceTitan column on the reconciliation uses invoice totals for billed and gross-pay amounts for labor, so the two sides are not the same calculation. Materials expense is the purchase orders. Margin is billed minus labor burden minus materials expense. Commission labor is on the Labor card.</p>
+    ${line("Billed labor", money.billedLabor)}
+    ${line("Billed materials", money.billedMaterials)}
+    ${line("Billed", money.billed)}
+    ${line("Labor burden", money.laborBurden)}
+    ${materialsMissing ? missingLine("Materials expense") : line("Materials expense", money.materialsExpense)}
+    ${
+      materialsMissing
+        ? missingLine("Margin")
+        : `<div class="row"><div class="row-b"><div class="row-t">Margin</div><div class="row-m">${laborMoney(money.margin)} · ${pct}%</div></div></div>`
+    }`;
+}
+
+function renderLabor(row) {
+  const data = row || {
+    hours: 0,
+    uncoded_hours: 0,
+    source: null,
+    hours_source: null,
+    lines: [],
+    technicians: [],
+    missing: [],
+    cost_code: null,
+    st_labor_code: null,
+    st_labor_code_error: null,
+  };
+  setFinSummary("labor", laborSummary(data));
+  if (el("labortag")) {
+    el("labortag").textContent = data.hours_source
+      ? String(data.hours_source).replaceAll("_", " ")
+      : "none";
+  }
+  if (!el("labor")) return;
+  el("labor").innerHTML = laborCardHtml(data, { esc, stamp });
+}
+
+function renderCloseout(row) {
+  const c = row || {};
+  const may = can("manage_project_controls");
+  const done = closeoutDoneLabel(closeoutDoneCount(c));
+  el("closetag").textContent = done;
+  setFinSummary("closeout", done);
+  el("closeout").innerHTML = closeoutCardHtml(c, { esc, canEdit: may });
+  el("cl-save")?.addEventListener("click", async (event) => {
+    const button = event.target;
+    button.disabled = true;
+    try {
+      await api(`/projects/${current.id}/closeout`, {
+        method: "PUT",
+        body: JSON.stringify(
+          closeoutSavePayload({
+            punch_done: el("cl-punch").checked,
+            punch_note: el("cl-punch-note").value,
+            photos_done: el("cl-photos").checked,
+            photos_note: el("cl-photos-note").value,
+            final_draw_invoice_number: el("cl-invoice").value,
+            warranty_start_on: el("cl-warranty").value,
+            review_request_note: el("cl-review").value,
+          }),
+        ),
+      });
+      await select(current.id);
+    } catch (err) {
+      button.disabled = false;
+      window.alert(err.message);
+    }
+  });
+}
+
 async function raiseChangeOrderDrawer() {
-  const codes = await api("/cost-codes");
+  const mayPrice = can("price_change_order");
+  const codes = mayPrice ? await api("/cost-codes") : [];
   coLines = [];
 
   openDrawer(
@@ -1933,12 +2735,17 @@ async function raiseChangeOrderDrawer() {
      rather than a note beside it.</p>
      ${field("Description", '<textarea id="co-desc" placeholder="Customer upgraded the tile selection"></textarea>')}
      <div class="two">
-       ${field("Customer amount", '<input id="co-amount" type="number" step="0.01" value="0">')}
+       ${
+         mayPrice
+           ? field("Customer amount", '<input id="co-amount" type="number" step="0.01" value="0">')
+           : `<p class="note">Owner or manager records the customer amount and the cost lines. You can describe the change and raise the draft.</p>`
+       }
        ${field("Schedule impact, days", '<input id="co-days" type="number" step="1" value="0">')}
      </div>
      ${field("Reference in the revenue system", '<input id="co-ref" placeholder="optional">')}
-
-     <span class="lbl">Cost lines</span>
+     ${
+       mayPrice
+         ? `<span class="lbl">Cost lines</span>
      <p class="note">Negative amounts are allowed — a change order that removes
      scope is still a change order, and a credit that cannot be recorded is a
      credit somebody argues about later.</p>
@@ -1949,13 +2756,16 @@ async function raiseChangeOrderDrawer() {
      </div>
      <div class="actions">
        <button class="btn sm" id="co-add-line" type="button">Add cost line</button>
-     </div>
+     </div>`
+         : ""
+     }
 
      <div class="actions right">
        <button class="btn primary" id="co-save" type="button">Raise change order</button>
      </div>`,
     () => {
       const redraw = () => {
+        if (!el("co-line-list")) return;
         el("co-line-list").innerHTML = coLines.length
           ? coLines
               .map(
@@ -1976,7 +2786,7 @@ async function raiseChangeOrderDrawer() {
       };
       redraw();
 
-      el("co-add-line").addEventListener("click", () => {
+      el("co-add-line")?.addEventListener("click", () => {
         const chosen = codes.find((c) => c.id === el("co-code").value);
         const amount = Number(el("co-line-amount").value);
         if (!chosen || !amount) {
@@ -2004,14 +2814,16 @@ async function raiseChangeOrderDrawer() {
             method: "POST",
             body: JSON.stringify({
               description: el("co-desc").value.trim(),
-              customer_amount: Number(el("co-amount").value),
+              customer_amount: mayPrice ? Number(el("co-amount").value) : 0,
               schedule_impact_days: Number(el("co-days").value),
               external_estimate_ref: el("co-ref").value.trim() || null,
-              lines: coLines.map(({ cost_code_id, cost_type, amount }) => ({
-                cost_code_id,
-                cost_type,
-                amount,
-              })),
+              lines: mayPrice
+                ? coLines.map(({ cost_code_id, cost_type, amount }) => ({
+                    cost_code_id,
+                    cost_type,
+                    amount,
+                  }))
+                : [],
             }),
           }),
         ),
@@ -2053,6 +2865,14 @@ el("st-project-open").addEventListener("click", () =>
   stProjectConnector.open(),
 );
 
+const home = createHome({
+  api,
+  el,
+  esc,
+  can,
+  openProject: (id) => select(id),
+});
+
 const workspace = createWorkspace({
   api,
   el,
@@ -2063,17 +2883,66 @@ const workspace = createWorkspace({
   openDrawer,
   closeDrawer,
   field,
+  reload: () => select(current.id),
+  renderHome: () => home.render(),
+  onNeedProject: async () => {
+    const linked = new URLSearchParams(location.search).get("project");
+    const remembered = session
+      ? localStorage.getItem("jp.activeProject." + session.tenant.id)
+      : null;
+    const id = [linked, remembered].find(
+      (value) => value && projects.some((project) => project.id === value),
+    );
+    if (!id) return false;
+    await select(id);
+    return true;
+  },
   onProjectDeleted: async () => {
     ++selectionRevision;
-    current=null;
-    localStorage.removeItem('jp.activeProject.'+session.tenant.id);
-    const url=new URL(location.href);url.searchParams.delete('project');history.replaceState(null,'',url);
-    el('shell').hidden=true;
-    projects=await loadProjects();
+    current = null;
+    localStorage.removeItem("jp.activeProject." + session.tenant.id);
+    projects = await loadProjects();
     renderSwitch();
-    if(projects.length) await select(projects[0].id);
-    else {el('boot').hidden=false;el('boot').className='state';el('boot').textContent='Project deleted. No projects remain. Choose Add from ServiceTitan to get started.';}
+    el("boot").hidden = true;
+    await workspace.openHome();
   },
 });
+
+const loadedBuildId = (
+  document.querySelector('meta[name="app-build"]')?.getAttribute("content") || ""
+).trim();
+
+function showNewVersionBanner() {
+  if (document.getElementById("build-reload-banner")) return;
+  const banner = document.createElement("div");
+  banner.id = "build-reload-banner";
+  banner.className = "banner warn";
+  banner.setAttribute("role", "status");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "New version available, reload";
+  button.addEventListener("click", () => location.reload());
+  banner.append(button);
+  document.body.prepend(banner);
+}
+
+async function checkLoadedBuild() {
+  if (!loadedBuildId) return;
+  try {
+    const res = await fetch("/health", { cache: "no-store" });
+    if (!res.ok) return;
+    const body = await res.json();
+    const serverBuild = String(body?.data?.build_id ?? "").trim();
+    if (serverBuild && serverBuild !== loadedBuildId) showNewVersionBanner();
+  } catch {
+    // A failed health check is not a new version.
+  }
+}
+
+void checkLoadedBuild();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void checkLoadedBuild();
+});
+setInterval(() => void checkLoadedBuild(), 60_000);
 
 void boot();

@@ -1,0 +1,91 @@
+{
+  "customer": {
+    "page": 1,
+    "pageSize": 50,
+    "hasMore": false,
+    "totalCount": 7,
+    "data": [
+      {
+        "id": 501,
+        "type": "Fax",
+        "value": "804-555-0100",
+        "memo": "office fax",
+        "modifiedOn": "2026-08-01T12:00:00Z"
+      },
+      {
+        "id": 502,
+        "type": "Phone",
+        "value": "804-555-0111",
+        "memo": "home",
+        "modifiedOn": "2026-08-01T12:00:00Z",
+        "phoneSettings": { "phoneNumber": "804-555-0111", "doNotText": true }
+      },
+      {
+        "id": 503,
+        "type": "Email",
+        "value": " ",
+        "memo": "blank",
+        "modifiedOn": "2026-08-01T12:00:00Z"
+      },
+      {
+        "id": 504,
+        "type": "Email",
+        "value": "old@example.test",
+        "memo": "former",
+        "optedOut": true,
+        "modifiedOn": "2026-08-02T12:00:00Z"
+      },
+      {
+        "id": 505,
+        "type": "MobilePhone",
+        "value": "804-555-0166",
+        "memo": "cell",
+        "modifiedOn": "2026-09-01T12:00:00Z",
+        "phoneSettings": { "phoneNumber": "804-555-0166", "doNotText": false }
+      },
+      {
+        "id": 506,
+        "type": "MobilePhone",
+        "value": "804-555-0177",
+        "memo": "primary",
+        "modifiedOn": "2026-09-15T12:00:00Z",
+        "phoneSettings": { "phoneNumber": "804-555-0177", "doNotText": false }
+      },
+      {
+        "id": 507,
+        "type": "Email",
+        "value": "linh.nguyen@example.test",
+        "memo": "primary",
+        "modifiedOn": "2026-09-15T12:00:00Z",
+        "preferences": {
+          "jobRemindersEnabled": true,
+          "marketingUpdatesEnabled": false,
+          "invoiceStatementNotification": true
+        }
+      }
+    ]
+  },
+  "location": {
+    "page": 1,
+    "pageSize": 50,
+    "hasMore": false,
+    "totalCount": 2,
+    "data": [
+      {
+        "id": 801,
+        "type": "MobilePhone",
+        "value": "757-555-0101",
+        "memo": "site",
+        "modifiedOn": "2026-07-01T12:00:00Z",
+        "phoneSettings": { "phoneNumber": "757-555-0101", "doNotText": false }
+      },
+      {
+        "id": 802,
+        "type": "Email",
+        "value": "site@example.test",
+        "memo": null,
+        "modifiedOn": "2026-07-01T12:00:00Z"
+      }
+    ]
+  }
+}

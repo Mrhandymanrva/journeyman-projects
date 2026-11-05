@@ -4,8 +4,9 @@ import { seedDemoSources } from "../src/demo/sourceData.js";
  *
  *   pnpm dev
  *
- * Boots a real PostgreSQL in process (PGlite), applies db/001 and db/002,
- * seeds the demo account, and serves the console with dev sign-in on. Same
+ * Boots a real PostgreSQL in process (PGlite), applies the schema,
+ * seeds the demo account, loads the shipped permit offices once, and serves
+ * the console with dev sign-in on. Same
  * app, same handlers, same RLS — the only difference from production is where
  * the Postgres lives and that the data disappears when you stop it.
  *
@@ -18,6 +19,7 @@ import { assertDatabaseContract } from "../src/db/assertions.js";
 import { MemoryStaffSessions } from "../src/http/memoryStaffSessions.js";
 import { PgliteDatabase } from "../test/support/pgliteDatabase.js";
 import { seedDemoTenant } from "../src/demo/demoData.js";
+import { seedPermitOffices } from "../src/domain/permitOfficeSeed.js";
 
 const PORT = Number(process.env.PORT ?? 3200);
 
@@ -36,6 +38,51 @@ const db = await PgliteDatabase.create([
   "db/012_subcontractor_intake.sql",
   "db/013_st_projects.sql",
   "db/014_st_project_authority.sql",
+  "db/015_staff_login.sql",
+  "db/016_project_controls.sql",
+  "db/017_record_publications.sql",
+  "db/018_document_links.sql",
+  "db/019_vendor_archive.sql",
+  "db/020_qbo_payables.sql",
+  "db/021_coi_coverage.sql",
+  "db/022_vendor_sync.sql",
+  "db/023_agreement_advisory.sql",
+  "db/024_po_lines.sql",
+  "db/025_bid_request_lines.sql",
+  "db/026_bill_lines.sql",
+  "db/029_tenant_accounting_settings.sql",
+  "db/030_draw_external_invoice_number.sql",
+  "db/031_material_bill_cost.sql",
+  "db/032_vendor_document_notes.sql",
+  "db/033_field_release.sql",
+  "db/034_preconstruction_tasks.sql",
+  "db/035_field_start.sql",
+  "db/036_permit_offices.sql",
+  "db/037_permit_office_seed.sql",
+  "db/038_gate_checklist_defaults.sql",
+  "db/039_change_order_log_and_closeout.sql",
+  "db/040_labor_actuals.sql",
+  "db/041_st_ar_observations.sql",
+  "db/042_project_health_snapshots.sql",
+  "db/043_technician_labor_rates.sql",
+  "db/044_labor_refresh.sql",
+  "db/045_labor_refresh_scheduled.sql",
+  "db/046_st_labor_code.sql",
+  "db/047_unbudgeted_labor.sql",
+  "db/048_pricebook_labor_code.sql",
+  "db/049_commission_labor.sql",
+  "db/050_st_project_financials.sql",
+  "db/051_labor_refresh_status.sql",
+  "db/052_st_status_sync.sql",
+  "db/053_st_financial_summary.sql",
+  "db/054_project_budget_entry.sql",
+  "db/055_st_labor_gap.sql",
+  "db/056_posted_commission.sql",
+  "db/057_csr_handoff.sql",
+  "db/058_vendor_bill_po_sync.sql",
+  "db/059_st_plan_appointment_reads.sql",
+  "db/060_st_po_preview_defaults.sql",
+  "db/061_project_budget_cost_code.sql",
 ]);
 
 await assertDatabaseContract(db);
@@ -48,6 +95,7 @@ await seedDemoTenant({
   privileged: (fn) => db.asOwner(fn),
   log: (m) => console.log("  " + m),
 });
+await seedPermitOffices(db, { log: (m) => console.log("  " + m) });
 
 const staffSessions = new MemoryStaffSessions();
 // Fixed and published in the banner below: this listens on localhost with
