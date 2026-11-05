@@ -89,11 +89,18 @@ describe("preconstruction tasks", () => {
       ["other", "Subs booked", "project_manager", "2026-11-15"],
       ["permit", "Permit approved", "project_manager", "2026-11-22"],
     ]);
+    // Due dates stay pinned to the logged start. Overdue follows the New York
+    // clock, so a start of 2026-11-01 is overdue once that day has passed.
+    const today = await nyDay(0);
     expect(
-      tasks.every(
-        (task) => task.status === "not_started" && task.overdue === false,
-      ),
-    ).toBe(true);
+      tasks.map((task) => [task.title, task.status, task.overdue]),
+    ).toEqual(
+      tasks.map((task) => [
+        task.title,
+        "not_started",
+        task.due_on < today,
+      ]),
+    );
 
     const session = await as("pm").get("/api/v1/projects/session");
     expect(session.body.data.capabilities).toContain("manage_precon_tasks");
