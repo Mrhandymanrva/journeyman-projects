@@ -240,13 +240,78 @@ describe('Link QuickBooks transaction', () => {
     expect(options).toMatch(/truncated/i);
   });
 
+  it('shows a suggested card charge on the bill and does not link it', async () => {
+    const calls: string[] = [];
+    const { accounting, payables, nodes } = screen(async (path) => {
+      calls.push(path);
+      if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
+      if (path.includes('/vendor-bills')) {
+        return {
+          bills: [{ ...material, vendor: 'Home Depot', invoice_date: '2026-10-01', amount: 100, card_charge_state: 'awaiting_card_charge' }],
+          qbo_customer_id: null,
+        };
+      }
+      if (path.includes('/qbo-candidates')) {
+        return {
+          suggestions: [
+            { id: 'card', txn_type: 'Purchase', doc_number: 'CARD', total: 102.5, txn_date: '2026-10-02', vendor_name: 'Home Depot', suggested: true },
+          ],
+          transactions: [
+            { id: 'card', txn_type: 'Purchase', doc_number: 'CARD', total: 102.5, txn_date: '2026-10-02', vendor_name: 'Home Depot', suggested: true },
+          ],
+        };
+      }
+      if (path.includes('/purchase-orders')) return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    await accounting.render();
+    expect(payables.innerHTML).toContain('Awaiting card charge');
+    expect(payables.innerHTML).toContain('Link QuickBooks transaction');
+    expect(nodes.get('ap-suggest-bill-cabinets')!.textContent).toContain('Suggested card charge: Purchase · CARD');
+    expect(nodes.get('ap-suggest-bill-cabinets')!.textContent).toMatch(/Use Link QuickBooks transaction/);
+    expect(calls.some((path) => path.includes('/link-qbo') || path.includes('/approve'))).toBe(false);
+  });
+
+  it('says when there is no suggested card charge and still requires Link', async () => {
+    const calls: string[] = [];
+    const { accounting, payables, nodes } = screen(async (path) => {
+      calls.push(path);
+      if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
+      if (path.includes('/vendor-bills')) {
+        return {
+          bills: [{ ...material, vendor: 'Home Depot', invoice_date: '2026-10-01', amount: 100, card_charge_state: 'awaiting_card_charge' }],
+          qbo_customer_id: null,
+        };
+      }
+      if (path.includes('/qbo-candidates')) {
+        return {
+          suggestions: [],
+          transactions: [
+            { id: 'x', txn_type: 'Purchase', doc_number: 'X', total: 900, txn_date: '2025-01-01', vendor_name: 'Unrelated', variance: 800 },
+          ],
+        };
+      }
+      if (path.includes('/purchase-orders')) return [];
+      throw new Error(`unexpected ${path}`);
+    });
+    await accounting.render();
+    expect(nodes.get('ap-suggest-bill-cabinets')!.textContent).toMatch(/No suggested card charges/);
+    await payables._links[0]!.onclick?.();
+    const body = nodes.get('ap-link-body')!.innerHTML;
+    expect(body).toContain('id="ap-no-suggestions"');
+    expect(body).not.toContain('Suggested ·');
+    expect(body).toContain('Link and do not send again');
+    expect(calls.some((path) => path.includes('/link-qbo') || path.includes('/approve'))).toBe(false);
+  });
+
   it('still opens Enter material order as awaiting card charge and does not call QuickBooks', async () => {
     const calls: string[] = [];
     const { accounting, payables, nodes } = screen(async (path) => {
       calls.push(path);
       if (path === '/accounting/catalog') return { connected: true, accounts: [], customers: [] };
       if (path.includes('/vendor-bills')) return { bills: [material], qbo_customer_id: null };
-      if (path.includes('/purchase-orders') && !path.includes('qbo-candidates')) return [];
+      if (path.includes('qbo-candidates')) return { suggestions: [], transactions: [] };
+      if (path.includes('/purchase-orders')) return [];
       if (path === '/cost-codes') return [{ id: 'code-1', code: '1110', description: 'Tile' }];
       if (path.startsWith('/vendors')) return [];
       throw new Error(`unexpected ${path}`);
@@ -254,12 +319,15 @@ describe('Link QuickBooks transaction', () => {
     await accounting.render();
     expect(payables.innerHTML).toContain('Enter material order');
     expect(payables.innerHTML).toContain('Awaiting card charge');
+    const beforeOpen = calls.length;
     await nodes.get('ap-material')!.onclick?.();
     expect(nodes.get('drawer-title')!.textContent).toBe('Enter material order');
     const body = nodes.get('drawer-body')!.innerHTML;
     expect(body).toContain('Awaiting card charge');
     expect(body).toContain('Nothing is sent to QuickBooks');
     expect(body).toContain('does not create a QuickBooks bill');
-    expect(calls.some((path) => /qbo|approve|link-qbo|material-bills/i.test(path))).toBe(false);
+    expect(calls.slice(beforeOpen).some((path) => /qbo|approve|link-qbo|material-bills/i.test(path))).toBe(false);
+    expect(calls.some((path) => /approve|link-qbo|material-bills/i.test(path))).toBe(false);
+    expect(calls.filter((path) => /qbo/i.test(path)).every((path) => path.includes('qbo-candidates'))).toBe(true);
   });
 });
