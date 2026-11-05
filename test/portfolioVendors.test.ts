@@ -72,6 +72,35 @@ describe("portfolio vendor feed", () => {
     expect(after.body.data.vendors[0].notes).toBe("edited in Journeyman");
   });
 
+  it("keeps s and S in contact names on create and newest-wins edit", async () => {
+    const samples = ["Susan", "Jessica", "Chris", "sasha", "JeSsica", "ChriS"];
+    const created = await auth(feed().post("/api/v1/portfolio/vendors")).send({
+      legal_name: "Contact Names Co",
+      email: "contact-names@example.test",
+      primary_contact: samples[0],
+      trades: ["plumbing"],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.data.primary_contact).toBe("Susan");
+    let stamp = created.body.data.updated_at as string;
+    for (const name of samples.slice(1)) {
+      stamp = new Date(Date.parse(stamp) + 60_000).toISOString();
+      const saved = await auth(feed().put(`/api/v1/portfolio/vendors/${created.body.data.id}`)).send({
+        legal_name: "Contact Names Co",
+        email: "contact-names@example.test",
+        primary_contact: name,
+        trades: ["plumbing"],
+        updated_at: stamp,
+      });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body.data.applied).toBe(true);
+      expect(saved.body.data.vendor.primary_contact).toBe(name);
+    }
+    const listed = await auth(feed().get("/api/v1/portfolio/vendors"));
+    const row = listed.body.data.vendors.find((v: { id: string }) => v.id === created.body.data.id);
+    expect(row.primary_contact).toBe("ChriS");
+  });
+
   it("creates a vendor from the dashboard and refuses a duplicate email", async () => {
     const res = await auth(feed().post("/api/v1/portfolio/vendors")).send({ legal_name: "R. Calder Plumbing", email: "rick@calder.test", trades: ["plumbing"], active: true });
     expect(res.status, JSON.stringify(res.body)).toBe(201);
