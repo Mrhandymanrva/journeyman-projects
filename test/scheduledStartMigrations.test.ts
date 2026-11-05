@@ -81,10 +81,19 @@ it("keeps an existing project's scheduled_start after every migration is applied
         await h.db.asOwner((db) => db.query(statement.text));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (/already exists/i.test(message)) continue;
-        throw new Error(`${path.basename(file)}:${statement.startLine} ${message}`);
-      }
+      if (/already exists/i.test(message)) continue;
+      throw new Error(`${path.basename(file)}:${statement.startLine} ${message}`);
     }
+  }
+
+  // Replaying CREATE VIEW as the owner drops the grants from harness setup.
+  // Provision runs those grants after the migrations. Project detail reads
+  // v_cost_position for the budget alert, so restore the same table grants.
+  await h.db.asOwner((db) =>
+    db.query(
+      `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA projects TO jp_app`,
+    ),
+  );
   }
 
   const stored = await h.db.withTenant(t.id, (db) =>

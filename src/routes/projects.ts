@@ -45,6 +45,7 @@ import {
   type GateState,
   type ProjectStage,
 } from "../domain/stages.js";
+import { budgetAlert } from "../domain/budgetAlert.js";
 
 const createProjectSchema = z
   .object({
@@ -152,10 +153,18 @@ export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections 
                 p.pm_id, p.estimator_id, p.city, p.region,
                 p.contract_value, p.currency, p.target_margin,
                 p.scheduled_start, p.scheduled_end, p.updated_at,
+                COALESCE(cost.budget_amount, 0)::text AS budget_total,
+                COALESCE(cost.actual_cost, 0)::text AS actual_total,
                 ${fieldStartColumns("p")},
                 p.field_released_at, p.field_release_note,
                 rel.full_name AS field_released_by_name
            FROM projects.projects p
+           LEFT JOIN LATERAL (
+             SELECT SUM(v.budget_amount) AS budget_amount,
+                    SUM(v.actual_cost) AS actual_cost
+               FROM projects.v_cost_position v
+              WHERE v.project_id = p.id
+           ) cost ON true
            LEFT JOIN projects.staff rel ON rel.id = p.field_released_by
            ${where}
           ORDER BY p.created_at DESC
@@ -171,16 +180,29 @@ export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections 
     }),
   );
 
-  router.delete('/projects/:id', staffRoute(deps, async (ctx) => {
-    requireCapability(ctx.staff.role, 'delete_project');
-    const id = parseUuidParam(ctx.req.params.id, 'Project');
-    const project = await loadVisibleProject<{project_number:string}>(ctx, id, 'project_number');
-    const body = parseBody(z.object({confirm_project_number:z.string()}), ctx.req.body);
-    if (body.confirm_project_number !== project.project_number)
-      throw new ApiError('validation_failed', 'Type the exact project number to confirm deletion.');
-    await deleteLocalProject(ctx.db, id);
-    sendData(ctx.res, {id, deleted:true});
-  }));
+  router.delete(
+    "/projects/:id",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "delete_project");
+      const id = parseUuidParam(ctx.req.params.id, "Project");
+      const project = await loadVisibleProject<{ project_number: string }>(
+        ctx,
+        id,
+        "project_number",
+      );
+      const body = parseBody(
+        z.object({ confirm_project_number: z.string() }),
+        ctx.req.body,
+      );
+      if (body.confirm_project_number !== project.project_number)
+        throw new ApiError(
+          "validation_failed",
+          "Type the exact project number to confirm deletion.",
+        );
+      await deleteLocalProject(ctx.db, id);
+      sendData(ctx.res, { id, deleted: true });
+    }),
+  );
 
   // -------------------------------------------------------------- create ---
   router.post(
@@ -320,8 +342,10 @@ export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections 
         [id],
       );
 
+      const totals = await readBudgetTotals(ctx, id);
       sendData(ctx.res, {
         ...(await projectPayload(ctx.db, id, project, true)),
+        ...presentBudgetAlert(totals.actual, totals.budget),
 
         pm_name: nameOf(project.pm_id),
         estimator_name: nameOf(project.estimator_id),
@@ -544,16 +568,19 @@ export function projectRoutes(deps: StaffRouterDeps, sources: SourceConnections 
       sendData(
         ctx.res,
         rows.map((r) => {
+          const budgetAmount = num(r.budget_amount) ?? 0;
+          const actualCost = num(r.actual_cost) ?? 0;
           const priced = {
             ...r,
             baseline: num(r.baseline),
-            budget_amount: num(r.budget_amount),
-            actual_cost: num(r.actual_cost),
+            budget_amount: budgetAmount,
+            actual_cost: actualCost,
             committed_open: num(r.committed_open),
             total_committed: num(r.total_committed),
             variance: num(r.variance),
             labor_wage: num(r.labor_wage),
             labor_burden: num(r.labor_burden),
+            ...budgetAlert(actualCost, budgetAmount),
           };
           if (r.description === "Unbudgeted labor") {
             const split = r.cost_code
@@ -870,7 +897,45 @@ function round4(n: number): number {
 }
 
 function serialiseProjectSummary(row: Record<string, unknown>) {
-  return serialiseProject(row);
+  const budget = num(row.budget_total) ?? 0;
+  const actual = num(row.actual_total) ?? 0;
+  const {
+    budget_total: _budgetTotal,
+    actual_total: _actualTotal,
+    ...rest
+  } = row;
+  return {
+    ...serialiseProject(rest),
+    ...presentBudgetAlert(actual, budget),
+  };
+}
+
+function presentBudgetAlert(actual: number, budget: number) {
+  return {
+    budget_amount: budget,
+    actual_cost: actual,
+    ...budgetAlert(actual, budget),
+  };
+}
+
+async function readBudgetTotals(
+  ctx: StaffContext,
+  projectId: string,
+): Promise<{ budget: number; actual: number }> {
+  const { rows } = await ctx.db.query<{
+    budget_amount: string;
+    actual_cost: string;
+  }>(
+    `SELECT COALESCE(SUM(v.budget_amount), 0)::text AS budget_amount,
+            COALESCE(SUM(v.actual_cost), 0)::text AS actual_cost
+       FROM projects.v_cost_position v
+      WHERE v.project_id = $1`,
+    [projectId],
+  );
+  return {
+    budget: num(rows[0]?.budget_amount) ?? 0,
+    actual: num(rows[0]?.actual_cost) ?? 0,
+  };
 }
 
 function serialiseProject(row: Record<string, unknown>) {

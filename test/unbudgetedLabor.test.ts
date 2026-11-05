@@ -162,6 +162,8 @@ describe("unbudgeted labor in the cost position", () => {
         variance: -208,
         labor_wage: 160,
         labor_burden: 48,
+        budget_alert: "no_budget",
+        actual_to_budget_pct: null,
         lines: [
           { description: "Labor", amount: 160 },
           { description: "Labor burden", amount: 48 },
