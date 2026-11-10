@@ -358,7 +358,8 @@ describe("final project report", () => {
       );
       await db.query(
         `INSERT INTO projects.daily_logs (tenant_id, project_id, log_date, author_id, work_completed)
-         VALUES ($1, $2, '2026-08-12', $3, 'DO_NOT_LEAK_LOG')`,
+         VALUES ($1, $2, '2026-08-12', $3, 'DO_NOT_LEAK_LOG'),
+                ($1, $2, '2026-08-12', $3, 'DO_NOT_LEAK_LOG_TWO')`,
         [t.id, projectId, t.staff.pm!.id],
       );
     });
@@ -468,7 +469,7 @@ describe("final project report", () => {
       closeout_document_count: 1,
     });
     expect(data.pulled.daily_logs).toEqual({
-      count: 1,
+      count: 2,
       first_on: "2026-08-12",
       last_on: "2026-08-12",
     });

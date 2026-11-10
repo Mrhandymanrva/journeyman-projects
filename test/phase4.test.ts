@@ -1,11 +1,19 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { hasExecutableSql, splitSqlStatements, strippedSql } from '../src/db/splitSql.js';
 import {
   createTenant,
   projectBody,
+  SCHEMA_FILES,
   startHarness,
   type Harness,
   type TenantFixture,
 } from './support/harness.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dailyLogMigration = path.join(repoRoot, 'db/062_daily_logs_multiple_per_date.sql');
 
 let h: Harness;
 let t: TenantFixture;
@@ -312,16 +320,175 @@ describe('schedule and daily logs', () => {
     expect(res.body.data[0].window_end).toBe('2026-09-03');
   });
 
-  it('one daily log per project per date', async () => {
-    const first = await owner()
+  it('allows more than one daily log on the same date, later entry first', async () => {
+    const nextDay = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-05', work_completed: 'Next day, written first.' });
+    expect(nextDay.status).toBe(201);
+
+    const morning = await owner()
       .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
       .send({ log_date: '2026-08-04', work_completed: 'Tile set to the wet wall.' });
-    expect(first.status).toBe(201);
+    expect(morning.status).toBe(201);
 
-    const duplicate = await owner()
+    const afternoon = await owner()
       .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
       .send({ log_date: '2026-08-04', work_completed: 'Written twice.' });
-    expect(duplicate.status).toBe(409);
+    expect(afternoon.status).toBe(201);
+
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `UPDATE projects.daily_logs SET created_at = now() - ($2::int * interval '1 minute')
+          WHERE id = $1`,
+        [nextDay.body.data.id, 30],
+      ),
+    );
+    await h.db.withTenant(t.id, (db) =>
+      db.query(
+        `UPDATE projects.daily_logs SET created_at = now() - ($2::int * interval '1 minute')
+          WHERE id = $1`,
+        [morning.body.data.id, 10],
+      ),
+    );
+
+    const list = await owner().get(`/api/v1/projects/projects/${projectId}/daily-logs`);
+    expect(list.status).toBe(200);
+    expect(list.body.data.map((row: { work_completed: string }) => row.work_completed)).toEqual([
+      'Next day, written first.',
+      'Written twice.',
+      'Tile set to the wet wall.',
+    ]);
+    const sameDay = list.body.data.filter(
+      (row: { log_date: string }) => row.log_date === '2026-08-04',
+    );
+    expect(sameDay).toHaveLength(2);
+    expect(sameDay[0].log_date).toBe('2026-08-04');
+    expect(sameDay[0].created_at).toEqual(expect.any(String));
+    expect(sameDay[0].created_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(Date.parse(sameDay[0].created_at)).toBeGreaterThan(Date.parse(sameDay[1].created_at));
+    expect(sameDay[0].author).toBeTruthy();
+    expect(sameDay[0].author_id).toBe(t.staff.owner!.id);
+  });
+
+  it('lets the author correct a log, and an owner or manager correct someone else\'s', async () => {
+    const created = await h
+      .as(t.staff.pm!.token)
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-04', work_completed: 'Typo', weather: 'Clear' });
+    expect(created.status).toBe(201);
+    const logId = created.body.data.id as string;
+
+    const byOffice = await h
+      .as(t.staff.office!.token)
+      .patch(`/api/v1/projects/projects/${projectId}/daily-logs/${logId}`)
+      .send({ work_completed: 'Office rewrite' });
+    expect(byOffice.status).toBe(403);
+
+    const byAuthor = await h
+      .as(t.staff.pm!.token)
+      .patch(`/api/v1/projects/projects/${projectId}/daily-logs/${logId}`)
+      .send({ work_completed: 'Corrected', log_date: '2026-08-06' });
+    expect(byAuthor.status).toBe(200);
+    expect(byAuthor.body.data.log_date).toBe('2026-08-06');
+    expect(byAuthor.body.data.work_completed).toBe('Corrected');
+    expect(byAuthor.body.data.weather).toBe('Clear');
+    expect(byAuthor.body.data.created_at).toEqual(expect.any(String));
+
+    const byManager = await h
+      .as(t.staff.manager!.token)
+      .patch(`/api/v1/projects/projects/${projectId}/daily-logs/${logId}`)
+      .send({ safety_note: 'Manager note' });
+    expect(byManager.status).toBe(200);
+    expect(byManager.body.data.safety_note).toBe('Manager note');
+    expect(byManager.body.data.work_completed).toBe('Corrected');
+
+    const again = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-04', work_completed: 'Another entry that same morning.' });
+    expect(again.status).toBe(201);
+  });
+
+  it('refuses a project manager who did not write the log', async () => {
+    const created = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-04', work_completed: 'Owner wrote this.' });
+    expect(created.status).toBe(201);
+
+    const res = await h
+      .as(t.staff.pm!.token)
+      .patch(`/api/v1/projects/projects/${projectId}/daily-logs/${created.body.data.id}`)
+      .send({ work_completed: 'Not mine' });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('forbidden');
+
+    const unchanged = await owner().get(`/api/v1/projects/projects/${projectId}/daily-logs`);
+    expect(unchanged.body.data[0].work_completed).toBe('Owner wrote this.');
+  });
+
+  it('re-applying migration 062 drops the same-date unique and is safe twice', async () => {
+    const sql = readFileSync(dailyLogMigration, 'utf8');
+    expect(sql).toMatch(/DROP CONSTRAINT IF EXISTS daily_logs_project_id_log_date_key/);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS daily_logs_project_date_idx/);
+    const executable = splitSqlStatements(sql)
+      .map((statement) => strippedSql(statement.text))
+      .join('\n');
+    expect(executable).not.toMatch(/\bUNIQUE\b/i);
+    expect(SCHEMA_FILES.some((file) => file.endsWith('062_daily_logs_multiple_per_date.sql'))).toBe(
+      true,
+    );
+    for (const file of [
+      'src/provision.ts',
+      'scripts/applySql.ts',
+      'scripts/devServer.ts',
+    ]) {
+      expect(readFileSync(path.join(repoRoot, file), 'utf8')).toContain(
+        '062_daily_logs_multiple_per_date.sql',
+      );
+    }
+
+    const apply = async () => {
+      for (const statement of splitSqlStatements(sql)) {
+        if (!hasExecutableSql(statement.text)) continue;
+        await h.db.asOwner((db) => db.query(statement.text));
+      }
+    };
+    await apply();
+    await apply();
+
+    const constraints = await h.db.asOwner((db) =>
+      db.query<{ conname: string }>(
+        `SELECT c.conname
+           FROM pg_constraint c
+           JOIN pg_class t ON t.oid = c.conrelid
+           JOIN pg_namespace n ON n.oid = t.relnamespace
+          WHERE n.nspname = 'projects'
+            AND t.relname = 'daily_logs'
+            AND c.contype = 'u'`,
+      ),
+    );
+    expect(constraints.rows.map((row) => row.conname)).not.toContain(
+      'daily_logs_project_id_log_date_key',
+    );
+    expect(constraints.rows).toEqual([]);
+
+    const indexes = await h.db.asOwner((db) =>
+      db.query<{ indexname: string }>(
+        `SELECT indexname FROM pg_indexes
+          WHERE schemaname = 'projects'
+            AND tablename = 'daily_logs'
+            AND indexname = 'daily_logs_project_date_idx'`,
+      ),
+    );
+    expect(indexes.rows).toHaveLength(1);
+
+    const first = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-04', work_completed: 'After the migration.' });
+    const second = await owner()
+      .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+      .send({ log_date: '2026-08-04', work_completed: 'Still allowed.' });
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
   });
 
   it('an office user cannot write a daily log', async () => {

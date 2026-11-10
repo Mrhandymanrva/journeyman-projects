@@ -1,3 +1,4 @@
+import { formatDailyLogStamp, todayInNewYork } from "./dailyLog.js";
 import { bindFieldRelease, fieldReleaseHtml } from "./fieldRelease.js";
 import {
   INSPECTION_RESULTS,
@@ -2234,57 +2235,93 @@ function confirmScheduleItem(item) {
 
 // --------------------------------------------------------------- daily log
 
+function canEditLog(log) {
+  if (!can("write_daily_log") || !log) return false;
+  const role = session?.staff?.role;
+  return (
+    log.author_id === session?.staff?.id ||
+    role === "owner" ||
+    role === "manager"
+  );
+}
+
 function renderLogs(logs) {
   el("logtag").textContent = logs.length ? `${logs.length} logged` : "none";
   el("log-new").hidden = !can("write_daily_log");
   el("logs").innerHTML = logs.length
     ? logs
         .map(
-          (
-            l,
-          ) => `<div class="row"><span class="pip ok"></span><div class="row-b">
-            <div class="row-t">${esc(l.log_date)}</div>
+          (l) => `<div class="row" data-log="${esc(l.id)}" style="cursor:pointer"><span class="pip ok"></span><div class="row-b">
+            <div class="row-t">${esc(formatDailyLogStamp(l))}</div>
             <div class="row-m">${esc(l.work_completed ?? "—")}</div></div>
             <div class="row-r">${esc(l.author)}</div></div>`,
         )
         .join("")
     : '<div class="state">No daily logs. On an active project a missing one shows up under Blocking now.</div>';
+  document.querySelectorAll("#logs [data-log]").forEach((node) =>
+    node.addEventListener("click", () => {
+      const log = logs.find((item) => item.id === node.dataset.log);
+      if (log) dailyLogDrawer(log);
+    }),
+  );
 }
 
-function dailyLogDrawer() {
+function dailyLogPayload() {
+  return {
+    log_date: el("dl-date").value,
+    work_completed: el("dl-work").value.trim() || null,
+    delays: el("dl-delays").value.trim() || null,
+    crew_on_site: el("dl-crew").value.trim() || null,
+    weather: el("dl-weather").value.trim() || null,
+    deliveries: el("dl-deliveries").value.trim() || null,
+    inspections: el("dl-inspections").value.trim() || null,
+    safety_note: el("dl-safety").value.trim() || null,
+  };
+}
+
+function dailyLogDrawer(existing) {
+  const editing = Boolean(existing);
+  const mayEdit = editing ? canEditLog(existing) : can("write_daily_log");
+  const lock = mayEdit ? "" : "disabled";
+  const text = (key) => esc(existing?.[key] ?? "");
   openDrawer(
     "Daily log",
     `${messageSlot}
-     <p class="note">One per project per date.</p>
-     ${field("Date", `<input id="dl-date" type="date" value="${today()}">`)}
-     ${field("Work completed", '<textarea id="dl-work"></textarea>')}
-     ${field("Delays", '<textarea id="dl-delays"></textarea>')}
+     ${
+       editing
+         ? `<p class="note">${esc(existing.author ?? "")} · ${esc(formatDailyLogStamp(existing))}</p>`
+         : ""
+     }
+     ${field("Date", `<input id="dl-date" type="date" value="${esc(existing?.log_date ?? todayInNewYork())}" ${lock}>`)}
+     ${field("Work completed", `<textarea id="dl-work" ${lock}>${text("work_completed")}</textarea>`)}
+     ${field("Delays", `<textarea id="dl-delays" ${lock}>${text("delays")}</textarea>`)}
      <div class="two">
-       ${field("Crew on site", '<input id="dl-crew">')}
-       ${field("Weather", '<input id="dl-weather">')}
+       ${field("Crew on site", `<input id="dl-crew" value="${text("crew_on_site")}" ${lock}>`)}
+       ${field("Weather", `<input id="dl-weather" value="${text("weather")}" ${lock}>`)}
      </div>
-     ${field("Deliveries", '<input id="dl-deliveries">')}
-     ${field("Inspections", '<input id="dl-inspections">')}
-     ${field("Safety note", '<input id="dl-safety">')}
-     <div class="actions right">
-       <button class="btn primary" id="dl-save" type="button">Save log</button>
-     </div>`,
+     ${field("Deliveries", `<input id="dl-deliveries" value="${text("deliveries")}" ${lock}>`)}
+     ${field("Inspections", `<input id="dl-inspections" value="${text("inspections")}" ${lock}>`)}
+     ${field("Safety note", `<input id="dl-safety" value="${text("safety_note")}" ${lock}>`)}
+     ${
+       mayEdit
+         ? `<div class="actions right">
+       <button class="btn primary" id="dl-save" type="button">${editing ? "Save changes" : "Save log"}</button>
+     </div>`
+         : `<p class="note">Only the author, or an owner or manager, can edit this log.</p>`
+     }`,
     () => {
+      if (!mayEdit) return;
       el("dl-save").addEventListener("click", (e) =>
         submit(e.target, () =>
-          api(`/projects/${current.id}/daily-logs`, {
-            method: "POST",
-            body: JSON.stringify({
-              log_date: el("dl-date").value,
-              work_completed: el("dl-work").value.trim() || null,
-              delays: el("dl-delays").value.trim() || null,
-              crew_on_site: el("dl-crew").value.trim() || null,
-              weather: el("dl-weather").value.trim() || null,
-              deliveries: el("dl-deliveries").value.trim() || null,
-              inspections: el("dl-inspections").value.trim() || null,
-              safety_note: el("dl-safety").value.trim() || null,
-            }),
-          }),
+          api(
+            editing
+              ? `/projects/${current.id}/daily-logs/${existing.id}`
+              : `/projects/${current.id}/daily-logs`,
+            {
+              method: editing ? "PATCH" : "POST",
+              body: JSON.stringify(dailyLogPayload()),
+            },
+          ),
         ),
       );
     },
@@ -2353,7 +2390,7 @@ el("budget-add").addEventListener("click", addBudgetLineDrawer);
 bindEnterBudget(document);
 el("po-new").addEventListener("click", issuePoDrawer);
 el("sched-new").addEventListener("click", () => planning.activity());
-el("log-new").addEventListener("click", dailyLogDrawer);
+el("log-new").addEventListener("click", () => dailyLogDrawer());
 
 // ----------------------------------------------------------- change orders
 
