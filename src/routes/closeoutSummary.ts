@@ -8,13 +8,16 @@ import {
   type StaffRouterDeps,
 } from "../http/staffSession.js";
 import {
+  closeoutReportWarnings,
   closeoutSummaryBodySchema,
+  emptyCloseoutSummary,
   formatStampEt,
   missingFinalFields,
   presentSavedSummary,
   pullCloseoutSummary,
   redactCosts,
   savedSummarySchema,
+  showCloseoutDraftBanner,
   tidySummary,
   todayEt,
   type SavedCloseoutSummary,
@@ -49,7 +52,6 @@ export function closeoutSummaryRoutes(deps: StaffRouterDeps): Router {
     staffRoute(deps, async (ctx) => {
       const projectId = await visibleProject(ctx);
       requireCapability(ctx.staff.role, "manage_project_controls");
-      await assertAvailable(ctx, projectId);
       await assertDraft(ctx, projectId);
       const saved = await snapshot(ctx, projectId, readBody(ctx));
       await ctx.db.query(
@@ -76,7 +78,6 @@ export function closeoutSummaryRoutes(deps: StaffRouterDeps): Router {
     staffRoute(deps, async (ctx) => {
       const projectId = await visibleProject(ctx);
       requireCapability(ctx.staff.role, "manage_project_controls");
-      await assertAvailable(ctx, projectId);
       await assertDraft(ctx, projectId);
       const saved = await snapshot(ctx, projectId, readBody(ctx));
       const missing = missingFinalFields(saved);
@@ -150,19 +151,6 @@ function readBody(ctx: StaffContext) {
   return tidySummary(parseBody(closeoutSummaryBodySchema, ctx.req.body));
 }
 
-async function assertAvailable(
-  ctx: StaffContext,
-  projectId: string,
-): Promise<void> {
-  const pull = await pullCloseoutSummary(ctx.db, projectId);
-  if (!pull.available) {
-    throw new ApiError(
-      "conflict",
-      "The final project report opens when the project enters closeout or Gate 4 has started.",
-    );
-  }
-}
-
 async function assertDraft(
   ctx: StaffContext,
   projectId: string,
@@ -214,14 +202,33 @@ async function present(ctx: StaffContext, projectId: string) {
   const row = stored.rows[0];
   const summary = row?.summary == null ? null : parseStored(row.summary);
   const finalized = row?.summary_finalized_at != null;
+  const narrative = summary ?? emptyCloseoutSummary(todayEt());
+  const warnings = closeoutReportWarnings({
+    stage: pull.stage,
+    finalized,
+    actualEnd: pull.pulled.schedule.actual_end,
+    punchDone: pull.pulled.closeout.punch_done,
+    photosDone: pull.pulled.closeout.photos_done,
+    finalDrawInvoice: pull.pulled.closeout.final_draw_invoice_number,
+    warrantyStart: pull.pulled.closeout.warranty_start_on,
+    reviewRequest: pull.pulled.closeout.review_request_note,
+    lessonsLearned: narrative.narrative.lessons_learned,
+    achievementsObstacles: narrative.post_mortem.achievements_obstacles,
+    rootCauses: narrative.post_mortem.root_causes,
+    keyTakeaways: narrative.post_mortem.key_takeaways,
+    actionItems: narrative.post_mortem.action_items,
+    nextSteps: narrative.post_mortem.next_steps,
+  });
   return {
-    available: pull.available,
+    available: true,
     stage: pull.stage,
     gate_4_status: pull.gate_4_status,
     today: todayEt(),
-    can_edit: canEdit && pull.available && !finalized,
+    can_edit: canEdit && !finalized,
     can_view_costs: canViewCosts,
     finalized,
+    warnings,
+    draft_banner: showCloseoutDraftBanner(finalized, warnings),
     updated_at: iso(row?.summary_updated_at),
     updated_label: formatStampEt(row?.summary_updated_at),
     updated_by: row?.updated_by ?? null,
@@ -246,9 +253,6 @@ function parseStored(value: unknown): SavedCloseoutSummary {
 
 async function exportSource(ctx: StaffContext, projectId: string) {
   const view = await present(ctx, projectId);
-  if (!view.summary?.pulled_snapshot) {
-    throw new ApiError("conflict", "Save the report before downloading.");
-  }
   const company =
     (
       await ctx.db.query<{ name: string }>(
@@ -256,10 +260,13 @@ async function exportSource(ctx: StaffContext, projectId: string) {
         [ctx.staff.tenantId],
       )
     ).rows[0]?.name ?? "Journeyman Projects";
+  const body = view.summary ?? emptyCloseoutSummary(view.today);
   return {
     company,
-    body: view.summary,
-    pulled: view.summary.pulled_snapshot,
+    body,
+    pulled: view.summary?.pulled_snapshot ?? view.pulled,
+    finalized: view.finalized,
+    warnings: view.warnings,
   };
 }
 

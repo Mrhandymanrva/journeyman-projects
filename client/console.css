@@ -413,6 +413,11 @@ body{
 .form-row-split{display:flex;gap:10px;align-items:center}
 .form-row-split input[type=checkbox]{width:18px;height:18px;flex:none}
 .form-actions{display:flex;justify-content:flex-end;gap:8px;max-width:640px;padding-top:4px}
+.head-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.draft-banner{background:var(--status-risk-bg);border:1px solid var(--status-risk-border);border-left:4px solid var(--status-risk);border-radius:6px;padding:10px 12px;margin:0 0 14px}
+.draft-banner strong{display:block;margin-bottom:6px}
+.draft-banner ul{margin:0;padding-left:18px}
+.home-report-link{display:inline-block;margin-top:6px;font-size:12px;font-weight:650}
 .closeout-report{margin-top:22px;padding-top:8px;border-top:1px solid var(--rule)}
 .closeout-report h3{margin:8px 0 10px;font-size:18px}
 .closeout-report h4{margin:18px 0 8px;font-size:14px}

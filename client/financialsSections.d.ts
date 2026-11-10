@@ -17,7 +17,11 @@ export function drawSummary(
 ): string;
 export function laborSummary(
   row:
-    | { hours?: number | null; total?: number | null; labor_burden?: number | null }
+    | {
+        hours?: number | null;
+        total?: number | null;
+        labor_burden?: number | null;
+      }
     | null
     | undefined,
 ): string;
@@ -34,7 +38,10 @@ export function stDetailSummary(
     | undefined,
 ): string;
 export function billsSummary(
-  bills: Array<{ status?: string; amount?: number | string | null }> | null | undefined,
+  bills:
+    | Array<{ status?: string; amount?: number | string | null }>
+    | null
+    | undefined,
 ): string;
 export function reservesSummary(
   rows:
@@ -64,7 +71,10 @@ type SectionRoot = {
     }) => void,
   ): void;
 };
-export function setSectionExpanded(button: SectionButton | null, expanded: boolean): void;
+export function setSectionExpanded(
+  button: SectionButton | null,
+  expanded: boolean,
+): void;
 export function bindFinancialSections(root: SectionRoot | null): void;
 
 type BudgetDomNode = {
@@ -90,4 +100,5 @@ type BudgetDocument = {
   ) => void;
 };
 export function openBudgetEntry(doc?: BudgetDocument): boolean;
+export function openCloseoutSection(doc?: BudgetDocument): boolean;
 export function bindEnterBudget(doc?: BudgetDocument): void;

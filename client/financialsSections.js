@@ -145,6 +145,25 @@ export function openBudgetEntry(doc) {
   return false;
 }
 
+/** Expand Financials > Closeout and move the report into view. */
+export function openCloseoutSection(doc) {
+  const root = doc || document;
+  const body = root.getElementById("closeout");
+  if (!body) return false;
+  let node = body;
+  while (node && node !== root) {
+    if (node.hidden) node.hidden = false;
+    node = node.parentElement;
+  }
+  const toggle = root.querySelector('[aria-controls="closeout"]');
+  if (toggle) setSectionExpanded(toggle, true);
+  const target = root.getElementById("final-project-report") || body;
+  if (target && typeof target.scrollIntoView === "function") {
+    target.scrollIntoView({ block: "start", inline: "nearest" });
+  }
+  return true;
+}
+
 export function bindEnterBudget(doc) {
   const root = doc || document;
   const marker = root.documentElement;

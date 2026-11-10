@@ -8,12 +8,28 @@
 import path from "node:path";
 import PDFDocument from "pdfkit";
 import { escapeHtml } from "./documentExport.js";
-import type { CloseoutSummaryBody, PulledSnapshot } from "./closeoutSummary.js";
+import {
+  showCloseoutDraftBanner,
+  type CloseoutSummaryBody,
+  type PulledSnapshot,
+} from "./closeoutSummary.js";
 
 export interface ReportSource {
   company: string;
   body: CloseoutSummaryBody;
   pulled: PulledSnapshot;
+  finalized?: boolean;
+  warnings?: string[];
+}
+
+export function draftBanner(source: {
+  finalized?: boolean;
+  warnings?: string[];
+}): { title: string; items: string[] } | null {
+  if (source.warnings == null && source.finalized == null) return null;
+  const items = source.warnings ?? [];
+  if (!showCloseoutDraftBanner(source.finalized === true, items)) return null;
+  return { title: "Draft, not final", items };
 }
 
 type Block =
@@ -377,6 +393,14 @@ export function closeoutReportHtml(source: ReportSource): string {
     })
     .join("");
   const cover = pulled.cover;
+  const banner = draftBanner(source);
+  const bannerHtml = banner
+    ? `<div class="draft-banner" role="status"><strong>${e(banner.title)}</strong>${
+        banner.items.length
+          ? `<ul>${banner.items.map((item) => `<li>${e(item)}</li>`).join("")}</ul>`
+          : ""
+      }</div>`
+    : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -401,6 +425,9 @@ export function closeoutReportHtml(source: ReportSource): string {
   th, td { border: 1px solid #d8e1e8; padding: 8px; text-align: left; vertical-align: top; }
   th { background: #eaf0f5; }
   footer { margin-top: 38px; border-top: 1px solid #d8e1e8; padding-top: 14px; font-size: 10px; color: #687b89; }
+  .draft-banner { background: #fff6e8; border: 1px solid #e6c48a; border-left: 4px solid #b86e00; padding: 10px 12px; margin: 0 0 18px; }
+  .draft-banner strong { display: block; margin-bottom: 6px; }
+  .draft-banner ul { margin: 0; padding-left: 18px; }
   @media print {
     body { margin: 0; background: #fff; }
     .document-page { border: none; max-width: none; }
@@ -409,6 +436,7 @@ export function closeoutReportHtml(source: ReportSource): string {
 </head>
 <body>
 <article class="document-page">
+  ${bannerHtml}
   <header class="document-brand"><strong>${e(source.company)}</strong><span>INTERNAL</span></header>
   <p class="document-kicker">${e(cover.project_number)} · ${e(label(cover.stage))}</p>
   <h1>${e(cover.name)}</h1>
@@ -439,6 +467,7 @@ export async function renderCloseoutReportPdf(
 ): Promise<Buffer> {
   const pulled = source.pulled;
   const footer = closeoutReportFooter(pulled.cover.project_number);
+  const banner = draftBanner(source);
   const doc = new PDFDocument({
     size: "LETTER",
     pdfVersion: "1.4",
@@ -448,7 +477,9 @@ export async function renderCloseoutReportPdf(
       Title: xmlText(pulled.cover.name),
       Author: xmlText(source.company),
       Subject: xmlText(footer),
-      Keywords: "internal closeout",
+      Keywords: banner
+        ? xmlText(["Draft, not final", ...banner.items].join(". "))
+        : "internal closeout",
     },
   });
   const chunks: Buffer[] = [];
@@ -478,7 +509,38 @@ export async function renderCloseoutReportPdf(
   };
 
   doc.rect(0, 0, 612, 12).fill("#193D59");
-  doc.y = 48;
+  doc.y = 36;
+  if (banner) {
+    const lines = [banner.title, ...banner.items.map((item) => `• ${item}`)];
+    doc.font("body").fontSize(9);
+    const inner = width - 20;
+    const textHeight = lines.reduce(
+      (sum, line, index) =>
+        sum +
+        doc
+          .font(index === 0 ? "bold" : "body")
+          .fontSize(index === 0 ? 11 : 9)
+          .heightOfString(line, { width: inner, lineGap: 2 }) +
+        3,
+      8,
+    );
+    const y = doc.y;
+    doc.save();
+    doc.rect(left, y, width, textHeight).fill("#FFF6E8");
+    doc.rect(left, y, 4, textHeight).fill("#B86E00");
+    doc.restore();
+    let cursor = y + 8;
+    lines.forEach((line, index) => {
+      doc
+        .font(index === 0 ? "bold" : "body")
+        .fontSize(index === 0 ? 11 : 9)
+        .fillColor("#5C3B00")
+        .text(line, left + 12, cursor, { width: inner, lineGap: 2 });
+      cursor = doc.y + 2;
+    });
+    doc.y = y + textHeight + 12;
+    doc.x = left;
+  }
   text(source.company.toUpperCase(), 10, true);
   doc.moveDown(1.2);
   text("FINAL PROJECT REPORT", 11, true, "#687B89");

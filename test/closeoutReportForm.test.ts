@@ -5,11 +5,16 @@ import {
   closeoutReportPayload,
   reportFormState,
 } from "../client/closeoutReport.js";
+import { openCloseoutSection } from "../client/financialsSections.js";
+import { projectTableHtml } from "../client/home.js";
 import {
   closeoutReportAvailable,
+  closeoutReportWarnings,
   missingFinalFields,
   redactCosts,
+  showCloseoutDraftBanner,
   type CloseoutSummaryBody,
+  type CloseoutWarningInput,
   type PulledSnapshot,
 } from "../src/domain/closeoutSummary.js";
 import {
@@ -147,56 +152,89 @@ function view(partial: Record<string, unknown> = {}) {
   };
 }
 
+const openWarnings: CloseoutWarningInput = {
+  stage: "execution",
+  finalized: false,
+  actualEnd: null,
+  punchDone: false,
+  photosDone: false,
+  finalDrawInvoice: null,
+  warrantyStart: null,
+  reviewRequest: "  ",
+  lessonsLearned: "",
+  achievementsObstacles: "",
+  rootCauses: "",
+  keyTakeaways: "",
+  actionItems: "",
+  nextSteps: "",
+};
+
 describe("final project report form", () => {
-  it("stays a one-line note until closeout or Gate 4", () => {
+  it("is available at every stage and lists what is still open", () => {
     expect(
       closeoutReportAvailable({
         stage: "execution",
         gate4Status: "open",
         gate4Progress: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(closeoutReportAvailable({ stage: "handoff" })).toBe(true);
+    expect(closeoutReportAvailable()).toBe(true);
+    const warnings = closeoutReportWarnings(openWarnings);
+    expect(warnings).toEqual([
+      "The project is not in closeout or complete.",
+      "Punch list is still open.",
+      "Final photos are not filed.",
+      "Final draw invoice is not recorded.",
+      "Warranty start is not set.",
+      "Review request is not recorded.",
+      "Actual end date is not set.",
+      "Lessons learned is empty.",
+      "Achievements and obstacles is empty.",
+      "Root causes is empty.",
+      "Key takeaways is empty.",
+      "Action items is empty.",
+      "Next steps is empty.",
+    ]);
+    expect(showCloseoutDraftBanner(false, [])).toBe(true);
+    expect(showCloseoutDraftBanner(true, ["Punch list is still open."])).toBe(
+      true,
+    );
+    expect(showCloseoutDraftBanner(true, [])).toBe(false);
     expect(
-      closeoutReportAvailable({
+      closeoutReportWarnings({
+        ...openWarnings,
         stage: "closeout",
-        gate4Status: "open",
-        gate4Progress: false,
+        actualEnd: "2026-08-28",
+        punchDone: true,
+        photosDone: true,
+        finalDrawInvoice: "1184",
+        warrantyStart: "2026-11-01",
+        reviewRequest: "Ask after the walkthrough",
+        lessonsLearned: "Order tile earlier.",
+        achievementsObstacles: "The tile was clean.",
+        rootCauses: "Lead time.",
+        keyTakeaways: "Confirm dates.",
+        actionItems: "Update the checklist.",
+        nextSteps: "Walk the warranty.",
       }),
-    ).toBe(true);
-    expect(
-      closeoutReportAvailable({
-        stage: "complete",
-        gate4Status: "open",
-        gate4Progress: false,
-      }),
-    ).toBe(true);
-    expect(
-      closeoutReportAvailable({
-        stage: "execution",
-        gate4Status: "submitted",
-        gate4Progress: false,
-      }),
-    ).toBe(true);
-    expect(
-      closeoutReportAvailable({
-        stage: "handoff",
-        gate4Status: "open",
-        gate4Progress: true,
-      }),
-    ).toBe(true);
+    ).toEqual([]);
 
     const html = closeoutReportHtml(
-      {
-        available: false,
-        can_view_costs: true,
-        can_edit: true,
-        pulled: pulled(costs),
-      },
+      view({ draft_banner: true, warnings, can_edit: true }),
       { esc },
     );
-    expect(html).toContain("Available when the project enters closeout.");
-    expect(html).not.toContain("Download PDF");
-    expect(html).not.toContain("$41,800.00");
+    expect(html).toContain('id="fpr-draft-banner"');
+    expect(html).toContain("Draft, not final");
+    expect(html).toContain("Punch list is still open.");
+    expect(html).toContain("Lessons learned is empty.");
+    expect(html).toContain("Download PDF");
+    expect(html).not.toContain("Available when the project enters closeout.");
+    const quiet = closeoutReportHtml(
+      view({ finalized: true, draft_banner: false, warnings: [] }),
+      { esc },
+    );
+    expect(quiet).not.toContain("Draft, not final");
   });
 
   it("follows the template and keeps learning outcomes optional", () => {
@@ -335,6 +373,54 @@ describe("final project report form", () => {
   });
 });
 
+describe("closeout report entry", () => {
+  it("links every project row to the report and opens the closeout section", () => {
+    const html = projectTableHtml(
+      [
+        {
+          id: "handoff-1",
+          name: "Early job",
+          project_number: "1",
+          customer: "Pat",
+          stage: "handoff",
+          lifecycle: "open",
+          pm_name: "D. Reyes",
+          health: { score: 90, band: "green", reasons: [] },
+          next_milestone: null,
+        },
+        {
+          id: "done-1",
+          name: "Finished",
+          project_number: "2",
+          customer: "Pat",
+          stage: "complete",
+          lifecycle: "completed",
+          pm_name: "D. Reyes",
+          health: { score: 100, band: "green", reasons: [] },
+          next_milestone: null,
+        },
+      ],
+      esc,
+    );
+    expect(html).toContain('href="/?project=handoff-1#closeout-report"');
+    expect(html).toContain('href="/?project=done-1#closeout-report"');
+    expect(html.match(/Closeout report/g)).toHaveLength(2);
+    const page = new JSDOM(
+      `<button class="fin-section-toggle" aria-expanded="false" aria-controls="closeout">Closeout</button>
+       <div id="closeout" hidden><section id="final-project-report">Report</section></div>`,
+    );
+    const opened = openCloseoutSection(page.window.document);
+    expect(opened).toBe(true);
+    const body = page.window.document.getElementById("closeout");
+    expect(body?.hidden).toBe(false);
+    expect(
+      page.window.document
+        .querySelector('[aria-controls="closeout"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+  });
+});
+
 describe("final project report document", () => {
   const body: CloseoutSummaryBody = {
     version: 1,
@@ -407,6 +493,34 @@ describe("final project report document", () => {
     expect(text).toContain("Roles and responsibilities");
     expect(text).toContain("1.5 Critical thinking review");
     expect(text).toContain("2. Post-mortem report");
+  });
+
+  it("prints the draft banner and omits it once nothing is missing", async () => {
+    const source = {
+      company: "Journeyman Projects",
+      body,
+      pulled: pulled(costs),
+      finalized: false,
+      warnings: [
+        "The project is not in closeout or complete.",
+        "Punch list is still open.",
+      ],
+    };
+    const html = reportPage(source);
+    expect(html.indexOf("Draft, not final")).toBeLessThan(
+      html.indexOf("FINAL PROJECT REPORT"),
+    );
+    expect(html).toContain("Punch list is still open.");
+    const bytes = await renderCloseoutReportPdf(source);
+    expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(bytes.includes(Buffer.from("Draft, not final"))).toBe(true);
+    expect(bytes.includes(Buffer.from("Punch list is still open."))).toBe(true);
+    const finished = await renderCloseoutReportPdf({
+      ...source,
+      finalized: true,
+      warnings: [],
+    });
+    expect(finished.includes(Buffer.from("Draft, not final"))).toBe(false);
   });
 
   it("renders an internal PDF that names the project", async () => {

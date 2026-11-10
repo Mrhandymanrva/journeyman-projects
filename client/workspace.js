@@ -1,5 +1,5 @@
 import { formatDailyLogStamp } from "./dailyLog.js";
-import { bindFinancialSections } from "./financialsSections.js";
+import { bindFinancialSections, openCloseoutSection } from "./financialsSections.js";
 import { revealLinkedItem } from "./home.js";
 import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
 import { createPermitOffices } from "./permitOffices.js";
@@ -398,10 +398,26 @@ export function createWorkspace({
     }
     revealLinkedItem();
   }
+  async function openCloseoutReport() {
+    if (!data) {
+      const opened = onNeedProject ? await onNeedProject() : false;
+      if (!opened) await openHome();
+      return;
+    }
+    show("financials");
+    const home = el("home");
+    if (home) home.hidden = true;
+    el("shell").hidden = false;
+    openCloseoutSection(document);
+  }
   window.addEventListener("hashchange", () => {
     const id = location.hash.slice(1);
     if (!id || id === "home") {
       void openHome();
+      return;
+    }
+    if (id === "closeout-report") {
+      void openCloseoutReport();
       return;
     }
     void enter(id);
@@ -661,7 +677,8 @@ export function createWorkspace({
     });
     el("project-source").onclick = () => el("st-project-open").click();
     if (el("project-delete")) el("project-delete").onclick = () => openProjectDeletion(p,{api,el,esc,openDrawer,closeDrawer,onProjectDeleted});
-    void enter(active);
+    if (location.hash === "#closeout-report") void openCloseoutReport();
+    else void enter(active);
   }
   if (location.hash === "#schedule" || PROJECT_PAGE_ALIASES.includes(location.hash.slice(1))) {
     const url = new URL(location.href);
@@ -673,6 +690,7 @@ export function createWorkspace({
   return {
     render,
     openHome,
+    openCloseoutReport,
     openUsers: () => enter("users"),
     hasPage: (id) => Boolean(pages[id]),
   };
