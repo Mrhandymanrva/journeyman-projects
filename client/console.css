@@ -413,6 +413,19 @@ body{
 .form-row-split{display:flex;gap:10px;align-items:center}
 .form-row-split input[type=checkbox]{width:18px;height:18px;flex:none}
 .form-actions{display:flex;justify-content:flex-end;gap:8px;max-width:640px;padding-top:4px}
+.closeout-report{margin-top:22px;padding-top:8px;border-top:1px solid var(--rule)}
+.closeout-report h3{margin:8px 0 10px;font-size:18px}
+.closeout-report h4{margin:18px 0 8px;font-size:14px}
+.closeout-report .note{color:var(--muted);font-size:12.5px;line-height:1.5;margin:0 0 8px}
+.closeout-report .form-actions{max-width:none;justify-content:flex-start;flex-wrap:wrap}
+.closeout-pulled{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 16px;background:var(--surface);border-radius:8px;padding:10px 12px;margin:0 0 12px}
+.closeout-pulled dt{font-size:11px;color:var(--muted)}
+.closeout-pulled dd{margin:2px 0 0;font-size:13px}
+.fpr-scroll{overflow:auto;margin:0 0 8px}
+.fpr-table{width:100%;border-collapse:collapse;font-size:13px}
+.fpr-table th,.fpr-table td{border:1px solid var(--rule);padding:6px;text-align:left;vertical-align:top}
+.fpr-table th{background:var(--surface);font-size:11px}
+.fpr-table input,.fpr-table select,.fpr-table textarea{width:100%;box-sizing:border-box;font:inherit;padding:6px 8px;border:1px solid var(--rule);border-radius:6px;background:var(--card);color:var(--ink)}
 .field-start-override .form-actions{max-width:none}
 .fin-summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:0 0 18px}
 .fin-summary-title{grid-column:1/-1;margin:0;font-size:18px;font-weight:700}

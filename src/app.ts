@@ -49,6 +49,7 @@ import { purchaseOrderRoutes } from "./routes/purchaseOrders.js";
 import { vendorRoutes } from "./routes/vendors.js";
 import { changeOrderRoutes } from "./routes/changeOrders.js";
 import { closeoutRoutes } from "./routes/closeout.js";
+import { closeoutSummaryRoutes } from "./routes/closeoutSummary.js";
 import { laborRoutes } from "./routes/labor.js";
 import { healthSnapshotRoutes } from "./routes/healthSnapshots.js";
 import { drawRoutes } from "./routes/draws.js";
@@ -240,6 +241,7 @@ export function createApp(opts: AppOptions): Express {
   staff.use(bidRequestRoutes(deps, opts.bidMail ?? bidMailConfig()));
   staff.use(changeOrderRoutes(deps));
   staff.use(closeoutRoutes(deps));
+  staff.use(closeoutSummaryRoutes(deps));
   staff.use(laborRoutes(deps, opts.sources ?? {}));
   staff.use(healthSnapshotRoutes(deps));
   staff.use(drawRoutes(deps));

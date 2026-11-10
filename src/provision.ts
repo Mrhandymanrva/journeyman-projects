@@ -207,6 +207,7 @@ for (const file of [
   "db/060_st_po_preview_defaults.sql",
   "db/061_project_budget_cost_code.sql",
   "db/062_daily_logs_multiple_per_date.sql",
+  "db/063_project_closeout_summary.sql",
 ]) {
   const full = path.join(repoRoot, file);
   if (file.endsWith("060_st_po_preview_defaults.sql")) {

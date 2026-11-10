@@ -957,6 +957,33 @@ const ROUTES: RouteCase[] = [
   },
   {
     method: "get",
+    template: `${BASE}/projects/:id/closeout/summary`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout/summary`,
+  },
+  {
+    method: "put",
+    template: `${BASE}/projects/:id/closeout/summary`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout/summary`,
+    body: () => ({ version: 1, report_date: "2026-11-10" }),
+  },
+  {
+    method: "post",
+    template: `${BASE}/projects/:id/closeout/summary/finalize`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout/summary/finalize`,
+    body: () => ({ version: 1, report_date: "2026-11-10" }),
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/closeout/summary.pdf`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout/summary.pdf`,
+  },
+  {
+    method: "get",
+    template: `${BASE}/projects/:id/closeout/summary.html`,
+    path: (f) => `${BASE}/projects/${f.projectId}/closeout/summary.html`,
+  },
+  {
+    method: "get",
     template: `${BASE}/projects/:id/labor`,
     path: (f) => `${BASE}/projects/${f.projectId}/labor`,
   },
