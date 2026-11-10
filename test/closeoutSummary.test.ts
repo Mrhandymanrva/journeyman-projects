@@ -684,35 +684,55 @@ describe("final project report", () => {
     }
   });
 
-  it("opens for Gate 4 or a finished stage and stays shut before that", async () => {
+  it("drafts and prints from any stage, with a banner for what is still open", async () => {
     const early = await pm().get(summaryUrl());
     expect(early.status).toBe(200);
-    expect(early.body.data.available).toBe(false);
+    expect(early.body.data.available).toBe(true);
     expect(early.body.data.stage).toBe("handoff");
-    const refused = await pm().put(summaryUrl()).send(reportBody());
-    expect(refused.status).toBe(409);
+    expect(early.body.data.draft_banner).toBe(true);
+    expect(early.body.data.warnings).toEqual([
+      "The project is not in closeout or complete.",
+      "Punch list is still open.",
+      "Final photos are not filed.",
+      "Final draw invoice is not recorded.",
+      "Warranty start is not set.",
+      "Review request is not recorded.",
+      "Actual end date is not set.",
+      "Lessons learned is empty.",
+      "Achievements and obstacles is empty.",
+      "Root causes is empty.",
+      "Key takeaways is empty.",
+      "Action items is empty.",
+      "Next steps is empty.",
+    ]);
 
-    await h.db.withTenant(t.id, (db) =>
-      db.query(
-        `UPDATE projects.stage_gates
-            SET checklist = '[{"key":"punch_list","label":"punch list complete","done":true}]'::jsonb
-          WHERE project_id = $1 AND gate_number = 4`,
-        [projectId],
-      ),
+    const saved = await pm().put(summaryUrl()).send(reportBody());
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body.data.warnings).toContain(
+      "The project is not in closeout or complete.",
     );
-    const started = await pm().get(summaryUrl());
-    expect(started.body.data.available).toBe(true);
-    expect(started.body.data.gate_4_status).toBe("open");
+    expect(saved.body.data.warnings).toContain("Lessons learned is empty.");
+    expect(saved.body.data.can_edit).toBe(true);
 
-    await h.db.withTenant(t.id, (db) =>
-      db.query(
-        `UPDATE projects.projects SET stage = 'complete' WHERE id = $1`,
-        [projectId],
+    const blocked = await pm().post(summaryUrl("/finalize")).send(reportBody());
+    expect(blocked.status).toBe(400);
+
+    const pdf = await pdfGet(pm(), summaryUrl(".pdf"));
+    expect(pdf.status).toBe(200);
+    const bytes = Buffer.isBuffer(pdf.body) ? pdf.body : Buffer.from(pdf.body);
+    expect(bytes.subarray(0, 5).toString()).toBe("%PDF-");
+    expect(bytes.includes(Buffer.from("Draft, not final"))).toBe(true);
+    expect(
+      bytes.includes(
+        Buffer.from("The project is not in closeout or complete."),
       ),
+    ).toBe(true);
+    const html = await pm().get(summaryUrl(".html"));
+    expect(html.status).toBe(200);
+    expect(html.text.indexOf("Draft, not final")).toBeLessThan(
+      html.text.indexOf("FINAL PROJECT REPORT"),
     );
-    const done = await pm().get(summaryUrl());
-    expect(done.body.data.available).toBe(true);
-    expect(done.body.data.stage).toBe("complete");
+    expect(html.text).toContain("Punch list is still open.");
   });
 });
 

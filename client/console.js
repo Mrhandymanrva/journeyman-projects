@@ -2892,6 +2892,12 @@ const stProjectConnector = createSTProjectConnector({
     await select(id);
   },
 });
+el("closeout-report-open")?.addEventListener("click", () => {
+  const url = new URL(location.href);
+  url.hash = "closeout-report";
+  history.pushState(null, "", url.pathname + url.search + url.hash);
+  void workspace.openCloseoutReport();
+});
 el("st-project-open").addEventListener("click", () =>
   stProjectConnector.open(),
 );

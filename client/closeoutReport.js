@@ -80,18 +80,22 @@ export function reportFormState(view, options = {}) {
 
 export function closeoutReportHtml(view, helpers) {
   const esc = helpers.esc;
-  if (!view?.available) {
-    return `<section class="closeout-report" id="final-project-report">
-      <h3 id="fpr-heading">Final project report</h3>
-      <p class="note" id="fpr-unavailable">Available when the project enters closeout.</p>
-    </section>`;
-  }
-  const state = reportFormState(view, helpers);
+  const state = reportFormState(view || {}, helpers);
   const editable = view.can_edit === true;
   const dis = editable ? "" : "disabled";
   const costs = view.can_view_costs === true ? state.figures?.costs : null;
   const currency = state.figures?.currency || "USD";
+  const warnings = Array.isArray(view.warnings) ? view.warnings : [];
+  const banner =
+    view.draft_banner === true
+      ? `<div class="draft-banner" id="fpr-draft-banner" role="status"><strong>Draft, not final</strong>${
+          warnings.length
+            ? `<ul>${warnings.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>`
+            : ""
+        }</div>`
+      : "";
   return `<section class="closeout-report" id="final-project-report" data-finalized="${view.finalized ? "true" : "false"}">
+    ${banner}
     <h3 id="fpr-heading">Final project report</h3>
     <p class="note">Internal report for staff. It includes cost and margin when you can see margin. Nothing here emails the customer or writes to ServiceTitan. Saving keeps a snapshot of the pulled figures. The risk register is not changed.</p>
     ${pulledBlock(
@@ -229,14 +233,14 @@ export function closeoutReportHtml(view, helpers) {
       }
       ${
         view.can_view_costs
-          ? `<button class="btn sm" id="fpr-pdf" type="button" ${view.summary ? "" : "disabled"}>Download PDF</button>
-             <button class="btn sm" id="fpr-print" type="button" ${view.summary ? "" : "disabled"}>Print</button>`
+          ? `<button class="btn sm" id="fpr-pdf" type="button">Download PDF</button>
+             <button class="btn sm" id="fpr-print" type="button">Print</button>`
           : ""
       }
     </div>
     ${
       view.can_view_costs && !view.summary
-        ? `<p class="note">Save the report before downloading or printing. The file uses the saved snapshot.</p>`
+        ? `<p class="note">An unsaved download uses the current project figures and is still a draft.</p>`
         : ""
     }
   </section>`;
@@ -485,6 +489,9 @@ export function mountCloseoutReport(host, deps) {
     host.querySelector("#fpr-finalize")?.addEventListener("click", () => void submit(view, "finalize"));
     host.querySelector("#fpr-pdf")?.addEventListener("click", () => void download(view));
     host.querySelector("#fpr-print")?.addEventListener("click", () => void printReport(view));
+    if (location.hash === "#closeout-report") {
+      host.querySelector("#final-project-report")?.scrollIntoView?.({ block: "start" });
+    }
   }
 
   async function load(preferLive) {

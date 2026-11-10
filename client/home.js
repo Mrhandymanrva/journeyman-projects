@@ -128,7 +128,7 @@ export function projectTableHtml(projects, esc) {
         ? health.reasons.map((reason) => reason.detail).filter(Boolean).join(". ")
         : "";
       return `<tr class="home-row" data-home-project="${esc(project.id)}" tabindex="0">
-        <th scope="row"><a href="/?project=${esc(project.id)}#dashboard">${esc(project.name)}</a><small>${esc(project.project_number)}</small></th>
+        <th scope="row"><a href="/?project=${esc(project.id)}#dashboard">${esc(project.name)}</a><small>${esc(project.project_number)}</small><a class="home-report-link" data-closeout-report href="/?project=${esc(project.id)}#closeout-report">Closeout report</a></th>
         <td>${esc(project.customer || "—")}</td>
         <td>${esc(stageLabel(project.stage))}</td>
         <td>${esc(LIFECYCLE_LABELS[project.lifecycle] || project.lifecycle)}</td>
@@ -236,6 +236,16 @@ export function createHome({ el, esc, api, openProject, can }) {
       searchTimer = window.setTimeout(() => void refreshBoard(), 200);
     });
     node.addEventListener("click", (event) => {
+      const report = event.target.closest("[data-closeout-report]");
+      if (report) {
+        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        const url = new URL(report.getAttribute("href"), location.origin);
+        history.pushState(null, "", url.pathname + url.search + url.hash);
+        const projectId = url.searchParams.get("project");
+        if (projectId) void openProject(projectId);
+        return;
+      }
       const acknowledge = event.target.closest("[data-handoff-acknowledge]");
       if (acknowledge) {
         event.preventDefault();

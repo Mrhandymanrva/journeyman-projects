@@ -309,17 +309,103 @@ export function formatStampEt(
 }
 
 /**
- * The form opens at closeout or complete, or once Gate 4 has started
- * (status other than open, or any Gate 4 checklist item ticked).
+ * The report can be drafted on any project. Stage and Gate 4 no longer hide it.
+ * The argument is kept so callers can pass the same facts they already have.
  */
-export function closeoutReportAvailable(input: {
-  stage: string;
-  gate4Status: string | null;
-  gate4Progress: boolean;
+export function closeoutReportAvailable(_input?: {
+  stage?: string;
+  gate4Status?: string | null;
+  gate4Progress?: boolean;
 }): boolean {
-  if (input.stage === "closeout" || input.stage === "complete") return true;
-  if (input.gate4Status != null && input.gate4Status !== "open") return true;
-  return input.gate4Progress;
+  return true;
+}
+
+export interface CloseoutWarningInput {
+  stage: string;
+  finalized: boolean;
+  actualEnd: string | null;
+  punchDone: boolean;
+  photosDone: boolean;
+  finalDrawInvoice: string | null;
+  warrantyStart: string | null;
+  reviewRequest: string | null;
+  lessonsLearned: string;
+  achievementsObstacles: string;
+  rootCauses: string;
+  keyTakeaways: string;
+  actionItems: string;
+  nextSteps: string;
+}
+
+/** What is still open on a draft. Finalize does not use this list. */
+export function closeoutReportWarnings(input: CloseoutWarningInput): string[] {
+  const warnings: string[] = [];
+  if (input.stage !== "closeout" && input.stage !== "complete") {
+    warnings.push("The project is not in closeout or complete.");
+  }
+  if (!input.punchDone) warnings.push("Punch list is still open.");
+  if (!input.photosDone) warnings.push("Final photos are not filed.");
+  if (!filled(input.finalDrawInvoice))
+    warnings.push("Final draw invoice is not recorded.");
+  if (!filled(input.warrantyStart)) warnings.push("Warranty start is not set.");
+  if (!filled(input.reviewRequest))
+    warnings.push("Review request is not recorded.");
+  if (!filled(input.actualEnd)) warnings.push("Actual end date is not set.");
+  const narrative: Array<[string, string]> = [
+    [input.lessonsLearned, "Lessons learned is empty."],
+    [input.achievementsObstacles, "Achievements and obstacles is empty."],
+    [input.rootCauses, "Root causes is empty."],
+    [input.keyTakeaways, "Key takeaways is empty."],
+    [input.actionItems, "Action items is empty."],
+    [input.nextSteps, "Next steps is empty."],
+  ];
+  for (const [value, message] of narrative) {
+    if (!filled(value)) warnings.push(message);
+  }
+  return warnings;
+}
+
+function filled(value: string | null | undefined): boolean {
+  return Boolean(value && value.trim());
+}
+
+/** Hidden only after finalize, and only when nothing above is still missing. */
+export function showCloseoutDraftBanner(
+  finalized: boolean,
+  warnings: string[],
+): boolean {
+  return !(finalized && warnings.length === 0);
+}
+
+export function emptyCloseoutSummary(reportDate: string): CloseoutSummaryBody {
+  return {
+    version: 1,
+    report_date: reportDate,
+    roles: [],
+    narrative: {
+      scope: "",
+      schedule_commentary: "",
+      cost_commentary: "",
+      lessons_learned: "",
+      learning_outcomes_summary: "",
+      performance_summary: "",
+      critical_thinking: "",
+    },
+    risks: [],
+    communications: [],
+    learning_outcomes: [],
+    post_mortem: {
+      initial_expectations: "",
+      milestones: [],
+      achievements_obstacles: "",
+      roadblocks: "",
+      additional_resources: "",
+      root_causes: "",
+      key_takeaways: "",
+      action_items: "",
+      next_steps: "",
+    },
+  };
 }
 
 export function tidySummary(body: CloseoutSummaryBody): CloseoutSummaryBody {
