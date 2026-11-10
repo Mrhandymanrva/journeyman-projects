@@ -1,3 +1,4 @@
+import { formatDailyLogStamp } from "./dailyLog.js";
 import { bindFinancialSections } from "./financialsSections.js";
 import { revealLinkedItem } from "./home.js";
 import { bindFieldStart, fieldStartHtml } from "./fieldRelease.js";
@@ -614,7 +615,7 @@ export function createWorkspace({
           .slice(0, 3)
           .map(
             (l) =>
-              `<div class="update-row"><span class="update-dot"></span><div><strong>${esc(l.author || "Site update")} <small>· ${nice(l.log_date)}</small></strong><p>${esc(l.work_completed || "Daily log recorded")}</p></div></div>`,
+              `<div class="update-row"><span class="update-dot"></span><div><strong>${esc(l.author || "Site update")} <small>· ${esc(formatDailyLogStamp(l))}</small></strong><p>${esc(l.work_completed || "Daily log recorded")}</p></div></div>`,
           )
           .join("") ||
         '<div class="workspace-empty"><strong>No site updates yet</strong><p>Add a daily log to capture progress, deliveries and issues.</p><a href="#logs">Go to daily logs →</a></div>'
