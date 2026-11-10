@@ -20,6 +20,7 @@ import {
   closeoutDoneLabel,
   closeoutSavePayload,
 } from "./closeoutCard.js";
+import { mountCloseoutReport } from "./closeoutReport.js";
 import { financialsDashboardHtml } from "./financialsDashboard.js";
 import { bindStPoSync, stPoSyncHtml } from "./stPoSync.js";
 import {
@@ -2693,7 +2694,37 @@ function renderCloseout(row) {
   const done = closeoutDoneLabel(closeoutDoneCount(c));
   el("closetag").textContent = done;
   setFinSummary("closeout", done);
-  el("closeout").innerHTML = closeoutCardHtml(c, { esc, canEdit: may });
+  el("closeout").innerHTML =
+    closeoutCardHtml(c, { esc, canEdit: may }) +
+    `<div id="closeout-report" class="closeout-report-host"></div>`;
+  const reportHost = el("closeout-report");
+  if (reportHost && current?.id) {
+    void mountCloseoutReport(reportHost, {
+      projectId: current.id,
+      projectNumber: current.project_number,
+      esc,
+      alert: (message) => window.alert(message),
+      load: () => api(`/projects/${current.id}/closeout/summary`),
+      save: (body) =>
+        api(`/projects/${current.id}/closeout/summary`, {
+          method: "PUT",
+          body: JSON.stringify(body),
+        }),
+      finalize: (body) =>
+        api(`/projects/${current.id}/closeout/summary/finalize`, {
+          method: "POST",
+          body: JSON.stringify(body),
+        }),
+      fetchRaw: (path, options = {}) =>
+        fetch(API + path, {
+          ...options,
+          headers: {
+            ...(token ? { authorization: `Bearer ${token}` } : {}),
+            ...options.headers,
+          },
+        }),
+    });
+  }
   el("cl-save")?.addEventListener("click", async (event) => {
     const button = event.target;
     button.disabled = true;
