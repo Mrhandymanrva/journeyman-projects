@@ -89,6 +89,44 @@ const dailyLogSchema = z.object({
   weather: z.string().nullish(),
 });
 
+/** Same fields as a new log. Omitted keys are left alone, including log_date. */
+const dailyLogPatchSchema = z.object({
+  log_date: z.string().date().optional(),
+  crew_on_site: z.string().nullish(),
+  vendors_on_site: z.array(z.string().uuid()).optional(),
+  work_completed: z.string().nullish(),
+  delays: z.string().nullish(),
+  delay_cause: z.string().nullish(),
+  deliveries: z.string().nullish(),
+  inspections: z.string().nullish(),
+  client_interaction: z.string().nullish(),
+  safety_note: z.string().nullish(),
+  weather: z.string().nullish(),
+});
+
+const DAILY_LOG_COLUMNS = `l.id, l.log_date, l.created_at, l.author_id,
+                l.crew_on_site, l.vendors_on_site, l.work_completed,
+                l.delays, l.delay_cause, l.deliveries, l.inspections,
+                l.client_interaction, l.safety_note, l.weather,
+                s.full_name AS author`;
+
+async function loadDailyLog(
+  ctx: StaffContext,
+  projectId: string,
+  logId: string,
+): Promise<Record<string, unknown>> {
+  const { rows } = await ctx.db.query<Record<string, unknown>>(
+    `SELECT ${DAILY_LOG_COLUMNS}
+       FROM projects.daily_logs l
+       JOIN projects.staff s ON s.id = l.author_id
+      WHERE l.project_id = $1 AND l.id = $2`,
+    [projectId, logId],
+  );
+  const row = rows[0];
+  if (!row) throw notFound("Daily log not found");
+  return row;
+}
+
 export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
   const router = Router();
 
@@ -498,15 +536,12 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
       const projectId = parseUuidParam(ctx.req.params.id, "Project");
       await loadVisibleProject(ctx, projectId, "id");
       const { rows } = await ctx.db.query<Record<string, unknown>>(
-        `SELECT l.id, l.log_date, l.crew_on_site, l.vendors_on_site, l.work_completed,
-                l.delays, l.delay_cause, l.deliveries, l.inspections,
-                l.client_interaction, l.safety_note, l.weather,
-                s.full_name AS author
+        `SELECT ${DAILY_LOG_COLUMNS}
            FROM projects.daily_logs l
            JOIN projects.staff s ON s.id = l.author_id
           WHERE l.project_id = $1
-          ORDER BY l.log_date DESC
-          LIMIT 60`,
+          ORDER BY l.log_date DESC, l.created_at DESC
+          LIMIT 200`,
         [projectId],
       );
       sendData(ctx.res, rows);
@@ -521,7 +556,6 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
       await loadVisibleProject(ctx, projectId, "id");
       const body = parseBody(dailyLogSchema, ctx.req.body);
 
-      // One per project per date; the unique constraint produces the 409.
       const { rows } = await ctx.db.query<Record<string, unknown>>(
         `INSERT INTO projects.daily_logs
            (tenant_id, project_id, log_date, author_id, crew_on_site, vendors_on_site,
@@ -547,6 +581,61 @@ export function fieldOperationRoutes(deps: StaffRouterDeps): Router {
         ],
       );
       sendData(ctx.res, rows[0], undefined, 201);
+    }),
+  );
+
+  router.patch(
+    "/projects/:id/daily-logs/:logId",
+    staffRoute(deps, async (ctx) => {
+      requireCapability(ctx.staff.role, "write_daily_log");
+      const projectId = parseUuidParam(ctx.req.params.id, "Project");
+      const logId = parseUuidParam(ctx.req.params.logId, "Daily log");
+      await loadVisibleProject(ctx, projectId, "id");
+      const existing = await loadDailyLog(ctx, projectId, logId);
+      const mayRevise =
+        existing.author_id === ctx.staff.staffId ||
+        ctx.staff.role === "owner" ||
+        ctx.staff.role === "manager";
+      if (!mayRevise) {
+        throw new ApiError(
+          "forbidden",
+          "Only the author, or an owner or manager, can edit this daily log.",
+        );
+      }
+
+      const body = parseBody(dailyLogPatchSchema, ctx.req.body);
+      const fields = (
+        [
+          ["log_date", body.log_date],
+          ["crew_on_site", body.crew_on_site],
+          ["vendors_on_site", body.vendors_on_site],
+          ["work_completed", body.work_completed],
+          ["delays", body.delays],
+          ["delay_cause", body.delay_cause],
+          ["deliveries", body.deliveries],
+          ["inspections", body.inspections],
+          ["client_interaction", body.client_interaction],
+          ["safety_note", body.safety_note],
+          ["weather", body.weather],
+        ] as Array<[string, unknown]>
+      ).filter(([, value]) => value !== undefined);
+      if (fields.length === 0) {
+        throw new ApiError("validation_failed", "Nothing to change.");
+      }
+
+      const params: unknown[] = [logId, projectId];
+      const sets = fields.map(([column, value]) => {
+        params.push(value);
+        return `${column} = $${params.length}`;
+      });
+      const updated = await ctx.db.query(
+        `UPDATE projects.daily_logs SET ${sets.join(", ")}
+          WHERE id = $1 AND project_id = $2
+          RETURNING id`,
+        params,
+      );
+      if (updated.rows.length === 0) throw notFound("Daily log not found");
+      sendData(ctx.res, await loadDailyLog(ctx, projectId, logId));
     }),
   );
 

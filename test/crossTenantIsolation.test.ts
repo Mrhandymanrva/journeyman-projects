@@ -53,6 +53,7 @@ interface ForeignIds {
   projectInvoiceId: string;
   preconTaskId: string;
   inspectionId: string;
+  dailyLogId: string;
 }
 let foreign: ForeignIds;
 
@@ -205,6 +206,14 @@ beforeAll(async () => {
     });
   expect(scheduleRes.status).toBe(201);
 
+  const logRes = await b
+    .post(`/api/v1/projects/projects/${projectId}/daily-logs`)
+    .send({
+      log_date: "2026-08-04",
+      work_completed: "Tenant B daily log",
+    });
+  expect(logRes.status, JSON.stringify(logRes.body)).toBe(201);
+
   const coRes = await b
     .post(`/api/v1/projects/projects/${projectId}/change-orders`)
     .send({
@@ -258,6 +267,7 @@ beforeAll(async () => {
     permitId: permitRes.body.data.id,
     milestoneId,
     scheduleItemId: scheduleRes.body.data.id,
+    dailyLogId: logRes.body.data.id,
     staffId: B.staff.pm!.id,
     businessUnitId: Object.values(B.businessUnits)[0]!,
     budgetLineId,
@@ -1152,6 +1162,12 @@ const ROUTES: RouteCase[] = [
       log_date: "2026-09-01",
       work_completed: "Written into another tenant",
     }),
+  },
+  {
+    method: "patch",
+    template: `${BASE}/projects/:id/daily-logs/:logId`,
+    path: (f) => `${BASE}/projects/${f.projectId}/daily-logs/${f.dailyLogId}`,
+    body: () => ({ work_completed: "Edited from another tenant" }),
   },
   {
     method: "get",
